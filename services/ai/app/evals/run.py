@@ -113,7 +113,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         events.append(event)
 
     tools = ToolClient("http://opspilot.test", "eval-token", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id=f"eval-{scenario.name}", question=scenario.question, organization_name="Eval Org", api_url="http://opspilot.test", tool_token="eval-token", time_window={"from": t(120), "to": t(0)},
+    request = InvestigationRequest(investigation_id=f"eval-{scenario.name}", question=scenario.question, organization_name="Eval Org", api_url="http://opspilot.test", tool_token="eval-token", time_window=scenario.time_window(),
         # The scenario data is recorded at a fixed moment; the agent investigates as of that moment.
         current_time=t(0),
     )
@@ -183,6 +183,8 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
             "scope": enforce_args.get("scope") or [],
             "toolFailures": enforce_args.get("tool_failures") or [],
             "metricServices": sorted(ctx.store.metric_services),
+            # Dependencies whose state in a past window was not on record: part of what the assessment says is missing.
+            "healthGaps": list(ctx.store.health_gaps),
             "evidence": [e.model_dump(by_alias=True) for e in ctx.store.items],
             "events": events,
         }
@@ -253,6 +255,7 @@ def rescore(directory: Path) -> list[tuple[str, dict[str, Score], dict[str, Scor
             if call.get("ok"):
                 store.coverage.setdefault(str(call["tool"]), {"calls": 0, "records": 0})["calls"] += 1
         store.metric_services = set(record.get("metricServices") or [e.service for e in store.items if e.kind in ("metric", "metric_baseline") and e.service])
+        store.health_gaps = list(record.get("healthGaps") or [])
         steps = [e["step"] for e in record["events"] if e.get("type") == "step" and e["step"].get("type") == "tool_call"]
         seen = json.dumps([scenario.question, t(0), t(120), [st.get("output") for st in steps]], default=str)
         shown = InvestigationReport.model_validate(record["report"])

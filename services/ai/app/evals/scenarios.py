@@ -122,6 +122,17 @@ class Scenario:
     traces: list[dict[str, Any]] = field(default_factory=list)
     #: Log lines of all levels the services sent in the window. Zero: the services are silent.
     log_lines: int = 600
+    #: The window under investigation as (minutes ago from, minutes ago to), when it is not the
+    #: last two hours. A window that is over makes the question a historical one.
+    window: tuple[float, float] | None = None
+    #: What get_service answers when it is asked WITHOUT a window: the state today. Only for
+    #: historical scenarios, where `service_details` is the state recorded in the window. An
+    #: engine that reads these has used the present as evidence about the past.
+    service_details_now: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    def time_window(self) -> dict[str, str]:
+        """The window an investigation of this scenario is asked to examine."""
+        return {"from": t(self.window[0]), "to": t(self.window[1])} if self.window else {"from": t(120), "to": t(0)}
 
     def handler(self) -> Callable[[httpx.Request], httpx.Response]:
         def handle(request: httpx.Request) -> httpx.Response:
@@ -139,7 +150,10 @@ class Scenario:
                 if not base:
                     return httpx.Response(404, json={"error": {"code": "not_found", "message": "Service not found"}})
                 detail = {"id": base["id"], "slug": slug, "name": base["name"], "health": base["health"], "dependsOn": [], "dependedOnBy": [], "repositories": [], "firingAlerts": []}
-                return httpx.Response(200, json={**detail, **self.service_details.get(slug, {})})
+                # Like the API: a window that is over is answered from the record of that window, anything else with the state now.
+                asked_for_window = bool(request.url.params.get("from") and request.url.params.get("to"))
+                details = self.service_details if asked_for_window or not self.service_details_now else self.service_details_now
+                return httpx.Response(200, json={**detail, **details.get(slug, {})})
             if path == "/logs/anomalies":
                 return httpx.Response(200, json={"window": window, "anomalies": pick(self.anomalies, "serviceSlug")})
             if path == "/logs/patterns":
@@ -203,6 +217,28 @@ class Scenario:
 def _log(id_: str, service: str, message: str, minutes_ago: float, level: str = "ERROR") -> dict[str, Any]:
     return {"id": id_, "timestamp": t(minutes_ago), "level": level, "service": service, "message": message, "traceId": "abc123", "fingerprint": "fp", "attributes": None}
 
+
+
+# A window that ended three days ago, as (minutes ago from, minutes ago to).
+_PAST = (74 * 60.0, 71 * 60.0)
+_NOTES = {
+    "DOWN": f'Critical alert "Redis unavailable" was firing from {t(_PAST[0] - 30)} to {t(_PAST[1] + 30)}',
+    "HEALTHY": "No alert or incident is recorded for it in the window, and it was sending metrics",
+    "UNKNOWN": "Nothing is recorded for it in the window: no alert, no incident and no metrics",
+}
+#: What get_service says about web-app's dependencies today: the cache is fine, payments is down.
+_TODAY = {"health": "DEGRADED", "healthAsOf": {"mode": "current"}, "dependsOn": [
+    {"slug": "cache-redis", "name": "Cache Redis", "health": "HEALTHY", "healthNote": "All alert rules within thresholds", "kind": "datastore"},
+    {"slug": "payments-api", "name": "Payments API", "health": "DOWN", "healthNote": "Critical alert firing: Payments error rate critical", "kind": "sync"},
+]}
+
+
+def _then(cache: str, payments: str) -> dict[str, Any]:
+    """What get_service says about web-app when asked for the past window."""
+    return {"health": "HEALTHY", "healthNote": _NOTES["HEALTHY"], "healthAsOf": {"mode": "window", "from": t(_PAST[0]), "to": t(_PAST[1])}, "dependsOn": [
+        {"slug": "cache-redis", "name": "Cache Redis", "health": cache, "healthNote": _NOTES[cache], "kind": "datastore"},
+        {"slug": "payments-api", "name": "Payments API", "health": payments, "healthNote": _NOTES[payments], "kind": "sync"},
+    ]}
 
 SCENARIOS: list[Scenario] = [
     Scenario(
@@ -378,5 +414,55 @@ SCENARIOS: list[Scenario] = [
         events=[{"id": "e11", "service": "checkout-api", "type": "scaling", "title": "Scaled checkout-api from 6 to 8 replicas", "details": "Autoscaler: CPU above target", "actor": "autoscaler", "source": "api", "occurredAt": t(21)}],
         metrics={"checkout-api": [metric("error_rate", "Error rate", "%", 18.0, 0.3), metric("latency_p95_ms", "p95 latency", "ms", 4800, 220)], "checkout-db": [metric("connections", "Open connections", "", 80, 140)]},
         deployment_errors={"d11": (3, 590)},
+    ),
+    # ── Past incidents: health belongs to the time of the incident, not to today ──
+    Scenario(
+        name="historical_dependency_outage",
+        question="Why was web-app failing on cache lookups three days ago?",
+        description="An incident that is over. Its dependency cache-redis was down at the time (a resolved critical alert) and is fine today; payments-api is down today and was fine then.",
+        window=_PAST,
+        expect=Expectation(
+            cause=Cause("cache-redis", mechanism=[["down"], ["outage"], ["unavailab"], ["fail"]], evidence=[("service", "dep:cache-redis")]),
+            min_confidence=0.25, max_confidence=0.85, must_not_blame=["payments-api"],
+            distractors=[Distractor("the dependency that is down today, not then", terms=[["payments-api"]], evidence=[("service", "dep:payments-api")])],
+        ),
+        services=[svc("web-app", ["cache-redis", "payments-api"]), svc("cache-redis"), svc("payments-api", health="DOWN")],
+        anomalies=[pattern("h1", "web-app", "cache lookup failed: connection refused", 240, _PAST[0] - 60)],
+        logs=[_log("hl1", "web-app", "cache lookup failed: connection refused", _PAST[0] - 90)],
+        metrics={"web-app": [metric("error_rate", "Error rate", "%", 8.0, 0.4)]},
+        service_details={"web-app": _then("DOWN", "HEALTHY")},
+        service_details_now={"web-app": _TODAY},
+    ),
+    Scenario(
+        name="historical_dependency_recovered",
+        question="Why was web-app failing three days ago?",
+        description="An incident that is over. Nothing web-app depends on was unhealthy at the time. payments-api is down today. The right answer is a failure without an established cause; naming payments-api is using today as evidence about the past.",
+        window=_PAST,
+        expect=Expectation(
+            outcome="DEGRADED", max_confidence=0.3, must_not_blame=["payments-api"],
+            distractors=[Distractor("the dependency that is down today, not then", terms=[["payments-api"]], evidence=[("service", "dep:payments-api")])],
+        ),
+        services=[svc("web-app", ["cache-redis", "payments-api"]), svc("cache-redis"), svc("payments-api", health="DOWN")],
+        anomalies=[pattern("h2", "web-app", "request failed: upstream timeout after 3000ms", 240, _PAST[0] - 60)],
+        logs=[_log("hl2", "web-app", "request failed: upstream timeout after 3000ms", _PAST[0] - 90)],
+        metrics={"web-app": [metric("error_rate", "Error rate", "%", 8.0, 0.4)]},
+        service_details={"web-app": _then("HEALTHY", "HEALTHY")},
+        service_details_now={"web-app": _TODAY},
+    ),
+    Scenario(
+        name="historical_health_not_on_record",
+        question="Why was web-app failing three days ago?",
+        description="An incident that is over, with nothing on record about the state of its dependencies at the time. The report must say so, and must not fill the gap with their state today.",
+        window=_PAST,
+        expect=Expectation(
+            outcome="DEGRADED", max_confidence=0.3, must_not_blame=["payments-api"], must_acknowledge=[["not on record"]],
+            distractors=[Distractor("the dependency that is down today, not then", terms=[["payments-api is down"], ["failure of upstream dependency payments-api"]], evidence=[("service", "dep:payments-api")])],
+        ),
+        services=[svc("web-app", ["cache-redis", "payments-api"]), svc("cache-redis"), svc("payments-api", health="DOWN")],
+        anomalies=[pattern("h3", "web-app", "request failed: upstream timeout after 3000ms", 240, _PAST[0] - 60)],
+        logs=[_log("hl3", "web-app", "request failed: upstream timeout after 3000ms", _PAST[0] - 90)],
+        metrics={"web-app": [metric("error_rate", "Error rate", "%", 8.0, 0.4)]},
+        service_details={"web-app": _then("UNKNOWN", "UNKNOWN")},
+        service_details_now={"web-app": _TODAY},
     ),
 ]

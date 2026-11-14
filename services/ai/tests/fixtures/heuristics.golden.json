@@ -1380,6 +1380,543 @@
    "With no clear error signal, the question may concern a different time window or service than the ones examined."
   ]
  },
+ "historical_dependency_outage": {
+  "analysisMode": "heuristic",
+  "assessment": {
+   "confidence": 0.9,
+   "missingTelemetry": [
+    "The trace store returned no traces for the window (none recorded, or no trace store is connected)."
+   ],
+   "outcome": "INCIDENT",
+   "rationale": "A failure is evident (240\u00d7 ERROR in web-app (new pattern); Error rate for web-app up 1900%; Upstream dependency cache-redis was DOWN during the window) and at least one explanation is supported by evidence.",
+   "signals": [
+    {
+     "evidenceRefs": [
+      "E1"
+     ],
+     "kind": "logs",
+     "level": "strong",
+     "text": "240\u00d7 ERROR in web-app (new pattern)"
+    },
+    {
+     "evidenceRefs": [
+      "E3"
+     ],
+     "kind": "metric",
+     "level": "strong",
+     "text": "Error rate for web-app up 1900%"
+    },
+    {
+     "evidenceRefs": [
+      "E5"
+     ],
+     "kind": "dependency",
+     "level": "strong",
+     "text": "Upstream dependency cache-redis was DOWN during the window"
+    }
+   ],
+   "supportingRefs": [
+    "E1",
+    "E3",
+    "E5"
+   ]
+  },
+  "assumptions": [
+   "The dependency's degradation is assumed to be a cause rather than a consequence of the same incident."
+  ],
+  "confidence": 0.45,
+  "facts": [
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The most frequent error pattern is \"cache lookup failed: connection refused\" in web-app, seen 240 times since 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      },
+      {
+       "detail": "E1 holds 240 \u00d7",
+       "evidenceRef": "E1",
+       "kind": "number",
+       "status": "exact",
+       "text": "240 times"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The earliest anomalous error pattern first appeared at 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E3"
+    ],
+    "statement": "Error rate for web-app up 1900%: error_rate averaged 8% (max 10.4%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.4% in the preceding window",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-06-01T10:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T10:00:00Z"
+      },
+      {
+       "detail": "2026-06-01T12:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T12:00:00Z"
+      },
+      {
+       "detail": "E3 holds 1900%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "1900%"
+      },
+      {
+       "detail": "E3 holds 8%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "8%"
+      },
+      {
+       "detail": "E3 holds 10.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "10.4%"
+      },
+      {
+       "detail": "E3 holds 0.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "0.4%"
+      }
+     ],
+     "status": "verified"
+    }
+   }
+  ],
+  "hypotheses": [
+   {
+    "assumptions": [
+     "The dependency's degradation is assumed to be a cause rather than a consequence of the same incident."
+    ],
+    "confidence": 0.45,
+    "contradictingEvidenceRefs": [],
+    "contradictions": [],
+    "description": "web-app depends on Cache Redis (datastore), which was DOWN between 2026-05-29T10:00:00Z and 2026-05-29T13:00:00Z: Critical alert \"Redis unavailable\" was firing from 2026-05-29T10:30:00Z to 2026-05-29T12:30:00Z. Taken from what was recorded at the time, not from its state now. Failures there could surface as errors in the services that call it. Nothing it depends on was recorded as unhealthy in the window, so the chain of failures appears to start here.",
+    "evidenceRefs": [
+     "E5"
+    ],
+    "facts": [
+     "Upstream dependency cache-redis was DOWN during the window (E5)."
+    ],
+    "gaps": [
+     "Check whether cache-redis errors started before or after the errors in its callers.",
+     "Check cache-redis itself: is it running, reachable and within its limits?"
+    ],
+    "status": "possible",
+    "title": "Failure of upstream dependency cache-redis"
+   }
+  ],
+  "integrity": {
+   "checked": 21,
+   "flagged": [],
+   "supported": 21
+  },
+  "nextSteps": [
+   "Check whether cache-redis errors started before or after the errors in its callers.",
+   "Check cache-redis itself: is it running, reachable and within its limits?",
+   "Open the log explorer filtered to pattern h1 and follow a trace id across services."
+  ],
+  "observations": [],
+  "outcome": "INCIDENT",
+  "recommendedActions": [],
+  "rootCauseConfirmed": false,
+  "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"cache lookup failed: connection refused\" in web-app, seen 240 times since 2026-05-29T11:00:00Z. The leading hypothesis is: Failure of upstream dependency cache-redis (45% confidence, possible). web-app depends on Cache Redis (datastore), which was DOWN between 2026-05-29T10:00:00Z and 2026-05-29T13:00:00Z: Critical alert \"Redis unavailable\" was firing from 2026-05-29T10:30:00Z to 2026-05-29T12:30:00Z. Taken from what was recorded at the time, not from its state now. Failures there could surface as errors in the services that call it. Nothing it depends on was recorded as unhealthy in the window, so the chain of failures appears to start here. No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "timeline": [
+   {
+    "description": "240\u00d7 ERROR in web-app (new pattern)",
+    "evidenceRefs": [
+     "E1"
+    ],
+    "timestamp": "2026-05-29T11:00:00Z"
+   }
+  ],
+  "uncertainties": [
+   "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
+   "No code changes were found for the services in scope (no repository linked, or none in the window).",
+   "The knowledge base returned nothing relevant."
+  ]
+ },
+ "historical_dependency_recovered": {
+  "analysisMode": "heuristic",
+  "assessment": {
+   "confidence": 0.89,
+   "missingTelemetry": [
+    "The trace store returned no traces for the window (none recorded, or no trace store is connected)."
+   ],
+   "outcome": "DEGRADED",
+   "rationale": "A failure is evident (240\u00d7 ERROR in web-app (new pattern); Error rate for web-app up 1900%), but the available evidence does not establish what caused it.",
+   "signals": [
+    {
+     "evidenceRefs": [
+      "E1"
+     ],
+     "kind": "logs",
+     "level": "strong",
+     "text": "240\u00d7 ERROR in web-app (new pattern)"
+    },
+    {
+     "evidenceRefs": [
+      "E3"
+     ],
+     "kind": "metric",
+     "level": "strong",
+     "text": "Error rate for web-app up 1900%"
+    }
+   ],
+   "supportingRefs": [
+    "E1",
+    "E3"
+   ]
+  },
+  "assumptions": [],
+  "confidence": 0.0,
+  "facts": [
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The most frequent error pattern is \"request failed: upstream timeout after 3000ms\" in web-app, seen 240 times since 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      },
+      {
+       "detail": "E1 holds 3000 ms",
+       "evidenceRef": "E1",
+       "kind": "number",
+       "status": "exact",
+       "text": "3000ms"
+      },
+      {
+       "detail": "E1 holds 240 \u00d7",
+       "evidenceRef": "E1",
+       "kind": "number",
+       "status": "exact",
+       "text": "240 times"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The earliest anomalous error pattern first appeared at 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E3"
+    ],
+    "statement": "Error rate for web-app up 1900%: error_rate averaged 8% (max 10.4%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.4% in the preceding window",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-06-01T10:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T10:00:00Z"
+      },
+      {
+       "detail": "2026-06-01T12:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T12:00:00Z"
+      },
+      {
+       "detail": "E3 holds 1900%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "1900%"
+      },
+      {
+       "detail": "E3 holds 8%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "8%"
+      },
+      {
+       "detail": "E3 holds 10.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "10.4%"
+      },
+      {
+       "detail": "E3 holds 0.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "0.4%"
+      }
+     ],
+     "status": "verified"
+    }
+   }
+  ],
+  "hypotheses": [],
+  "integrity": {
+   "checked": 12,
+   "flagged": [],
+   "supported": 12
+  },
+  "nextSteps": [
+   "Open the log explorer filtered to pattern h2 and follow a trace id across services.",
+   "Re-run the investigation with a wider time window or with the affected service named explicitly."
+  ],
+  "observations": [],
+  "outcome": "DEGRADED",
+  "recommendedActions": [],
+  "rootCauseConfirmed": false,
+  "summary": "Rule-based analysis (no language model wrote these conclusions). The collected evidence does not point to a specific cause: error patterns were found but no deployment, configuration change, dependency problem or similar past incident could be linked to them.",
+  "timeline": [
+   {
+    "description": "240\u00d7 ERROR in web-app (new pattern)",
+    "evidenceRefs": [
+     "E1"
+    ],
+    "timestamp": "2026-05-29T11:00:00Z"
+   }
+  ],
+  "uncertainties": [
+   "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
+   "No code changes were found for the services in scope (no repository linked, or none in the window).",
+   "The knowledge base returned nothing relevant.",
+   "No hypothesis met the minimum evidence bar; widen the time window or name the affected service."
+  ]
+ },
+ "historical_health_not_on_record": {
+  "analysisMode": "heuristic",
+  "assessment": {
+   "confidence": 0.79,
+   "missingTelemetry": [
+    "The trace store returned no traces for the window (none recorded, or no trace store is connected).",
+    "The state of cache-redis, payments-api during the window is not on record (no alert, incident or metrics from that time), so a problem in them at the time can be neither shown nor ruled out."
+   ],
+   "outcome": "DEGRADED",
+   "rationale": "A failure is evident (240\u00d7 ERROR in web-app (new pattern); Error rate for web-app up 1900%), but the available evidence does not establish what caused it.",
+   "signals": [
+    {
+     "evidenceRefs": [
+      "E1"
+     ],
+     "kind": "logs",
+     "level": "strong",
+     "text": "240\u00d7 ERROR in web-app (new pattern)"
+    },
+    {
+     "evidenceRefs": [
+      "E3"
+     ],
+     "kind": "metric",
+     "level": "strong",
+     "text": "Error rate for web-app up 1900%"
+    }
+   ],
+   "supportingRefs": [
+    "E1",
+    "E3"
+   ]
+  },
+  "assumptions": [],
+  "confidence": 0.0,
+  "facts": [
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The most frequent error pattern is \"request failed: upstream timeout after 3000ms\" in web-app, seen 240 times since 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      },
+      {
+       "detail": "E1 holds 3000 ms",
+       "evidenceRef": "E1",
+       "kind": "number",
+       "status": "exact",
+       "text": "3000ms"
+      },
+      {
+       "detail": "E1 holds 240 \u00d7",
+       "evidenceRef": "E1",
+       "kind": "number",
+       "status": "exact",
+       "text": "240 times"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E1"
+    ],
+    "statement": "The earliest anomalous error pattern first appeared at 2026-05-29T11:00:00Z.",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-05-29T11:00Z appears in E1",
+       "evidenceRef": "E1",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-05-29T11:00:00Z"
+      }
+     ],
+     "status": "verified"
+    }
+   },
+   {
+    "evidenceRefs": [
+     "E3"
+    ],
+    "statement": "Error rate for web-app up 1900%: error_rate averaged 8% (max 10.4%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.4% in the preceding window",
+    "verification": {
+     "checks": [
+      {
+       "detail": "2026-06-01T10:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T10:00:00Z"
+      },
+      {
+       "detail": "2026-06-01T12:00Z appears in E3",
+       "evidenceRef": "E3",
+       "kind": "timestamp",
+       "status": "exact",
+       "text": "2026-06-01T12:00:00Z"
+      },
+      {
+       "detail": "E3 holds 1900%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "1900%"
+      },
+      {
+       "detail": "E3 holds 8%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "8%"
+      },
+      {
+       "detail": "E3 holds 10.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "10.4%"
+      },
+      {
+       "detail": "E3 holds 0.4%",
+       "evidenceRef": "E3",
+       "kind": "number",
+       "status": "exact",
+       "text": "0.4%"
+      }
+     ],
+     "status": "verified"
+    }
+   }
+  ],
+  "hypotheses": [],
+  "integrity": {
+   "checked": 12,
+   "flagged": [],
+   "supported": 12
+  },
+  "nextSteps": [
+   "Open the log explorer filtered to pattern h3 and follow a trace id across services.",
+   "Re-run the investigation with a wider time window or with the affected service named explicitly."
+  ],
+  "observations": [],
+  "outcome": "DEGRADED",
+  "recommendedActions": [],
+  "rootCauseConfirmed": false,
+  "summary": "Rule-based analysis (no language model wrote these conclusions). The collected evidence does not point to a specific cause: error patterns were found but no deployment, configuration change, dependency problem or similar past incident could be linked to them.",
+  "timeline": [
+   {
+    "description": "240\u00d7 ERROR in web-app (new pattern)",
+    "evidenceRefs": [
+     "E1"
+    ],
+    "timestamp": "2026-05-29T11:00:00Z"
+   }
+  ],
+  "uncertainties": [
+   "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
+   "No code changes were found for the services in scope (no repository linked, or none in the window).",
+   "The knowledge base returned nothing relevant.",
+   "No hypothesis met the minimum evidence bar; widen the time window or name the affected service."
+  ]
+ },
  "red_herring_closer_in_time": {
   "analysisMode": "heuristic",
   "assessment": {
