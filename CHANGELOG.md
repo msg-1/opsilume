@@ -5,6 +5,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 ## [Unreleased]
 
 ### Added
+- `npm run backup`: an operator's backup tool for PostgreSQL. `create` writes a `pg_dump` to a partial file, checks it can be read (and with `--verify-restore` that it restores), records its checksum and only then names it as a backup; `--keep N` rotates only files the tool itself recorded; `verify` detects a damaged or altered file; `status` fails when the newest backup is too old, missing, changed, or the last attempt failed. Scheduling, retention and what to do when a backup fails are in docs/backup-and-restore.md. The drill (`npm run drill:backup`, in CI) now also covers damaged backups, rotation and a failed backup. No scheduler is installed and nothing is copied off the machine; there is no point-in-time recovery.
 - `npm run loadtest`: a small, reproducible load test on the isolated stack (log and metric ingestion, concurrent duplicates, reads under write load, investigations), reporting latencies, throughput, database connections, container resources and the environment it ran on.
 - `npm run github:validate`: a read-only check of the GitHub client against github.com with a token supplied in the environment for that purpose. docs/github-validation.md.
 - Evaluation scenarios for past incidents (a dependency down then, down only today, not on record): 14 scenarios in all. Scripted-model tests for unusable, contradictory and time-confused model output. docs/ai-validation.md lists what only a paid run can show.

@@ -48,6 +48,7 @@
     "isolated:down": "node scripts/isolated-stack.mjs down",
     "isolated:e2e": "E2E_BASE_URL=http://localhost:13000 E2E_ISOLATED=1 npm run test:e2e",
     "drills": "node scripts/reliability-drills.mjs",
+    "backup": "node scripts/backup.mjs",
     "drill:backup": "node scripts/backup-restore-drill.mjs",
     "loadtest": "node scripts/load-test.mjs"
   },
