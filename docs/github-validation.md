@@ -1,6 +1,17 @@
 # Validating the GitHub integration
 
-**Status, 14 November 2026: the GitHub client has not been run against github.com.** No token was supplied for the purpose, and none was taken from anywhere else. Everything below the first section was tested against a local stand-in for the GitHub API. The first section is the procedure that closes the gap, and it needs a person with a GitHub account.
+**Status, 15 November 2026: not validated against github.com. Everything that is verified is verified locally.**
+
+| | |
+|---|---|
+| Real GitHub API (`api.github.com`) | **Not tested.** No request has been sent to it by this integration |
+| Real webhook delivery from GitHub | **Not tested** |
+| Local stand-in for the GitHub API | Tested by `apps/api/tests/github.test.ts` and the GitHub cases in `integrations.test.ts` and `intelligence.test.ts`, in CI on every pull request |
+| The validation procedure (`npm run github:validate`) | Tested against the stand-in. Without credentials it sends nothing and exits with code 2 (confirmed 15 November 2026) |
+
+Why: validation needs a token created for the purpose, limited to one test repository and read-only, given explicitly in `GITHUB_VALIDATION_TOKEN` and `GITHUB_VALIDATION_REPO`. Neither was set during Milestone 8 or Milestone 9. Credentials that happen to exist on a developer's machine (the `gh` login, `.env`, a keychain) were deliberately not used and not looked for: they are not test credentials, they can usually write, and they reach repositories that matter.
+
+What this means for a pilot: connecting GitHub is **the first real test of this integration**. Do the procedure below, on a test repository, before connecting a repository that matters. It needs a person with a GitHub account and about ten minutes, and it is the only thing that closes this gap.
 
 ## What still has to be done, with a real token
 
@@ -22,7 +33,11 @@ It takes about ten minutes and writes nothing to GitHub.
 5. **Optionally, the webhook**: in the test repository → Settings → Webhooks, add `https://<your installation>/api/v1/webhooks/github/<organisation slug>` with content type `application/json`, the secret you saved under Settings → GitHub, and the events "Pushes" and "Pull requests". GitHub sends a `ping`; its delivery page should show a 200 with `pong`. Push a commit: it should appear under Code changes without a synchronisation. This needs the installation to be reachable from the internet.
 6. **Revoke the token** and delete the webhook when done.
 
-Record the date and the result in this file.
+Record the result here:
+
+| Date | Who | Repository | `github:validate` | In the application | Webhook | Token revoked |
+|---|---|---|---|---|---|---|
+| (not yet run) | | | | | | |
 
 ## What was tested without GitHub
 

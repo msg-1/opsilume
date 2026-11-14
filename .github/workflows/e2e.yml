@@ -54,6 +54,10 @@ jobs:
       # application against the restored copy (docs/backup-and-restore.md).
       - name: Backup and restore drill
         run: npm run drill:backup
+      # The load test at a tenth of its size. It proves the measuring tools still run and that
+      # everything sent is stored exactly once; it asserts no timing (docs/performance-investigation.md).
+      - name: Load test (reduced, correctness only)
+        run: npm run loadtest -- --smoke
       - name: Collect service logs
         if: failure()
         run: node scripts/isolated-stack.mjs compose logs --no-color --tail 400 > service-logs.txt 2>&1 || true

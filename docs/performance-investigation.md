@@ -166,6 +166,7 @@ Ingestion is unchanged, as expected: nothing in the write path was touched.
 npm run isolated:up
 node scripts/perf-probe.mjs --reset --preload 800000 --seconds 30 --label mine    # the benchmark of section 4
 npm run loadtest                                                                  # the Milestone 8 workload, with the corrected monitor
+npm run loadtest -- --smoke                                                       # a tenth of it, as CI runs it: correctness only, no timing asserted
 npm run isolated:down
 ```
 
