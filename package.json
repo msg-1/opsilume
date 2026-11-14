@@ -38,6 +38,7 @@
     "demo:status": "npm run -s demo:data -w @opspilot/api -- status",
     "demo:reset": "npm run -s demo:data -w @opspilot/api -- reset",
     "org:remove": "npm run -s org:remove -w @opspilot/api --",
+    "github:validate": "npm run -s github:validate -w @opspilot/api",
     "contracts": "node scripts/contracts.mjs && npm run contracts:api -w @opspilot/api && (cd services/ai && uv run python -m app.contracts)",
     "contracts:check": "npm run contracts && git diff --exit-code -- contracts apps/api/src/generated apps/web/src/lib/generated services/ai/app/generated",
     "tracing:up": "OTEL_ENABLED=true docker compose --profile app --profile tracing up -d --build",
@@ -47,7 +48,8 @@
     "isolated:down": "node scripts/isolated-stack.mjs down",
     "isolated:e2e": "E2E_BASE_URL=http://localhost:13000 E2E_ISOLATED=1 npm run test:e2e",
     "drills": "node scripts/reliability-drills.mjs",
-    "drill:backup": "node scripts/backup-restore-drill.mjs"
+    "drill:backup": "node scripts/backup-restore-drill.mjs",
+    "loadtest": "node scripts/load-test.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

@@ -110,6 +110,22 @@ async def _step(ctx: Context, type_: str, title: str, **extra: Any) -> None:
     await ctx.emit({"type": "step", "step": {"type": type_, "title": title, **extra}})
 
 
+# What a provider can fail with. LLMError is the provider's own, with a message written for
+# people. The others are what leaks through when output does not parse or a call hangs: their
+# text can quote the model's output, so only their kind is passed on.
+_MODEL_FAILURES = (LLMError, ValueError, TimeoutError, OSError)
+
+
+def _model_failure(exc: BaseException) -> str:
+    if isinstance(exc, LLMError):
+        return str(exc)
+    if isinstance(exc, TimeoutError):
+        return "the model did not answer in time"
+    if isinstance(exc, ValueError):
+        return "the model's answer did not have the required form"
+    return f"the model could not be reached ({type(exc).__name__})"
+
+
 async def run_tool(ctx: Context, name: str, args: dict[str, Any], title: str | None = None) -> tuple[dict[str, Any] | None, str]:
     """Executes one tool call, records the step and any evidence, and returns (result, text for the model)."""
     if ctx.tool_calls >= ctx.settings.max_tool_calls:
@@ -200,10 +216,10 @@ def build_graph(ctx: Context):
                     InvestigationPlan,
                 )
                 source = f"{ctx.provider.name} / {ctx.provider.model}"
-            except LLMError as exc:
-                if exc.fatal:
+            except _MODEL_FAILURES as exc:
+                if getattr(exc, "fatal", False):
                     ctx.llm_stopped = str(exc)
-                await _step(ctx, "error", "Planning with the model failed; using the standard playbook", detail=str(exc), status="failed")
+                await _step(ctx, "error", "Planning with the model failed; using the standard playbook", detail=_model_failure(exc), status="failed")
         # Never trust model-chosen windows blindly: fall back to the default when they do not parse.
         start, end = parse_time(the_plan.window_from), parse_time(the_plan.window_to)
         if not start or not end or start >= end:
@@ -230,11 +246,11 @@ def build_graph(ctx: Context):
             if ctx.provider.budget_used() >= 0.8:
                 raise LLMError("Evidence gathering stopped: this investigation used 80% of its model spending limit. The rest is reserved for the report.", "budget_soft")
             reply = await ctx.provider.invoke(messages, TOOLS)
-        except LLMError as exc:
-            if exc.fatal:
+        except _MODEL_FAILURES as exc:
+            if getattr(exc, "fatal", False):
                 ctx.llm_stopped = str(exc)
-            await _step(ctx, "error", "Evidence gathering by the model stopped", detail=str(exc), status="failed")
-            ctx.tool_failures.append(f"model: {exc}")
+            await _step(ctx, "error", "Evidence gathering by the model stopped", detail=_model_failure(exc), status="failed")
+            ctx.tool_failures.append(f"model: {_model_failure(exc)}")
             reply = AIMessage(content="")
         if reply.content and str(reply.content).strip():
             await _step(ctx, "evaluation", "Investigator reasoning", detail=str(reply.content)[:6000])
@@ -347,9 +363,9 @@ def build_graph(ctx: Context):
             draft = await ctx.provider.structured([SystemMessage(SYSTEM_PROMPT), HumanMessage(prompt)], LLMReport)
             report = to_report(draft, ctx.provider.mode)
             await _step(ctx, "evaluation", "Evaluate evidence and form hypotheses", detail=f"{len(ctx.store.items)} evidence items evaluated by {ctx.provider.name} / {ctx.provider.model}.")
-        except (LLMError, ValueError) as exc:
-            await _step(ctx, "error", "The model could not produce a report; falling back to rule-based analysis", detail=str(exc)[:2000], status="failed")
-            report = heuristic_report(state, f"The language model failed while writing the report ({scrub(str(exc))[:200]}); these conclusions come from rule-based analysis instead.")
+        except _MODEL_FAILURES as exc:
+            await _step(ctx, "error", "The model could not produce a report; falling back to rule-based analysis", detail=_model_failure(exc)[:2000], status="failed")
+            report = heuristic_report(state, f"The language model failed while writing the report ({scrub(_model_failure(exc))[:200]}); these conclusions come from rule-based analysis instead.")
         return {"report": report}
 
     async def guard(state: State) -> State:

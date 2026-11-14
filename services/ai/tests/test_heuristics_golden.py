@@ -97,7 +97,7 @@ async def rule_based_report(scenario: Scenario) -> dict[str, Any]:
         return None
 
     tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window={"from": t(120), "to": t(0)}, current_time=t(0))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
     report = await run_investigation(Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit))
     await tools.aclose()
     return report.wire()

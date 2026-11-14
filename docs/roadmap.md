@@ -27,12 +27,12 @@ Status as of 14 November 2026. "Verified" means exercised by automated tests or 
 
 | Suite | Count | Scope |
 |---|---|---|
-| API integration (Vitest + Supertest) | 135 | HTTP → PostgreSQL, all modules; shared contracts; real API responses against the response contracts; trace continuity through BullMQ; failure handling (AI service, Redis and PostgreSQL outages, a killed worker, duplicate delivery, failing trace export) |
-| AI service (pytest, mocked model APIs) | 177 | Agent graph, guardrails, providers, embeddings, HTTP API, MCP; each rule of the rule-based engine; a snapshot of all its reports; shared contracts; tracing |
+| API integration (Vitest + Supertest) | 203 | HTTP → PostgreSQL, all modules; shared contracts; real API responses against the response contracts; trace continuity through BullMQ; failure handling (AI service, Redis and PostgreSQL outages, a killed worker, duplicate delivery, failing trace export) |
+| AI service (pytest, mocked model APIs) | 192 | Agent graph, guardrails, providers, embeddings, HTTP API, MCP; each rule of the rule-based engine; a snapshot of all its reports; shared contracts; tracing |
 | Web (Vitest + Testing Library) | 53 | API client, formatting, accessible components; the seven journeys as rendered pages (sign-in, incident, starting an investigation, report, evidence, approval, execution outcomes) |
 | End-to-end (Playwright), in CI on every pull request | 12 | Sign-in, incident, investigation, approval, RBAC, logs, knowledge, audit, mobile layout; what the page shows while the AI service or the queue is down, and after it returns |
 | Failure drills (`npm run drills`), in CI on every pull request | 11 | Real containers killed, stopped and started on a throwaway stack: what was recorded, and that an investigation completes afterwards |
-| Agent evaluations | 11 scenarios | Outcome, cause, service, citations, invention, contradictory and missing evidence, calibration, diagnostics, remediation safety, deployment-tool use |
+| Agent evaluations | 14 scenarios | Outcome, cause, service, citations, invention, contradictory and missing evidence, calibration, diagnostics, remediation safety, deployment-tool use |
 | Local demo, end to end | 10 scenarios | Real telemetry and failures, rule-based engine: outcomes, blame, proposals, evidence provenance, recovery, runbook safety (run locally, not in CI) |
 
 ## Milestone 4: reliability and real-system validation
@@ -95,6 +95,27 @@ Not done, and why:
 - **GitHub against github.com** still needs a real token.
 - **No pull-based collectors.** A team whose logs and metrics live in a vendor needs a forwarder; none is provided.
 - **`Browser end-to-end tests` is still not a required check on `develop`.** The steps are in [git-workflow.md](git-workflow.md).
+
+## Milestone 8: integration trust and validation
+
+No new feature for users. The remaining risks named at the end of Milestone 7 were addressed, measured, or written down as open. The summary for whoever decides on a pilot is [pilot-acceptance-report.md](pilot-acceptance-report.md).
+
+Done:
+
+- **Outbound requests.** A tenant's webhook address is checked in the connection itself, not before it, which closes a DNS-rebinding gap; the block list covers reserved and IPv4-embedding ranges; GitHub redirects stay within its API. Tested with real connections.
+- **Idempotent ingestion.** An `Idempotency-Key` on the four ingestion endpoints, recorded in the same transaction as the data.
+- **Backup and restore.** A documented procedure, and a drill that restores into a second database, compares it and runs the application against it, in CI.
+- **Measurements.** A reproducible load test, with its results and their limits.
+- **AI validation without a model.** Three evaluation scenarios about past incidents and scripted tests of bad model output; two defects fixed.
+- **GitHub.** Webhook, permission and failure tests, and a read-only procedure for validating against github.com.
+
+Not done, and why:
+
+- **GitHub was not validated against github.com.** No token was supplied for the purpose. The procedure is ready ([github-validation.md](github-validation.md)).
+- **No model was run** (no budget). The exact tests a paid run must cover are in [ai-validation.md](ai-validation.md).
+- **The read-latency finding of the load test was not isolated or fixed**: reads stall for about two seconds while large log batches are ingested.
+- **No point-in-time recovery, scheduled backup or replication.**
+- **No external security review.**
 
 ## Needs the owner's input
 
