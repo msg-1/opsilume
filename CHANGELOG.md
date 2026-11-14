@@ -61,6 +61,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - With no fault in evidence, the report's hypothesis confidence is 0 when there is no hypothesis (previously 0.1).
 
 ### Security
+- Requests to a tenant's remediation webhook were validated by resolving the host name and then letting the HTTP client resolve it again, so a DNS record that changed between the two (DNS rebinding) could direct the request to an internal address. The address check now happens in the lookup the connection itself uses, for every connection: the socket is opened only to addresses that were checked, a name with any disallowed address among its answers is refused, and a refused destination is recorded as not applied. The block list now also covers reserved, documentation and benchmarking ranges and the IPv6 ranges that embed an IPv4 address (NAT64, 6to4, Teredo).
+- The GitHub client followed any redirect. It now follows at most three, only within the GitHub API's own origin, so the token cannot be sent to another host. Repository names that are dot segments are refused.
 - Zod 4.6.7; patched `deepmerge-ts` and `postcss`: no high or critical advisories remain.
 - Access tokens are revoked with their session; cookie-authenticated writes require the web origin; the agent's token works only while its investigation runs.
 - Remediation risk has a floor by action type and service tier.

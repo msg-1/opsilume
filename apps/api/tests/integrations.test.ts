@@ -37,6 +37,9 @@ const WEBHOOK_SECRET = 'whsec-0123456789-very-secret';
 let server: Server;
 let base: string;
 const github = { tokenValid: true, repoMissing: false };
+let elsewhere: Server;
+let elsewhereBase = '';
+const collected: Record<string, unknown>[] = [];
 const hook = { status: 200, delayMs: 0, received: [] as { headers: Record<string, unknown>; body: Record<string, unknown> }[] };
 
 beforeAll(async () => {
@@ -52,6 +55,12 @@ beforeAll(async () => {
       }
       const authorised = req.headers.authorization === `Bearer ${TOKEN}` && github.tokenValid;
       if (req.url === '/user') return authorised ? json(200, { login: 'acme-bot' }) : json(401, { message: `Bad credentials for ${req.headers.authorization}` });
+      // A renamed repository: GitHub redirects within its own API.
+      if (req.url === '/repos/acme/renamed') return void res.writeHead(301, { location: '/repositories/99' }).end();
+      if (req.url === '/repositories/99') return json(200, { full_name: 'acme/new-name', default_branch: 'main', html_url: 'https://github.com/acme/new-name', private: false });
+      // A redirect that leaves the API: to another server, which records what it is sent.
+      if (req.url === '/repos/acme/elsewhere') return void res.writeHead(302, { location: `${elsewhereBase}/collect` }).end();
+      if (req.url === '/repos/acme/loop') return void res.writeHead(302, { location: '/repos/acme/loop' }).end();
       if (req.url?.startsWith('/repos/acme/checkout')) return github.repoMissing ? json(404, { message: 'Not Found' }) : json(200, { full_name: 'acme/checkout', default_branch: 'main', html_url: 'https://github.com/acme/checkout', private: true });
       if (req.url === '/api/services') return json(200, { data: [] });
       json(404, { message: 'Not Found' });
@@ -60,12 +69,19 @@ beforeAll(async () => {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   githubConfig.baseUrl = base;
+  elsewhere = createServer((req, res) => {
+    collected.push(req.headers);
+    res.writeHead(200, { 'content-type': 'application/json' }).end('{"full_name":"x/y","default_branch":"main"}');
+  });
+  await new Promise<void>((resolve) => elsewhere.listen(0, '127.0.0.1', resolve));
+  elsewhereBase = `http://127.0.0.1:${(elsewhere.address() as AddressInfo).port}`;
 });
 afterAll(async () => {
   githubConfig.baseUrl = 'https://api.github.com';
   netConfig.allowPrivate = false;
   tracesConfig.url = '';
   await new Promise((resolve) => server.close(resolve));
+  await new Promise((resolve) => elsewhere.close(resolve));
 });
 beforeEach(() => {
   Object.assign(github, { tokenValid: true, repoMissing: false });
@@ -358,5 +374,30 @@ describe('remediation webhook: an address is not a receiver', () => {
     // Only admins and owners, and only people.
     const engineer = await org.member('ENGINEER');
     expect((await engineer.agent.post('/api/v1/integrations/remediation-webhook/check')).status).toBe(403);
+  });
+});
+
+describe('GitHub: where the token may travel', () => {
+  it('follows a redirect inside the GitHub API, and never one that leaves it', async () => {
+    const org = await createOrg();
+    await org.owner.put('/api/v1/github/integration').send({ token: TOKEN }).expect(200);
+    // A renamed repository is found under its new name.
+    const renamed = await org.owner.post('/api/v1/github/repositories').send({ fullName: 'acme/renamed' });
+    expect(renamed.status).toBe(201);
+    expect(renamed.body.fullName).toBe('acme/new-name');
+    // A redirect to another host is refused, and that host never sees the request, let alone the token.
+    const away = await org.owner.post('/api/v1/github/repositories').send({ fullName: 'acme/elsewhere' });
+    expect(away.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(away.body)).toContain('redirect to another host');
+    expect(collected).toEqual([]);
+    // A redirect loop ends.
+    const loop = await org.owner.post('/api/v1/github/repositories').send({ fullName: 'acme/loop' });
+    expect(loop.status).toBeGreaterThanOrEqual(400);
+    expect(JSON.stringify(loop.body)).toContain('too many redirects');
+    // Names that are not a repository name are refused before any request is made.
+    for (const fullName of ['../..', './x', 'acme/..', 'acme/.', 'acme', 'acme/repo/extra', 'acme/repo?x=1', 'acme/re po', '/user']) {
+      expect((await org.owner.post('/api/v1/github/repositories').send({ fullName })).status, fullName).toBe(400);
+    }
+    expect(JSON.stringify(await prisma.auditLog.findMany({ where: { organizationId: org.organizationId } }))).not.toContain(TOKEN);
   });
 });

@@ -192,7 +192,8 @@ githubRouter.post('/repositories', requirePermission('integration:manage'), asyn
   const { organizationId } = authOf(req);
   const body = z
     .object({
-      fullName: z.string().trim().regex(/^[\w.-]+\/[\w.-]+$/, 'Use the form owner/repository'),
+      // owner/repository, each part a name: no dot-only segments, which would walk out of /repos/ in the request path.
+      fullName: z.string().trim().max(140).regex(/^(?!\.+\/)[\w.-]+\/(?!\.+$)[\w.-]+$/, 'Use the form owner/repository'),
       service: z.string().nullable().optional(),
       // Sample repositories use the mock adapter and never contact GitHub.
       sample: z.boolean().default(false),
