@@ -1,7 +1,8 @@
 import type { RemediationAction } from '@prisma/client';
 import { env } from '../../config/env';
 import { decrypt, hmacSha256Hex } from '../../lib/crypto';
-import { assertSafeOutboundUrl } from '../../lib/netguard';
+import { AppError } from '../../lib/errors';
+import { UnsafeDestinationError, safeRequest } from '../../lib/netguard';
 import { getSettings } from '../organization';
 import { contentHash } from './content';
 
@@ -57,24 +58,16 @@ export async function execute(action: RemediationAction, operator: { userId: str
     executedBy: operator.label,
   });
   const secret = settings.remediationWebhookSecretEncrypted ? decrypt(settings.remediationWebhookSecretEncrypted) : null;
-  let target: Awaited<ReturnType<typeof assertSafeOutboundUrl>>;
   try {
-    // Re-validated at call time: the host may resolve differently than when it was saved.
-    target = await assertSafeOutboundUrl(settings.remediationWebhookUrl);
-  } catch (err) {
-    return { mode: 'webhook', success: false, outcome: 'not_applied', summary: `Nothing was sent: the remediation webhook address was refused (${(err as Error).message}).` };
-  }
-  try {
-    const res = await fetch(target, {
+    // The destination is checked as the connection is made, against the addresses it is made
+    // to: a host name that resolved to a public address when it was saved, or a moment ago,
+    // may not now. Redirects are not followed and the response body is not read.
+    const res = await safeRequest(settings.remediationWebhookUrl, {
       method: 'POST',
-      redirect: 'manual',
       headers: { 'content-type': 'application/json', 'user-agent': 'opspilot', 'idempotency-key': action.id, 'x-opspilot-attempt': String(action.attempts), ...(secret ? { 'x-opspilot-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
       body,
-      signal: AbortSignal.timeout(env.REMEDIATION_WEBHOOK_TIMEOUT_MS),
+      timeoutMs: env.REMEDIATION_WEBHOOK_TIMEOUT_MS,
     });
-    // The response body is deliberately not stored: it would let a webhook owner read
-    // whatever the server can reach.
-    await res.body?.cancel().catch(() => undefined);
     if (res.ok) return { mode: 'webhook', success: true, outcome: 'applied', summary: `Dispatched to remediation webhook (HTTP ${res.status}).`, detail: { status: res.status } };
     // A 4xx is a refusal. A 5xx may have failed half-way through.
     const refused = res.status >= 400 && res.status < 500;
@@ -86,6 +79,10 @@ export async function execute(action: RemediationAction, operator: { userId: str
       detail: { status: res.status },
     };
   } catch (err) {
+    // Refused before any connection was made: certainly nothing was applied.
+    if (err instanceof UnsafeDestinationError || (err instanceof AppError && err.status === 400)) {
+      return { mode: 'webhook', success: false, outcome: 'not_applied', summary: `Nothing was sent: the remediation webhook address was refused (${(err as Error).message}).` };
+    }
     const timedOut = (err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError';
     return {
       mode: 'webhook',

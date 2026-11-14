@@ -63,15 +63,30 @@ export class RestGithubAdapter implements GithubAdapter {
   ) {}
 
   private async get<T = any>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      headers: {
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2022-11-28',
-        'user-agent': 'opspilot',
-        ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-      },
-      signal: AbortSignal.timeout(20_000),
-    });
+    // GitHub answers a renamed repository with a redirect. Redirects are followed by hand, a
+    // few at most, and only within the API's own origin: the token is never sent anywhere else.
+    const origin = new URL(this.baseUrl).origin;
+    let url = `${this.baseUrl}${path}`;
+    let res: Response;
+    for (let hop = 0; ; hop++) {
+      res = await fetch(url, {
+        redirect: 'manual',
+        headers: {
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2022-11-28',
+          'user-agent': 'opspilot',
+          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+      const location = res.status >= 300 && res.status < 400 ? res.headers.get('location') : null;
+      if (!location) break;
+      await res.body?.cancel().catch(() => undefined);
+      const next = new URL(location, url);
+      if (next.origin !== origin) throw new GithubError('GitHub answered with a redirect to another host. It was not followed.', 502);
+      if (hop >= 3) throw new GithubError('GitHub answered with too many redirects.', 502);
+      url = next.toString();
+    }
     if (!res.ok) {
       const remaining = res.headers.get('x-ratelimit-remaining');
       if ((res.status === 403 || res.status === 429) && remaining === '0') {

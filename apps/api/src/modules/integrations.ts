@@ -8,7 +8,7 @@ import { audit } from '../lib/audit';
 import { decrypt, hmacSha256Hex } from '../lib/crypto';
 import { AppError, badRequest, conflict } from '../lib/errors';
 import { INGESTION_SOURCES, type IngestionSource, type IntegrationId, noteCheck } from '../lib/integrationState';
-import { assertSafeOutboundUrl } from '../lib/netguard';
+import { safeRequest } from '../lib/netguard';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission, requireUser } from '../middleware/auth';
 import { checkGithub } from './github';
@@ -448,18 +448,15 @@ integrationsRouter.post('/remediation-webhook/check', requirePermission('setting
   let ok = false;
   let detail: string;
   try {
-    // Checked again now: the host may resolve differently than when the address was saved.
-    const target = await assertSafeOutboundUrl(settings.remediationWebhookUrl);
+    // The address is checked as the connection is made (lib/netguard.ts), not only when it was saved.
     const body = JSON.stringify({ event: 'ping', organization: org.slug, sentAt: new Date().toISOString() });
     const secret = settings.remediationWebhookSecretEncrypted ? decrypt(settings.remediationWebhookSecretEncrypted) : null;
-    const response = await fetch(target, {
+    const response = await safeRequest(settings.remediationWebhookUrl, {
       method: 'POST',
-      redirect: 'manual',
       headers: { 'content-type': 'application/json', 'user-agent': 'opspilot', 'x-opspilot-event': 'ping', ...(secret ? { 'x-opspilot-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
       body,
-      signal: AbortSignal.timeout(Math.min(env.REMEDIATION_WEBHOOK_TIMEOUT_MS, 10_000)),
+      timeoutMs: Math.min(env.REMEDIATION_WEBHOOK_TIMEOUT_MS, 10_000),
     });
-    await response.body?.cancel().catch(() => undefined);
     ok = response.ok;
     detail = response.ok
       ? `The receiver answered the test request (HTTP ${response.status}).${secret ? '' : ' No signing secret is set, so the request was unsigned.'}`
