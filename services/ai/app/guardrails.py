@@ -74,10 +74,52 @@ def _valid_rollback(action, store: EvidenceStore) -> str | None:
     return None
 
 
+_KEY_LIKE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{6,}|sk-[A-Za-z0-9_\-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")
+
+
+def _clean(text: str) -> str:
+    return _KEY_LIKE.sub("[redacted]", _CONTROL.sub("", text))
+
+
+def _sanitise(report: InvestigationReport) -> bool:
+    """Whatever wrote the report, its text is shown to people and stored. Control characters and
+    anything shaped like a credential are taken out of every text field. Logs are redacted when
+    they are ingested, so this is a second line: it matters when that redaction is switched off
+    or a model reproduces something it should not. Returns whether anything changed."""
+    changed = False
+
+    def fix(obj: object, *fields: str) -> None:
+        nonlocal changed
+        for name in fields:
+            value = getattr(obj, name, None)
+            if isinstance(value, str):
+                cleaned = _clean(value)
+            elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+                cleaned = [_clean(v) for v in value]
+            else:
+                continue
+            if cleaned != value:
+                setattr(obj, name, cleaned)
+                changed = True
+
+    fix(report, "summary", "assumptions", "uncertainties", "next_steps")
+    for h in report.hypotheses:
+        fix(h, "title", "description", "facts", "assumptions", "gaps", "contradictions")
+    for item in [*report.facts, *report.observations]:
+        fix(item, "statement")
+    for t in report.timeline:
+        fix(t, "description")
+    for a in report.recommended_actions:
+        fix(a, "title", "description", "rationale")
+    return changed
+
+
 def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[str] | None = None, tool_failures: list[str] | None = None, known_times: list[str] | None = None) -> list[str]:
     """Mutates the report so that it only claims what the evidence supports. Returns notes on what changed."""
     known = store.refs()
     notes: list[str] = []
+    if _sanitise(report):
+        notes.append("Removed control characters or a credential-like string from the report's text.")
     cap = LIMITS["maxConfidence"].get(report.analysis_mode, LIMITS["maxConfidence"]["heuristic"])
 
     def keep(refs: list[str], where: str) -> list[str]:
