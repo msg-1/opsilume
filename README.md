@@ -59,7 +59,7 @@ npm run dev                   # API :4000, worker, web :3000, AI service :8000
 | `npm run tracing:up`, `npm run trace -- <id>` | Trace the platform itself, locally: one trace per investigation ([docs/tracing.md](docs/tracing.md)) |
 | `npm run evals` | Scores the investigation agent on ground-truth scenarios |
 | `npm run test:e2e` | Playwright tests against the running, freshly seeded stack |
-| `npm run loadtest` | A small, reproducible load test on the throwaway stack: ingestion, duplicates, reads under write load, investigations; prints measurements and the environment ([docs/pilot-acceptance-report.md](docs/pilot-acceptance-report.md)) |
+| `npm run loadtest` | A small, reproducible load test on the throwaway stack: ingestion, duplicates, reads under write load, investigations; prints measurements and the environment, and fails if anything sent was not stored exactly once. `-- --smoke` is the reduced run CI uses ([docs/performance-investigation.md](docs/performance-investigation.md)) |
 | `npm run github:validate` | Read-only check of the GitHub client against github.com with a token supplied in the environment ([docs/github-validation.md](docs/github-validation.md)) |
 | `npm run backup -- create --project <name> --dir <dir>` | Back up an installation's PostgreSQL, checked before it is named a backup; also `verify` and `status`. See [docs/backup-and-restore.md](docs/backup-and-restore.md) |
 | `npm run drill:backup` | On the throwaway stack: back up PostgreSQL, restore into a second database, compare them and run the application against the restored copy ([docs/backup-and-restore.md](docs/backup-and-restore.md)) |

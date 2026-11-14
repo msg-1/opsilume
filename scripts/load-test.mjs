@@ -2,6 +2,9 @@
 // A small, reproducible load test against the isolated stack (scripts/isolated-stack.mjs).
 //
 //   npm run isolated:up && npm run loadtest            # prints a report; --json for raw numbers
+//   npm run loadtest -- --smoke                        # a tenth of the workload, for CI: proves the
+//                                                      # test still runs and nothing is lost or fails.
+//                                                      # Its timings mean nothing and are not asserted.
 //
 // It measures; it does not judge. The workload is deliberately modest (it shares a laptop
 // with everything else) and every number it prints is true only of the machine it ran on.
@@ -18,16 +21,25 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (line = '') => console.log(line);
 
 // ── Workload (kept under the API's limit of 1,200 requests a minute per client address) ──
-const W = {
-  logs: { clients: 8, requestsEach: 50, linesPerRequest: 1000 },
-  metrics: { clients: 8, requestsEach: 40, samplesPerRequest: 500 },
-  duplicates: { keys: 20, copiesEach: 10, linesPerRequest: 50 },
-  reads: { clients: 4, requestsEach: 30 },
-  investigations: { total: 40, atOnce: 3 },
-};
+const SMOKE = process.argv.includes('--smoke');
+const W = SMOKE
+  ? {
+      logs: { clients: 4, requestsEach: 5, linesPerRequest: 1000 },
+      metrics: { clients: 4, requestsEach: 4, samplesPerRequest: 500 },
+      duplicates: { keys: 5, copiesEach: 6, linesPerRequest: 50 },
+      reads: { clients: 2, requestsEach: 10 },
+      investigations: { total: 6, atOnce: 3 },
+    }
+  : {
+      logs: { clients: 8, requestsEach: 50, linesPerRequest: 1000 },
+      metrics: { clients: 8, requestsEach: 40, samplesPerRequest: 500 },
+      duplicates: { keys: 20, copiesEach: 10, linesPerRequest: 50 },
+      reads: { clients: 4, requestsEach: 30 },
+      investigations: { total: 40, atOnce: 3 },
+    };
 // The API allows one client address 1,200 requests a minute. Phases are spaced so that the
 // test measures the application and not its rate limiter.
-const BETWEEN_PHASES_MS = 40_000;
+const BETWEEN_PHASES_MS = SMOKE ? 2_000 : 40_000;
 
 const cookies = new Map();
 async function call(method, path, body, headers = {}) {
@@ -127,6 +139,8 @@ const key = (await call('POST', '/api-keys', { name: `load test ${Date.now()}`, 
 const withKey = { 'x-api-key': key };
 const count = (table) => Number(psql(`SELECT count(*) FROM "${table}"`));
 const report = { environment: {}, workload: W, results: {} };
+// Jobs that failed before this run (a failure drill may have left some) are not this run's.
+const failedBefore = Number(redis('zcard', 'bull:investigation:failed')) || 0;
 
 const dockerInfo = spawnSync('docker', ['info', '--format', '{{.NCPU}}\t{{.MemTotal}}\t{{.ServerVersion}}\t{{.OperatingSystem}}'], { encoding: 'utf8' }).stdout.trim().split('\t');
 report.environment = {
@@ -244,7 +258,7 @@ await pause(BETWEEN_PHASES_MS);
 }
 
 // 6. After the run
-const failed = Number(redis('zcard', 'bull:investigation:failed')) || 0;
+const failed = Math.max(0, (Number(redis('zcard', 'bull:investigation:failed')) || 0) - failedBefore);
 report.results.after = {
   redisMemory: redis('info', 'memory').match(/used_memory_human:(\S+)/)?.[1],
   failedInvestigationJobs: failed,
@@ -265,4 +279,15 @@ log(`After: database ${report.results.after.databaseSize}, Redis ${report.result
 log(`\nEnvironment: ${report.environment.host}\n  ${report.environment.docker}\n  PostgreSQL ${report.environment.postgres}, Redis ${report.environment.redis}, Node ${report.environment.node}\n  ${report.environment.note}`);
 if (process.argv.includes('--json')) log(`\n${JSON.stringify(report, null, 2)}`);
 const errors = Object.values(report.results).flatMap((r) => Object.entries(r.statuses ?? {}).filter(([s]) => Number(s) === 0 || Number(s) >= 500));
-process.exit(errors.length || !report.results.after.ready ? 1 : 0);
+// What was sent must be what was stored, whatever the machine. These are the only judgements
+// the test makes; it never fails on a timing.
+const R = report.results;
+const lost = [
+  R.logs.linesStored !== R.logs.linesSent && `logs: sent ${R.logs.linesSent}, stored ${R.logs.linesStored}`,
+  R.metrics.samplesStored !== R.metrics.samplesSent && `metrics: sent ${R.metrics.samplesSent}, stored ${R.metrics.samplesStored}`,
+  R.duplicates.linesStored !== R.duplicates.linesExpected && `duplicates: expected ${R.duplicates.linesExpected} lines, stored ${R.duplicates.linesStored}`,
+  failed > 0 && `${failed} failed investigation jobs`,
+].filter(Boolean);
+if (lost.length) console.error(`\nNot everything sent was stored once: ${lost.join('; ')}`);
+if (errors.length) console.error(`\nRequests failed: ${JSON.stringify(errors)}`);
+process.exit(errors.length || lost.length || !report.results.after.ready ? 1 : 0);

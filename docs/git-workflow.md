@@ -122,10 +122,40 @@ Never rebase or force-push `main` or `develop`. Rebasing your own unpublished fe
 | Workflow | Runs on | Jobs |
 |---|---|---|
 | `ci.yml` | Pull requests into `develop` and `main`; pushes to `develop`, `main`, `release/**`, `hotfix/**` | Commit messages · Frontend (lint, typecheck, unit tests) · Backend (lint, typecheck) · Database integration tests (PostgreSQL + pgvector) · AI service (lint, tests, agent evaluations) · Build verification (builds, dependency audit, container images) |
-| `e2e.yml` | Pull requests into `develop` and `main`; pushes to `release/**`, `hotfix/**`; manual | Builds a throwaway copy of the whole stack (its own Compose project, generated secrets, rule-based engine, no provider key), runs the browser tests against it, then the failure drills. Uploads screenshots, Playwright traces and service logs when it fails. Not a required check |
+| `e2e.yml` | Pull requests into `develop` and `main`; pushes to `release/**`, `hotfix/**`; manual | Builds a throwaway copy of the whole stack (its own Compose project, generated secrets, rule-based engine, no provider key), runs the browser tests against it, then the failure drills, the backup and restore drill and a reduced load test. Uploads screenshots, Playwright traces and service logs when it fails. Not a required check |
 | `release.yml` | Push of a `vX.Y.Z` tag | Checks the tag is on `main` and matches `package.json`, then publishes a GitHub release |
 
 The repository is published at https://github.com/msg-1/opspilot. `ci.yml` runs on every pull request and has passed on `develop`; `e2e.yml` has passed on `release/0.1.0` and, since Milestone 6, runs on every pull request. `release.yml` has never run, because no version tag has been pushed.
+
+### What CI verifies, and what it does not
+
+Reviewed on 15 November 2026 against the workflow files and the branch protection then in force. Every job uses the rule-based engine or a mocked provider; no job has a provider key, and `e2e.yml` asserts that before it runs anything.
+
+| Concern | Where | State |
+|---|---|---|
+| API tests (206) on PostgreSQL with pgvector and Redis | `ci.yml` → Database integration tests | Required on `develop` and `main` |
+| AI service tests (232), lint, and the 14 evaluation scenarios | `ci.yml` → AI service | Required |
+| Web lint, typecheck and tests (53) | `ci.yml` → Frontend | Required |
+| API lint and typecheck | `ci.yml` → Backend | Required |
+| Contract drift: generated frontend types, shared contracts in both languages, the Python export | `ci.yml` → Backend and AI service (`git diff --exit-code` after regenerating), and `contract.test.ts`, `api-contract.test.ts` | Required |
+| Builds, container images, the demo's build | `ci.yml` → Build verification | Required |
+| Dependency advisories | `npm audit --omit=dev --audit-level=high` in Build verification | Required. Covers shipped Node dependencies of the workspaces only |
+| Commit message rules and no tool attribution | `ci.yml` → Commit messages | Runs on pull requests; **not a required check** on either branch |
+| Browser journeys (12) on a stack built from nothing | `e2e.yml` → Browser end-to-end tests | Required on `main`; **not required on `develop`** |
+| Failure drills (11) | same job | as above |
+| Backup and restore drill (9 steps) | same job | as above |
+| Load test, reduced (`npm run loadtest -- --smoke`): fails if anything sent is not stored exactly once, a request fails, or the API is not ready afterwards. Asserts no timing | same job | as above |
+
+Not covered by any job:
+
+- **Python dependency advisories** (`pip-audit` or equivalent), **container image scanning**, **static security analysis**. The only automated security check is `npm audit`.
+- **Development dependencies and the `demo/` packages** are outside `npm audit --omit=dev`.
+- **Dependabot alerts** are not enabled on the repository. Secret scanning and push protection are.
+- **Performance regressions.** The full load test and `scripts/perf-probe.mjs` are run by hand; their numbers depend on the machine, so CI asserts none. A query that became ten times slower would pass CI.
+- **The demo end to end** (about 25 minutes) and **anything involving a model or github.com**.
+- **Post-merge end-to-end**: `e2e.yml` does not run on pushes to `develop`. A merge is covered by the run on its pull request, which, because the branch must be up to date, is the same tree.
+
+The one gap in enforcement: **the check named `Browser end-to-end tests` is missing from the required status checks of `develop`.** It carries the browser journeys, all three drills and the load-test smoke, so today a pull request into `develop` can be merged with any of them failing. Nothing was changed in branch protection; the steps are below.
 
 ## Branch protection
 
@@ -145,7 +175,7 @@ Applied to `main` and `develop` on GitHub (pull request required, required check
 
 ### Requiring the end-to-end check on `develop`
 
-State on 14 November 2026: `develop` requires five checks (Frontend, Backend, Database integration tests, AI service, Build verification). The end-to-end workflow runs on every pull request into `develop` and reports the check **`Browser end-to-end tests`**, but that check is **not required** there: a pull request can be merged while it is red or still running. `main` does require it.
+State on 15 November 2026 (read from the API, not changed): `develop` requires five checks (Frontend, Backend, Database integration tests, AI service, Build verification). The end-to-end workflow runs on every pull request into `develop` and reports the check **`Browser end-to-end tests`**, but that check is **not required** there: a pull request can be merged while it is red or still running. `main` does require it.
 
 To require it, the repository owner can either:
 
@@ -157,7 +187,7 @@ To require it, the repository owner can either:
     -f 'contexts[]=Browser end-to-end tests'
   ```
 
-It adds about eleven minutes to every pull request. The name of the job in `.github/workflows/e2e.yml` and the name in branch protection must stay identical: renaming one without the other leaves pull requests waiting for a check that never reports (this happened to `main` in Milestone 6 and was corrected in Milestone 7).
+It adds about twelve minutes to every pull request. The name of the job in `.github/workflows/e2e.yml` and the name in branch protection must stay identical: renaming one without the other leaves pull requests waiting for a check that never reports (this happened to `main` in Milestone 6 and was corrected in Milestone 7).
 - Do not allow force pushes; do not allow deletions
 
 With the GitHub CLI, after the remote exists (replace `OWNER/REPO`):

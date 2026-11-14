@@ -156,7 +156,7 @@ Things you should know are *not* there: single sign-on, IP allow-lists, customer
 ## Known limitations
 
 - **Verified on the rule-based engine only.** A language model was last run against this code several milestones ago, and not at all against the current report format. The rule-based engine correlates timing, services and keywords; it cannot read a diff or reason about a mechanism, and it says so in every report.
-- **One machine, no load testing.** One worker, one PostgreSQL, one Redis. How it behaves with large log volumes or many simultaneous investigations is not known. Backups are yours to schedule: the procedure, and what was tested of it, is in [backup-and-restore.md](backup-and-restore.md). There is no point-in-time recovery.
+- **One machine, measured only on a laptop.** One worker, one PostgreSQL, one Redis. What was measured, at modest volumes, is in [performance-investigation.md](performance-investigation.md); views that summarise logs slow down as the volume in their time window grows, and how it behaves with your volumes is not known until `npm run loadtest` is run on your machine. Backups are yours to schedule: `npm run backup` takes and checks them, and the procedure, including what to do when one fails, is in [backup-and-restore.md](backup-and-restore.md). There is no point-in-time recovery.
 - **Push only.** Nothing is collected for you (see Supported integrations).
 - **GitHub has not been run against github.com** with a real token.
 - **Health in the past is reconstructed** from alerts, incidents and metrics, not replayed. A service that was unhealthy with no alert rule covering it looks healthy in retrospect.

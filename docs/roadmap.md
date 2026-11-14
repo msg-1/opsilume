@@ -27,8 +27,8 @@ Status as of 14 November 2026. "Verified" means exercised by automated tests or 
 
 | Suite | Count | Scope |
 |---|---|---|
-| API integration (Vitest + Supertest) | 203 | HTTP → PostgreSQL, all modules; shared contracts; real API responses against the response contracts; trace continuity through BullMQ; failure handling (AI service, Redis and PostgreSQL outages, a killed worker, duplicate delivery, failing trace export) |
-| AI service (pytest, mocked model APIs) | 192 | Agent graph, guardrails, providers, embeddings, HTTP API, MCP; each rule of the rule-based engine; a snapshot of all its reports; shared contracts; tracing |
+| API integration (Vitest + Supertest) | 206 | HTTP → PostgreSQL, all modules; shared contracts; real API responses against the response contracts; trace continuity through BullMQ; failure handling (AI service, Redis and PostgreSQL outages, a killed worker, duplicate delivery, failing trace export) |
+| AI service (pytest, mocked model APIs) | 232 | Agent graph, guardrails, providers, embeddings, HTTP API, MCP; each rule of the rule-based engine; a snapshot of all its reports; shared contracts; tracing |
 | Web (Vitest + Testing Library) | 53 | API client, formatting, accessible components; the seven journeys as rendered pages (sign-in, incident, starting an investigation, report, evidence, approval, execution outcomes) |
 | End-to-end (Playwright), in CI on every pull request | 12 | Sign-in, incident, investigation, approval, RBAC, logs, knowledge, audit, mobile layout; what the page shows while the AI service or the queue is down, and after it returns |
 | Failure drills (`npm run drills`), in CI on every pull request | 11 | Real containers killed, stopped and started on a throwaway stack: what was recorded, and that an investigation completes afterwards |
@@ -117,6 +117,25 @@ Not done, and why:
 - **No point-in-time recovery, scheduled backup or replication.**
 - **No external security review.**
 
+## Milestone 9: pilot validation and operational readiness
+
+No new feature for users. The open findings of Milestone 8 were investigated, and what an operator needs was built or written down. The summary, claim by claim with the kind of evidence behind each, is [pilot-acceptance-report.md](pilot-acceptance-report.md).
+
+Done:
+
+- **Read latency during ingestion.** The two-second stall reported in Milestone 8 was an artefact of the load generator, not of the application; the explanation offered then was wrong. Three real inefficiencies in log queries were found from their plans and fixed (median read latency under ingestion down by about two thirds on the same data). [performance-investigation.md](performance-investigation.md).
+- **Operational backups.** `npm run backup` (create, verify, status) with verification before a file is named a backup, rotation of its own files only, and visible failure; the drill covers damaged backups, rotation and a failed backup. Scheduling, retention and what to do when a backup fails are documented.
+- **AI validation without a model.** A test matrix over the twelve areas a pilot depends on, a sanitising pass over report text, and a costed plan for a live run (proposed ceiling $1.00), not executed.
+- **CI.** The load test runs in reduced form on every pull request and fails if anything sent is not stored once; the review of what CI does and does not cover is in [git-workflow.md](git-workflow.md).
+
+Not done, and why:
+
+- **GitHub was not validated against github.com.** No test credential was supplied; credentials present on the machine were not used.
+- **No model was run** (not authorised).
+- **Aggregating views remain linear in the size of their time window** (log patterns, dashboard trend, integration coverage). The remedy is pre-aggregation, which was not attempted.
+- **Nothing was run outside a laptop and CI.** There is no pilot host.
+- **No review by a second person, and no external security review.**
+
 ## Needs the owner's input
 
 1. ~~An Anthropic API key~~ — configured; live verification done.
@@ -127,7 +146,9 @@ Not done, and why:
 6. **A budget for a live model run** of the eleven evaluation scenarios and of the demo environment, if you want the Milestone 4 changes validated with a model.
 7. **Clearance of the OPSILUME name** (trademark, domains) before it is used beyond a working name.
 8. **Whether `Browser end-to-end tests` becomes a required check on `develop`** (it already is on `main`). It takes about eleven minutes per pull request; the steps are in git-workflow.md.
-9. **A GitHub token and a model budget** before a pilot: the two integrations that have never been exercised for real.
+9. **A GitHub token and a model budget** before a pilot: the two integrations that have never been exercised for real. The model plan proposes a ceiling of $1.00 ([ai-validation.md](ai-validation.md)); the GitHub procedure needs a read-only token for one test repository ([github-validation.md](github-validation.md)).
+10. **A pilot host, an operator and a data agreement** (pilot-acceptance-report.md, section 12).
+11. **Whether to enable Dependabot alerts** on the repository, and whether to add Python and container scanning to CI (git-workflow.md).
 
 ## Next
 
