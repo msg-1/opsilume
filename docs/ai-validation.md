@@ -1,10 +1,29 @@
 # Validating the analysis with a live model
 
-**Status, 14 November 2026: no model has been called since the live verification of Milestone 3** ([claude-live-verification.md](claude-live-verification.md)). Since then the report format, the outcome assessment, the action-effect rules, the trace tool and the historical health tool have all changed. Everything about them is verified on the rule-based engine and with a scripted stand-in for a model. Whether a real model behaves well with them is not known.
+**Status, 15 November 2026: no model has been called since the live verification of Milestone 3** ([claude-live-verification.md](claude-live-verification.md)), and none was called in Milestone 9. Since Milestone 3 the report format, the outcome assessment, the action-effect rules, the trace tool and the historical health tool have all changed. Everything about them is verified on the rule-based engine and with a scripted stand-in for a model. Whether a real model behaves well with them is not known.
 
-This document says what was tested without a model, and exactly what a paid run would have to cover. A paid run needs the owner's explicit approval of a budget; none is made by any test, script or CI job in this repository.
+This document says what was tested without a model, and exactly what a paid run would have to cover, what it should cost and what it may cost at most. A paid run needs the owner's explicit approval of that budget; none is made by any test, script or CI job in this repository. **The plan below has not been executed.**
 
-## What is tested without a model
+## The twelve areas, and where each is tested without a model
+
+All of these run in CI with `AI_PROVIDER=deterministic` or a scripted model. AI suite: 232 tests; evaluations: 14 of 14 scenarios.
+
+| Area | What is asserted | Where |
+|---|---|---|
+| Evidence references | Every reference in every rule-based report (14 scenarios) resolves to evidence that was gathered. References a model gets right are kept; the others are removed and the claim demoted | `tests/test_validation_matrix.py`, `tests/test_agent.py` |
+| Historical evidence | Health comes from the record of the window, not from now; "nothing on record" is never read as healthy | `tests/test_historical_health.py`, three `historical_*` scenarios, `apps/api/tests/historical-health.test.ts` |
+| Dependency state | A dependency down then is named; one down only today is not; one with no record is reported as unknown | same |
+| Missing evidence | A source that could not be read is listed in the report even when a model does not mention it; confidence is limited | `test_validation_matrix.py`, scenario `tool_failures_degrade_gracefully` |
+| Contradictory evidence | Evidence against a hypothesis is kept when it is real and dropped when invented; the explanation that fits the evidence ranks above the one closer in time | `test_validation_matrix.py`, scenario `red_herring_closer_in_time` |
+| Confidence | Rule-based confidence stays within the ceiling for the evidence on all 14 scenarios; a healthy verdict blames nothing; a model's confidence above the ceiling is cut and a weak guess is not called likely | `test_validation_matrix.py`, `tests/test_eval_scoring.py`, `tests/test_reliability.py` |
+| Hallucination guardrails | Invented evidence ids, versions, commits, deployment ids and figures are removed or flagged; the outcome is recomputed from the evidence whatever the model says | `tests/test_agent.py`, `test_reliability.py`, `test_model_responses.py`, and independently `apps/api/src/modules/investigations/guardrails.ts` with its tests |
+| Output sanitisation | Control characters and credential-like strings are removed from every text field of a report, and the report says so; claims of certainty are reworded | `test_validation_matrix.py` (added in Milestone 9, with the sanitising pass in `app/guardrails.py`) |
+| Read-only tools | Every tool the analysis has is a `GET` under `/api/v1/tools`; none reaches remediation, settings or credentials. On the API side the tool token is refused everywhere else | `test_validation_matrix.py`, `apps/api/tests/safety.test.ts`, `hardening.test.ts` |
+| No unauthorised execution | A recommended action is a proposal with its effect stated. Nothing in the AI service can execute one | `test_validation_matrix.py`; API: approve and execute refuse API keys and the tool token (`safety.test.ts`) |
+| Human approval | A production change cannot run without approval by a signed-in person other than the proposer (two for the highest risk); the approval is bound to the action's content, counted again at execution, and lost when the action is edited | `apps/api/tests/safety.test.ts`, `reliability.test.ts` |
+| No model available | With no model configured, an unusable answer, a refusal, a timeout or exhausted credit, the rule-based engine writes the report and it is labelled as rule-based | `test_validation_matrix.py`, `test_model_responses.py`, `test_claude_provider.py` |
+
+## Tests that stand in for a model
 
 | What | How | Where |
 |---|---|---|
@@ -36,16 +55,61 @@ In order of importance for a pilot. Each line is a question, the scenario that a
 | 7 | What does a run cost and how long does it take? | All | Recorded per scenario: tokens, cache hits, calls, seconds, estimated cost |
 | 8 | How does it behave when the provider fails mid-run? | One scenario with `AI_REQUEST_TIMEOUT_SECONDS=5` | The investigation ends in a rule-based report labelled as such, not in a failure |
 
+### Provider configuration for the run
+
+| Setting | Value | Why |
+|---|---|---|
+| `AI_PROVIDER` | `anthropic` | The provider the product is built around |
+| `ANTHROPIC_MODEL` | `claude-haiku-5-5` | The default, and the only model run so far. Sonnet is a separate decision and a separate budget |
+| `ANTHROPIC_EFFORT` | `medium` | The default; what a pilot would run with |
+| `AI_MAX_TOKENS` | 8,000 per call | Default |
+| Per-investigation limits | $0.50 and 400,000 tokens | Default; a scenario that hits either stops and is reported |
+| Retries, timeout | 2, 120 s | Default (5 s for question 8 only) |
+| Data | The 14 synthetic scenarios, served by the fake tool API | Nothing of a customer's, and nothing from the demo organisation, is sent |
+| Key | Supplied by the owner in the environment of the one command | Not read from `.env` by the plan's commands, never printed or stored |
+
+### Expected use and the ceiling proposed
+
+Measured in the last live run (Milestone 3, same model and effort): one scenario took 6 requests and about 60,000 tokens (roughly 8,000 input, 9,000 output, 29,000 read from cache, 13,000 written to cache) and cost $0.006 to $0.013.
+
+| | Requests | Tokens | Estimated cost |
+|---|---|---|---|
+| 14 scenarios, once | about 85 | about 0.85 to 1.3 million, of which about 125,000 output | $0.10 to $0.20 |
+| Question 8 (one scenario with a 5 s timeout) | up to 18 with retries | under 0.1 million | under $0.02 |
+| One repeat of every scenario that fails, to tell a fault from variation | up to 85 | up to 1.3 million | up to $0.20 |
+| **Expected total** | | **about 1 to 2.7 million** | **$0.12 to $0.42** |
+| **Maximum proposed: `--max-cost 1.00`** | | | **$1.00** |
+
+The ceiling is enforced by the runner, not by this table: it stops before any call that could take the estimated spend past `--max-cost`, and one worst-case call on this model is $0.0115 (`--estimate`, 15 November 2026). The figures are estimates from list prices in `services/ai/app/config.py`; the Anthropic Console shows what was billed. The report format is larger than it was in Milestone 3, so expect the upper half of the range.
+
+### Comparison with the deterministic baseline
+
+The same 14 scenarios are scored by the same scorer for both engines, so the comparison is a table, per scenario and per criterion:
+
+| Compared | Baseline (rule-based, free, in CI) | Live model |
+|---|---|---|
+| Scenarios passing | 14 of 14 | To be recorded |
+| Outcome (HEALTHY / DEGRADED / INCIDENT / UNDETERMINED) | Computed from evidence | Computed the same way from the evidence the model gathered: a difference means the model gathered different evidence |
+| Cause and service | Pass on all that have one | To be recorded |
+| Citations, no invention | Pass by construction | The point of the run |
+| Confidence | Within ceilings | Value before and after the guardrails, per scenario |
+| Guardrail repairs | None needed | Count and kind per report: a model that needs many repairs is passing because of the guardrails |
+| Cost, time | $0, under a second | Recorded per scenario |
+
+**Acceptance for a pilot with the model enabled:** questions 1, 2, 4, 5 and 6 pass on every scenario they cover, on the first run or on the single repeat; no report contains a production change the scorer calls unsafe; total estimated spend within the ceiling. Anything less: the pilot runs with the rule-based engine, which is what has been validated, and the failures are recorded here.
+
+**What a pass would not mean:** accuracy on a customer's incidents. One or two samples per synthetic scenario are not a rate.
+
 ### How to run it, once approved
 
 ```bash
 cd services/ai
-uv run python -m app.evals.run --estimate                      # no call is made: prints the worst-case cost of the run
-ANTHROPIC_API_KEY=... uv run python -m app.evals.run --max-cost 2.00   # refuses to run against a model without --max-cost; saves each report under eval-runs/
+uv run python -m app.evals.run --estimate                      # no call is made: prints the worst-case cost of one call
+ANTHROPIC_API_KEY=... AI_PROVIDER=anthropic uv run python -m app.evals.run --max-cost 1.00   # refuses to run against a model without --max-cost; saves each report under eval-runs/
 uv run python -m app.evals.run --rescore eval-runs/<that directory>   # scores the saved reports again, free
 ```
 
-`--estimate` prints the ceiling before anything is spent; `--max-cost` stops the run before a call that could exceed it; `--only <scenario>` runs one. The Milestone 3 run of six scenarios on `claude-haiku-5-5` cost about $0.12 in total. Fourteen scenarios on the same model should be of the same order per scenario, but the report format is larger now, so take the figure from `--estimate`, not from this sentence.
+`--max-cost` stops the run before a call that could exceed it; `--only <scenario>` runs one. Record the results in [claude-live-verification.md](claude-live-verification.md), which holds the earlier runs and the total spent to date ($0.12).
 
 Saved reports contain only the synthetic scenario data. Keep them (`eval-runs/` is ignored by git): they are what later changes to guardrails and scoring are checked against without paying again.
 
