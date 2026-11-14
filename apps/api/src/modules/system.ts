@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { aiService } from '../integrations/aiService';
 import { env } from '../config/env';
 import { writeAudit } from '../lib/audit';
+import { purgeExpiredIdempotencyKeys } from '../lib/idempotency';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/auth';
@@ -76,6 +77,7 @@ export async function applyRetention() {
     metrics += (await prisma.metricSample.deleteMany({ where: { organizationId: org.id, timestamp: { lt: cutoff } } })).count;
   }
   await prisma.refreshToken.deleteMany({ where: { expiresAt: { lt: new Date() } } });
+  await purgeExpiredIdempotencyKeys();
   if (logs || metrics) logger.info({ logs, metrics }, 'retention applied');
   return { logs, metrics };
 }

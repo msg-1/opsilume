@@ -4,10 +4,10 @@ import { z } from 'zod';
 import { assertRange, csv, paged, paginate, paginationQuery, timeParam } from '../lib/http';
 import { fingerprint, parseLevel, redact, redactAttributes } from '../lib/logParsing';
 import { logsIngested } from '../lib/metrics';
+import { type Db, REPLAY_HEADER, withIdempotency } from '../lib/idempotency';
 import { describeRejection, noteAccepted, noteRejected } from '../lib/integrationState';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
-import { getSettings } from './organization';
 
 // ───────────────────────── Ingestion ─────────────────────────
 
@@ -30,11 +30,14 @@ export const ingestBody = z.object({
   logs: z.array(logItem).min(1).max(5000),
 });
 
-export async function ingestLogs(organizationId: string, body: z.infer<typeof ingestBody>) {
-  const settings = await getSettings(organizationId);
+export async function ingestLogs(organizationId: string, body: z.infer<typeof ingestBody>, db: Db = prisma) {
+  // Read through the same client as the writes. Inside an idempotent request that is the
+  // transaction's own connection: asking the pool for another one while duplicates of this
+  // request wait on it could leave none free, and nobody would finish.
+  const settings = (await db.organizationSettings.findUnique({ where: { organizationId }, select: { redactLogs: true } })) ?? { redactLogs: true };
   const refs = [...new Set(body.logs.map((l) => l.service ?? body.service).filter((s): s is string => !!s))];
   const services = refs.length
-    ? await prisma.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } })
+    ? await db.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } })
     : [];
   const byRef = new Map<string, string>();
   for (const s of services) {
@@ -63,7 +66,7 @@ export async function ingestLogs(organizationId: string, body: z.infer<typeof in
       attributes: (ref && !serviceId ? { ...(attributes as object | undefined), unresolvedService: ref } : attributes) as Prisma.InputJsonValue | undefined,
     };
   });
-  const result = await prisma.logEntry.createMany({ data: rows });
+  const result = await db.logEntry.createMany({ data: rows });
   logsIngested.inc(result.count);
   return { accepted: result.count, unknownServices: [...unknown] };
 }
@@ -279,8 +282,9 @@ logsRouter.get('/facets', requirePermission('read'), async (req, res) => {
 logsRouter.post('/', requirePermission('log:write'), async (req, res) => {
   const { organizationId } = authOf(req);
   try {
-    const result = await ingestLogs(organizationId, ingestBody.parse(req.body));
-    await noteAccepted(organizationId, 'logs', result.unknownServices);
+    const { value: result, replayed } = await withIdempotency(req, 'logs', (db) => ingestLogs(organizationId, ingestBody.parse(req.body), db));
+    if (replayed) res.setHeader(REPLAY_HEADER, 'true');
+    else await noteAccepted(organizationId, 'logs', result.unknownServices);
     res.status(202).json(result);
   } catch (err) {
     const why = describeRejection(err);

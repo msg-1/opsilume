@@ -4,18 +4,19 @@ import { z } from 'zod';
 import { audit } from '../lib/audit';
 import { badRequest, notFound } from '../lib/errors';
 import { csv, csvEnum, httpUrl, paged, paginate, paginationQuery, param, timeParam } from '../lib/http';
+import { type Db, REPLAY_HEADER, withIdempotency } from '../lib/idempotency';
 import { describeRejection, noteAccepted, noteRejected } from '../lib/integrationState';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/slug';
 import { authOf, requirePermission } from '../middleware/auth';
 
 /** Resolves a service by id or slug inside the caller's organisation. */
-export async function findService(organizationId: string, idOrSlug: string) {
-  return prisma.service.findFirst({ where: { organizationId, OR: [{ id: idOrSlug }, { slug: idOrSlug }] } });
+export async function findService(organizationId: string, idOrSlug: string, db: Db = prisma) {
+  return db.service.findFirst({ where: { organizationId, OR: [{ id: idOrSlug }, { slug: idOrSlug }] } });
 }
 
-export async function requireService(organizationId: string, idOrSlug: string) {
-  const service = await findService(organizationId, idOrSlug);
+export async function requireService(organizationId: string, idOrSlug: string, db: Db = prisma) {
+  const service = await findService(organizationId, idOrSlug, db);
   if (!service) throw notFound('Service');
   return service;
 }
@@ -232,19 +233,19 @@ export const deploymentBody = z.object({
   rollbackOf: z.string().trim().min(1).max(120).optional(),
 });
 
-export async function recordDeployment(organizationId: string, input: z.infer<typeof deploymentBody>, source: string) {
-  const service = await requireService(organizationId, input.service);
+export async function recordDeployment(organizationId: string, input: z.infer<typeof deploymentBody>, source: string, db: Db = prisma) {
+  const service = await requireService(organizationId, input.service, db);
   const { service: _s, rollbackOf, ...rest } = input;
   const startedAt = input.startedAt ?? new Date();
   const undone = rollbackOf
-    ? await prisma.deployment.findFirst({
+    ? await db.deployment.findFirst({
         where: { organizationId, serviceId: service.id, environment: input.environment, OR: [{ id: rollbackOf }, { version: rollbackOf }] },
         orderBy: { startedAt: 'desc' },
       })
     : null;
   if (rollbackOf && !undone) throw badRequest(`rollbackOf: no deployment of ${service.slug} in ${input.environment} has the id or version "${rollbackOf}"`);
-  if (undone) await prisma.deployment.update({ where: { id: undone.id }, data: { status: 'ROLLED_BACK' } });
-  return prisma.deployment.create({
+  if (undone) await db.deployment.update({ where: { id: undone.id }, data: { status: 'ROLLED_BACK' } });
+  return db.deployment.create({
     data: {
       ...rest,
       ...(undone ? { isRollback: true, rollbackOfId: undone.id } : {}),
@@ -291,19 +292,25 @@ deploymentsRouter.get('/', requirePermission('read'), async (req, res) => {
 
 deploymentsRouter.post('/', requirePermission('deployment:write'), async (req, res) => {
   const auth = authOf(req);
+  let replayed = false;
   const deployment = await (async () => {
     try {
-      const body = deploymentBody.parse(req.body);
-      const recorded = await recordDeployment(auth.organizationId, { ...body, deployedBy: body.deployedBy ?? (auth.kind === 'user' ? auth.label : null) }, auth.kind === 'api_key' ? 'api' : 'manual');
-      if (auth.kind === 'api_key') await noteAccepted(auth.organizationId, 'deployments');
-      return recorded;
+      const outcome = await withIdempotency(req, 'deployments', (db) => {
+        const body = deploymentBody.parse(req.body);
+        return recordDeployment(auth.organizationId, { ...body, deployedBy: body.deployedBy ?? (auth.kind === 'user' ? auth.label : null) }, auth.kind === 'api_key' ? 'api' : 'manual', db);
+      });
+      replayed = outcome.replayed;
+      if (auth.kind === 'api_key' && !replayed) await noteAccepted(auth.organizationId, 'deployments');
+      return outcome.value;
     } catch (err) {
       const why = auth.kind === 'api_key' ? describeRejection(err) : null;
       if (why) await noteRejected(auth.organizationId, 'deployments', why, unknownServiceOf(err, req.body));
       throw err;
     }
   })();
-  await audit(req, 'deployment.record', 'deployment', deployment.id, { service: deployment.service.slug, version: deployment.version, environment: deployment.environment });
+  // A repeated request recorded nothing new: it is answered, not audited a second time.
+  if (replayed) res.setHeader(REPLAY_HEADER, 'true');
+  else await audit(req, 'deployment.record', 'deployment', deployment.id, { service: deployment.service.slug, version: deployment.version, environment: deployment.environment });
   res.status(201).json(deployment);
 });
 
@@ -374,10 +381,10 @@ export const serviceEventBody = z.object({
   occurredAt: z.coerce.date().optional(),
 });
 
-export async function recordServiceEvent(organizationId: string, input: z.infer<typeof serviceEventBody>, source: string) {
-  const service = await requireService(organizationId, input.service);
+export async function recordServiceEvent(organizationId: string, input: z.infer<typeof serviceEventBody>, source: string, db: Db = prisma) {
+  const service = await requireService(organizationId, input.service, db);
   const { service: _s, metadata, ...rest } = input;
-  return prisma.serviceEvent.create({
+  return db.serviceEvent.create({
     data: { ...rest, metadata: metadata as Prisma.InputJsonValue | undefined, organizationId, serviceId: service.id, source },
     include: { service: { select: { id: true, name: true, slug: true } } },
   });
@@ -404,18 +411,23 @@ serviceEventsRouter.get('/', requirePermission('read'), async (req, res) => {
 
 serviceEventsRouter.post('/', requirePermission('event:write'), async (req, res) => {
   const auth = authOf(req);
+  let replayed = false;
   const event = await (async () => {
     try {
-      const body = serviceEventBody.parse(req.body);
-      const recorded = await recordServiceEvent(auth.organizationId, { ...body, actor: body.actor ?? auth.label }, auth.kind === 'api_key' ? 'api' : 'manual');
-      if (auth.kind === 'api_key') await noteAccepted(auth.organizationId, 'events');
-      return recorded;
+      const outcome = await withIdempotency(req, 'events', (db) => {
+        const body = serviceEventBody.parse(req.body);
+        return recordServiceEvent(auth.organizationId, { ...body, actor: body.actor ?? auth.label }, auth.kind === 'api_key' ? 'api' : 'manual', db);
+      });
+      replayed = outcome.replayed;
+      if (auth.kind === 'api_key' && !replayed) await noteAccepted(auth.organizationId, 'events');
+      return outcome.value;
     } catch (err) {
       const why = auth.kind === 'api_key' ? describeRejection(err) : null;
       if (why) await noteRejected(auth.organizationId, 'events', why, unknownServiceOf(err, req.body));
       throw err;
     }
   })();
-  await audit(req, 'service_event.record', 'service_event', event.id, { service: event.service.slug, type: event.type });
+  if (replayed) res.setHeader(REPLAY_HEADER, 'true');
+  else await audit(req, 'service_event.record', 'service_event', event.id, { service: event.service.slug, type: event.type });
   res.status(201).json(event);
 });

@@ -94,7 +94,6 @@ Not done, and why:
 - **No model was run** (no budget). The model's instructions and the `get_service` tool changed in this milestone and are untested with a model.
 - **GitHub against github.com** still needs a real token.
 - **No pull-based collectors.** A team whose logs and metrics live in a vendor needs a forwarder; none is provided.
-- **Ingestion has no idempotency key.** A retried batch is stored twice.
 - **`Browser end-to-end tests` is still not a required check on `develop`.** The steps are in [git-workflow.md](git-workflow.md).
 
 ## Needs the owner's input

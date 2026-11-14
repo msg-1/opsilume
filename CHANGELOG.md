@@ -5,6 +5,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 ## [Unreleased]
 
 ### Added
+- Idempotent ingestion: `POST /logs`, `/monitoring/metrics`, `/deployments` and `/service-events` accept an `Idempotency-Key` header. A repeated request with the same key and body stores nothing and is answered as the first was (`Idempotent-Replayed: true`); the same key with another body is refused with 422; a failed request records no key. Keys are per organisation and endpoint and are kept for 24 hours (`INGEST_IDEMPOTENCY_TTL_HOURS`). Requests without the header behave as before.
 - A report to share: `/investigations/:id/report` shows an investigation as a document (conclusion, most probable cause with the evidence for and against it, established facts, deployments and changes, what is not known, recommended next steps with each action's effect, risk and approvals, and the evidence referred to). Facts, hypotheses and recommendations are labelled as such. It prints, and saves as a PDF, from the browser; no document library was added.
 - `npm run org:remove -- <slug>`: shows what one organisation holds and, with `--confirm <slug>`, removes it in one transaction that rolls back unless every other organisation is unchanged.
 - docs/customer-pilot-guide.md and docs/pilot-readiness-gap-analysis.md; docs/manual-test-walkthrough.md.

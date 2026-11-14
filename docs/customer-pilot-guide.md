@@ -75,6 +75,8 @@ curl -X POST https://opsilume.example.com/api/v1/logs \
   -d '{"service":"checkout-service","logs":[{"level":"error","message":"timeout acquiring connection from pool"}]}'
 ```
 
+If a request times out or fails with a server error, send it again with the same `Idempotency-Key` header (any unique string of 8 to 128 characters per batch): a batch that was already stored is not stored twice. Without the header, a repeated batch is stored again. Details are in [api-documentation.md](api-documentation.md).
+
 Logs and metrics matter most: without either, an investigation has nothing to judge by and will say so. Deployments are what make "what changed?" answerable.
 
 ### 5. Check that it arrived, and that it belongs to your services
@@ -149,7 +151,7 @@ What is true of the software as written; how you run it is up to you.
 - **Audit log.** Sign-ins, changes, approvals, executions, integration checks and every query the analysis makes are recorded with who and when.
 - **Rate limits.** 1,200 requests a minute per client address; sign-in and registration are limited more tightly.
 
-Things you should know are *not* there: single sign-on, IP allow-lists, customer-managed keys, per-key rate limits, an idempotency key on ingestion (a batch that is retried is stored twice), and any external audit or penetration test.
+Things you should know are *not* there: single sign-on, IP allow-lists, customer-managed keys, per-key rate limits, and any external audit or penetration test.
 
 ## Known limitations
 
