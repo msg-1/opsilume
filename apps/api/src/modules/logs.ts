@@ -8,7 +8,6 @@ import { type Db, REPLAY_HEADER, withIdempotency } from '../lib/idempotency';
 import { describeRejection, noteAccepted, noteRejected } from '../lib/integrationState';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
-import { getSettings } from './organization';
 
 // ───────────────────────── Ingestion ─────────────────────────
 
@@ -32,10 +31,13 @@ export const ingestBody = z.object({
 });
 
 export async function ingestLogs(organizationId: string, body: z.infer<typeof ingestBody>, db: Db = prisma) {
-  const settings = await getSettings(organizationId);
+  // Read through the same client as the writes. Inside an idempotent request that is the
+  // transaction's own connection: asking the pool for another one while duplicates of this
+  // request wait on it could leave none free, and nobody would finish.
+  const settings = (await db.organizationSettings.findUnique({ where: { organizationId }, select: { redactLogs: true } })) ?? { redactLogs: true };
   const refs = [...new Set(body.logs.map((l) => l.service ?? body.service).filter((s): s is string => !!s))];
   const services = refs.length
-    ? await prisma.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } })
+    ? await db.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } })
     : [];
   const byRef = new Map<string, string>();
   for (const s of services) {

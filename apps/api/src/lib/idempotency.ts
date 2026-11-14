@@ -22,6 +22,9 @@ import { prisma } from './prisma';
  *     and makes the other wait for it; the second then finds the stored response.
  *   - A request that fails (validation, unknown service, an outage) records no key, so the
  *     corrected or repeated request is processed normally.
+ *   - `store` must use only the client it is given, for reads as well as writes. Duplicates of
+ *     a request wait on the key while holding a pooled connection each; if the request that
+ *     holds the key asked the pool for a second connection, there might be none left.
  *   - Keys belong to one organisation and one endpoint, and are forgotten after
  *     INGEST_IDEMPOTENCY_TTL_HOURS (24). A retry after that is a new request.
  */
@@ -73,6 +76,9 @@ export async function withIdempotency<T>(req: Request, scope: IngestionScope, st
       );
       return { value, replayed: false };
     } catch (err) {
+      // The transaction could not start or finish in time (the pool is busy, the database slow).
+      // Nothing was stored, and saying so lets the client do what the key is for: try again.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2028') throw new AppError(503, 'service_unavailable', 'The request could not be stored in time. Nothing was stored; repeat it with the same Idempotency-Key.');
       if (!isUniqueViolation(err)) throw err;
       const earlier = await prisma.ingestionRequest.findUnique({ where: id });
       // Gone again (the other request failed and rolled back) or expired in the meantime: start over.

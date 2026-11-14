@@ -11,12 +11,12 @@ import { slugify } from '../lib/slug';
 import { authOf, requirePermission } from '../middleware/auth';
 
 /** Resolves a service by id or slug inside the caller's organisation. */
-export async function findService(organizationId: string, idOrSlug: string) {
-  return prisma.service.findFirst({ where: { organizationId, OR: [{ id: idOrSlug }, { slug: idOrSlug }] } });
+export async function findService(organizationId: string, idOrSlug: string, db: Db = prisma) {
+  return db.service.findFirst({ where: { organizationId, OR: [{ id: idOrSlug }, { slug: idOrSlug }] } });
 }
 
-export async function requireService(organizationId: string, idOrSlug: string) {
-  const service = await findService(organizationId, idOrSlug);
+export async function requireService(organizationId: string, idOrSlug: string, db: Db = prisma) {
+  const service = await findService(organizationId, idOrSlug, db);
   if (!service) throw notFound('Service');
   return service;
 }
@@ -234,11 +234,11 @@ export const deploymentBody = z.object({
 });
 
 export async function recordDeployment(organizationId: string, input: z.infer<typeof deploymentBody>, source: string, db: Db = prisma) {
-  const service = await requireService(organizationId, input.service);
+  const service = await requireService(organizationId, input.service, db);
   const { service: _s, rollbackOf, ...rest } = input;
   const startedAt = input.startedAt ?? new Date();
   const undone = rollbackOf
-    ? await prisma.deployment.findFirst({
+    ? await db.deployment.findFirst({
         where: { organizationId, serviceId: service.id, environment: input.environment, OR: [{ id: rollbackOf }, { version: rollbackOf }] },
         orderBy: { startedAt: 'desc' },
       })
@@ -382,7 +382,7 @@ export const serviceEventBody = z.object({
 });
 
 export async function recordServiceEvent(organizationId: string, input: z.infer<typeof serviceEventBody>, source: string, db: Db = prisma) {
-  const service = await requireService(organizationId, input.service);
+  const service = await requireService(organizationId, input.service, db);
   const { service: _s, metadata, ...rest } = input;
   return db.serviceEvent.create({
     data: { ...rest, metadata: metadata as Prisma.InputJsonValue | undefined, organizationId, serviceId: service.id, source },

@@ -44,7 +44,7 @@ export const metricsBody = z.object({
 
 export async function ingestMetrics(organizationId: string, body: z.infer<typeof metricsBody>, db: Db = prisma) {
   const refs = [...new Set(body.samples.map((s) => s.service))];
-  const services = await prisma.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } });
+  const services = await db.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } });
   const byRef = new Map<string, string>();
   for (const s of services) {
     byRef.set(s.id, s.id);

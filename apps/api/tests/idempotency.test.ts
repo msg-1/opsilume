@@ -90,8 +90,12 @@ describe('ingestion with an Idempotency-Key', () => {
   it('stores once when the same request arrives many times at the same moment', async () => {
     const { org, key } = await setup();
     const batch = { service: 'checkout', logs: Array.from({ length: 200 }, (_, i) => ({ level: 'info', message: `line ${i}` })) };
-    const results = await Promise.all(Array.from({ length: 12 }, () => post(key, 'logs', batch, 'concurrent-0001')));
-    expect(results.map((r) => r.status)).toEqual(Array(12).fill(202));
+    // More duplicates than the database pool has connections (it has two per CPU, plus one). On
+    // a small machine the first version of this ran out: the request holding the key needed a
+    // second connection that the waiting duplicates had taken.
+    const copies = 48;
+    const results = await Promise.all(Array.from({ length: copies }, () => post(key, 'logs', batch, 'concurrent-0001')));
+    expect(results.map((r) => r.status)).toEqual(Array(copies).fill(202));
     expect(results.filter((r) => r.headers['idempotent-replayed'] !== 'true')).toHaveLength(1);
     expect(new Set(results.map((r) => JSON.stringify(r.body))).size).toBe(1);
     expect(await stored(org)).toMatchObject({ logs: 200, keys: 1 });
