@@ -20,7 +20,8 @@
     "simulate": "tsx --env-file-if-exists=../../.env scripts/simulate.ts",
     "contracts:api": "tsx scripts/export-api-contract.ts",
     "demo:data": "tsx --env-file-if-exists=../../.env scripts/demo-data.ts",
-    "org:remove": "tsx --env-file-if-exists=../../.env scripts/remove-organization.ts"
+    "org:remove": "tsx --env-file-if-exists=../../.env scripts/remove-organization.ts",
+    "github:validate": "tsx scripts/github-validate.ts"
   },
   "dependencies": {
     "@opentelemetry/api": "^1.10.0",
