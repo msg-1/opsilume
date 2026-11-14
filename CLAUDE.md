@@ -24,6 +24,7 @@ npm run test:e2e            # needs the stack running and a fresh `npm run db:se
 npm run isolated:up && npm run isolated:e2e && npm run drills   # throwaway stack on its own ports: browser tests, then failure drills (what CI's e2e.yml runs)
 npm run loadtest            # modest load test on the isolated stack; measurements, not a capacity claim (docs/pilot-acceptance-report.md)
 npm run drill:backup        # on the isolated stack: pg_dump, restore beside the original, compare, run the app on the copy (docs/backup-and-restore.md)
+npm run backup -- create --project <compose project> --dir <dir> [--keep N] [--verify-restore]   # operator backup; also `verify`, `status`. Never point it at the default project from a test
 npm run isolated:down       # removes that stack and its volume; never touches the default project
 npm run org:remove -- <slug>            # dry run; add --confirm <slug> to remove one organisation (docs/customer-pilot-guide.md)
 npm run lint && npm run typecheck
