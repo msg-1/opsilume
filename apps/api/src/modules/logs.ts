@@ -111,7 +111,9 @@ function sqlWhere(f: LogFilter): Prisma.Sql {
     Prisma.sql`l."timestamp" BETWEEN ${f.from} AND ${f.to}`,
   ];
   if (f.serviceIds) parts.push(Prisma.sql`l."serviceId" = ANY(${f.serviceIds})`);
-  if (f.levels?.length) parts.push(Prisma.sql`l."level"::text = ANY(${f.levels})`);
+  // Compared as the enum it is. Casting the column to text, as this used to, keeps the planner
+  // from using the (organisation, level, timestamp) index.
+  if (f.levels?.length) parts.push(Prisma.sql`l."level" = ANY(${f.levels}::"LogLevel"[])`);
   if (f.q) parts.push(Prisma.sql`l."message" ILIKE ${`%${f.q.replace(/[%_\\]/g, '\\$&')}%`}`);
   if (f.environment) parts.push(Prisma.sql`l."environment" = ${f.environment}`);
   if (f.traceId) parts.push(Prisma.sql`l."traceId" = ${f.traceId}`);
@@ -119,18 +121,32 @@ function sqlWhere(f: LogFilter): Prisma.Sql {
   return Prisma.join(parts, ' AND ');
 }
 
-export async function searchLogs(f: LogFilter, page: { page: number; pageSize: number }, order: 'asc' | 'desc' = 'desc') {
+/** How many matching lines the log explorer counts exactly. Beyond this it says "at least". */
+export const LOG_COUNT_CAP = 10_000;
+
+/**
+ * A page of log lines and how many match. Counting every match means reading every match: on
+ * a window holding hundreds of thousands of lines that costs far more than the page itself,
+ * on every page view. With `countCap`, counting stops there and `totalIsLowerBound` says so.
+ * Without it the count is exact; the investigation tools use that, because the number they
+ * get is cited as evidence.
+ */
+export async function searchLogs(f: LogFilter, page: { page: number; pageSize: number }, order: 'asc' | 'desc' = 'desc', options: { countCap?: number } = {}) {
   const where = whereOf(f);
-  const [rows, total] = await Promise.all([
+  const cap = options.countCap;
+  const [rows, counted] = await Promise.all([
     prisma.logEntry.findMany({
       where,
       orderBy: { timestamp: order },
       ...paginate(page),
       include: { service: { select: { id: true, name: true, slug: true } } },
     }),
-    prisma.logEntry.count({ where }),
+    cap
+      ? prisma.$queryRaw<{ count: bigint }[]>`SELECT count(*) AS count FROM (SELECT 1 FROM "LogEntry" l WHERE ${sqlWhere(f)} LIMIT ${cap + 1}) matched`.then((r) => Number(r[0]?.count ?? 0))
+      : prisma.logEntry.count({ where }),
   ]);
-  return { rows, total };
+  const totalIsLowerBound = !!cap && counted > cap;
+  return { rows, total: totalIsLowerBound ? cap! : counted, totalIsLowerBound };
 }
 
 export async function logHistogram(f: LogFilter, targetBuckets = 60) {
@@ -167,12 +183,19 @@ export interface LogPattern {
 
 export async function logPatterns(f: LogFilter, limit = 25): Promise<LogPattern[]> {
   const rows = await prisma.$queryRaw<(Omit<LogPattern, 'count'> & { count: bigint })[]>`
-    SELECT l."fingerprint", min(l."message") AS sample, max(l."level"::text) AS level, l."serviceId",
-           s."name" AS "serviceName", s."slug" AS "serviceSlug", count(*) AS count, min(l."timestamp") AS "firstSeen", max(l."timestamp") AS "lastSeen"
-    FROM "LogEntry" l LEFT JOIN "Service" s ON s."id" = l."serviceId"
-    WHERE ${sqlWhere(f)}
-    GROUP BY l."fingerprint", l."serviceId", s."name", s."slug"
-    ORDER BY count DESC LIMIT ${limit}`;
+    SELECT p.*, s."name" AS "serviceName", s."slug" AS "serviceSlug"
+    FROM (
+      -- Grouped by what identifies a pattern, and only then joined to the service. Grouping by
+      -- the service's name and slug as well made the database sort every line in the window on
+      -- four keys, spilling to disk; a service id already determines its name and slug.
+      SELECT l."fingerprint", min(l."message") AS sample, max(l."level"::text) AS level, l."serviceId",
+             count(*) AS count, min(l."timestamp") AS "firstSeen", max(l."timestamp") AS "lastSeen"
+      FROM "LogEntry" l
+      WHERE ${sqlWhere(f)}
+      GROUP BY l."fingerprint", l."serviceId"
+      ORDER BY count DESC, l."fingerprint" LIMIT ${limit}
+    ) p LEFT JOIN "Service" s ON s."id" = p."serviceId"
+    ORDER BY p.count DESC, p."fingerprint"`;
   return rows.map((r) => ({ ...r, count: Number(r.count) }));
 }
 
@@ -249,8 +272,9 @@ logsRouter.get('/', requirePermission('read'), async (req, res) => {
   const { organizationId } = authOf(req);
   const q = filterQuery.merge(paginationQuery).extend({ pageSize: z.coerce.number().int().min(1).max(500).default(100), order: z.enum(['asc', 'desc']).default('desc') }).parse(req.query);
   const filter = await filterOf(organizationId, q);
-  const { rows, total } = await searchLogs(filter, q, q.order);
-  res.json({ ...paged(rows, total, q), range: { from: filter.from, to: filter.to } });
+  const { rows, total, totalIsLowerBound } = await searchLogs(filter, q, q.order, { countCap: LOG_COUNT_CAP });
+  const page = paged(rows, total, q);
+  res.json({ ...page, meta: { ...page.meta, totalIsLowerBound }, range: { from: filter.from, to: filter.to } });
 });
 
 logsRouter.get('/histogram', requirePermission('read'), async (req, res) => {

@@ -8,7 +8,7 @@
 // It never addresses the default Compose project.
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
-import { PROJECT, URLS, compose } from './isolated-stack.mjs';
+import { PROJECT, URLS, compose, composeAsync, run } from './isolated-stack.mjs';
 
 if (PROJECT === 'opspilot') throw new Error('Refusing to run against the default Compose project.');
 
@@ -61,7 +61,7 @@ function summarise(samples) {
   const ms = samples.map((s) => s.ms).sort((a, b) => a - b);
   const byStatus = {};
   for (const s of samples) byStatus[s.status] = (byStatus[s.status] ?? 0) + 1;
-  return { requests: samples.length, statuses: byStatus, p50: Math.round(quantile(ms, 0.5)), p95: Math.round(quantile(ms, 0.95)), max: Math.round(ms.at(-1)) };
+  return { requests: samples.length, statuses: byStatus, p50: Math.round(quantile(ms, 0.5)), p95: Math.round(quantile(ms, 0.95)), p99: Math.round(quantile(ms, 0.99)), max: Math.round(ms.at(-1)) };
 }
 /** Runs `clients` loops side by side, each doing `requestsEach` calls one after another. */
 async function concurrently(clients, requestsEach, make) {
@@ -74,6 +74,12 @@ async function concurrently(clients, requestsEach, make) {
   return { ...summarise(samples), seconds: (performance.now() - began) / 1000, samples };
 }
 
+// The Async forms are for anything that runs while requests are being timed. A synchronous
+// child process freezes this process; responses that arrive meanwhile wait unread and the
+// wait is counted as latency. The first version of this script did exactly that with
+// `docker stats` (about two seconds a call) and reported it as a two-second read stall.
+const psqlAsync = async (query) => (await composeAsync(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-At', '-c', query])).stdout.trim();
+const redisAsync = async (...args) => (await composeAsync(['exec', '-T', 'redis', 'redis-cli', ...args])).stdout.trim();
 const psql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-At', '-c', query], { capture: true }).stdout.trim();
 const redis = (...args) => compose(['exec', '-T', 'redis', 'redis-cli', ...args], { capture: true }).stdout.trim();
 
@@ -83,10 +89,10 @@ function monitor() {
   let running = true;
   const loop = (async () => {
     while (running) {
-      const [total, active] = psql(`SELECT count(*), count(*) FILTER (WHERE state = 'active') FROM pg_stat_activity WHERE datname = 'opspilot'`).split('|').map(Number);
+      const [total, active] = (await psqlAsync(`SELECT count(*), count(*) FILTER (WHERE state = 'active') FROM pg_stat_activity WHERE datname = 'opspilot'`)).split('|').map(Number);
       seen.connections = Math.max(seen.connections, total || 0);
       seen.active = Math.max(seen.active, active || 0);
-      const stats = spawnSync('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'], { encoding: 'utf8' }).stdout;
+      const stats = (await run('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'])).stdout;
       for (const line of stats.split('\n')) {
         const [name, cpu, mem] = line.split('\t');
         if (!name?.startsWith(`${PROJECT}-`)) continue;
@@ -190,7 +196,7 @@ await pause(BETWEEN_PHASES_MS);
   });
   await writing;
   report.results.reads = { ...r, samples: undefined, byPath: Object.fromEntries(Object.entries(byPath).map(([p, s]) => [p, summarise(s)])), observed: await stop() };
-  log(`Reads during writes: ${r.requests} requests from ${W.reads.clients} clients; p50 ${r.p50} ms, p95 ${r.p95} ms, max ${r.max} ms; statuses ${JSON.stringify(r.statuses)}`);
+  log(`Reads during writes: ${r.requests} requests from ${W.reads.clients} clients; p50 ${r.p50} ms, p95 ${r.p95} ms, p99 ${r.p99} ms, max ${r.max} ms; statuses ${JSON.stringify(r.statuses)}`);
   for (const [p, s] of Object.entries(report.results.reads.byPath)) log(`  ${p.padEnd(34)} p50 ${String(s.p50).padStart(5)} ms   p95 ${String(s.p95).padStart(5)} ms   max ${String(s.max).padStart(5)} ms`);
 }
 await pause(BETWEEN_PHASES_MS);
@@ -222,7 +228,7 @@ await pause(BETWEEN_PHASES_MS);
       do {
         await pause(400);
         inv = (await call('GET', `/investigations/${started.data.id}`)).data;
-        const waiting = Number(redis('llen', 'bull:investigation:wait')) || 0;
+        const waiting = Number(await redisAsync('llen', 'bull:investigation:wait')) || 0;
         queueMax = Math.max(queueMax, waiting);
       } while (inv.status === 'QUEUED' || inv.status === 'RUNNING');
       durations.push(performance.now() - t0);

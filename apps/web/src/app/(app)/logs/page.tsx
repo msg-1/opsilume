@@ -141,7 +141,7 @@ function LogsPage() {
           ) : (
             <>
               <ul>{logs.data.data.map((l) => <LogRow key={l.id} log={l} onFilter={update} />)}</ul>
-              <div className="border-t border-line"><Pagination page={logs.data.meta.page} totalPages={logs.data.meta.totalPages} total={logs.data.meta.total} onPage={setPage} /></div>
+              <div className="border-t border-line"><Pagination page={logs.data.meta.page} totalPages={logs.data.meta.totalPages} total={logs.data.meta.total} lowerBound={logs.data.meta.totalIsLowerBound} onPage={setPage} /></div>
             </>
           )
         ) : tab === 'patterns' ? (

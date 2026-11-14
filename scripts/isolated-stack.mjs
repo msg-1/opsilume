@@ -10,7 +10,7 @@
 //   node scripts/isolated-stack.mjs down      stop and remove it, including its volume
 //   node scripts/isolated-stack.mjs status
 //   node scripts/isolated-stack.mjs compose <args…>   any other docker compose command against it
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -84,6 +84,30 @@ export function compose(args, { capture = false, env = {} } = {}) {
     maxBuffer: 64 * 1024 * 1024,
   });
   return { status: res.status ?? 1, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+}
+
+/**
+ * Runs a command without blocking this process, and resolves with its output. Anything that
+ * measures latency must use this (and `composeAsync`) for whatever it runs while requests are
+ * in flight: a synchronous child process freezes the event loop, the responses that arrive
+ * meanwhile are not read until it returns, and the wait is counted as server latency.
+ */
+export function run(command, args, { cwd = ROOT, env = process.env } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => (stdout += c));
+    child.stderr.on('data', (c) => (stderr += c));
+    child.on('error', () => resolve({ status: 1, stdout, stderr }));
+    child.on('exit', (status) => resolve({ status: status ?? 1, stdout, stderr }));
+  });
+}
+
+/** `docker compose` against the isolated project, without blocking. */
+export function composeAsync(args) {
+  ensureEnv();
+  return run('docker', ['compose', '-p', PROJECT, '--env-file', ENV_FILE, '--profile', 'app', ...args], { env: cleanEnv() });
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
