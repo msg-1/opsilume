@@ -56,6 +56,24 @@ API key scopes: `ingest:logs`, `ingest:deployments`, `ingest:events`, `ingest:me
 | `GET/POST /deployments`, `GET/PATCH /deployments/:id` | Record and browse deployments. Detail includes the linked commit, pull requests, previous deployment and incidents that began within 6 hours. `rollbackOf` (the id or version being rolled back) records a deployment as a rollback and marks the other as `ROLLED_BACK`, so that version is never offered as a rollback target |
 | `GET/POST /service-events` | Config changes, feature flags, scaling, restarts, maintenance |
 
+### Retrying ingestion safely — `Idempotency-Key`
+
+The four ingestion endpoints (`POST /logs`, `POST /monitoring/metrics`, `POST /deployments`, `POST /service-events`) accept an optional `Idempotency-Key` header: 8 to 128 characters from letters, digits, `.`, `_`, `:` and `-`. Generate one per request (a UUID is fine) and send the **same** key whenever you repeat that request.
+
+| Situation | Result |
+|---|---|
+| No header | The request is stored. Two requests with the same content are stored twice: OPSILUME never guesses that two batches are one |
+| First request with a key | Stored. The key is recorded in the same database transaction as the data, so the two cannot disagree |
+| Same key, same body, again | Nothing is stored. The answer is the first request's, with the header `Idempotent-Replayed: true` |
+| Same key, same body, at the same moment | One is stored; the others wait for it and get its answer |
+| Same key, different body | `422 idempotency_key_reused`. Nothing is stored. Key order and whitespace in the JSON do not count as a difference |
+| The request failed (400, 404, 5xx, no answer and nothing stored) | No key is recorded. Repeat or correct the request with the same key |
+| Same key after 24 hours (`INGEST_IDEMPOTENCY_TTL_HOURS`) | Treated as a new request |
+
+Keys are separate per organisation and per endpoint. Expired keys are removed hourly.
+
+**How a client should retry.** Send the batch with a new key. On a timeout, a dropped connection, `429` or any `5xx`, send the same batch again with the same key, backing off (for example 1 s, 2 s, 4 s, up to a minute). On `400`, `404` or `422` do not retry unchanged: the request itself is wrong. Do not reuse a key for a different batch, and do not generate a new key for a retry, which would store the batch twice.
+
 ### Logs — `/logs`
 | Method and path | Description |
 |---|---|
