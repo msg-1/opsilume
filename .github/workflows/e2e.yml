@@ -50,6 +50,10 @@ jobs:
         run: npm run isolated:e2e
       - name: Failure drills
         run: npm run drills
+      # Back up the database, restore it beside the original, compare them, and run the
+      # application against the restored copy (docs/backup-and-restore.md).
+      - name: Backup and restore drill
+        run: npm run drill:backup
       - name: Collect service logs
         if: failure()
         run: node scripts/isolated-stack.mjs compose logs --no-color --tail 400 > service-logs.txt 2>&1 || true
