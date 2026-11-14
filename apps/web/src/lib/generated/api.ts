@@ -16,6 +16,8 @@ export interface PageMeta {
   pageSize: number;
   total: number;
   totalPages: number;
+  /** True when counting stopped at a limit: there are at least `total` results (log lines only) */
+  totalIsLowerBound?: boolean;
 }
 
 export interface Session {
@@ -195,6 +197,8 @@ export interface IncidentList {
     pageSize: number;
     total: number;
     totalPages: number;
+    /** True when counting stopped at a limit: there are at least `total` results (log lines only) */
+    totalIsLowerBound?: boolean;
   };
   /** How many there are in each status, over the whole list rather than the page */
   statusCounts: Record<string, number>;
@@ -852,6 +856,8 @@ export interface RemediationList {
     pageSize: number;
     total: number;
     totalPages: number;
+    /** True when counting stopped at a limit: there are at least `total` results (log lines only) */
+    totalIsLowerBound?: boolean;
   };
   /** How many there are in each status, over the whole list rather than the page */
   statusCounts: Record<string, number>;

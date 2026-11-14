@@ -51,6 +51,10 @@
         },
         "totalPages": {
           "type": "number"
+        },
+        "totalIsLowerBound": {
+          "description": "True when counting stopped at a limit: there are at least `total` results (log lines only)",
+          "type": "boolean"
         }
       },
       "required": [
@@ -1028,6 +1032,10 @@
             },
             "totalPages": {
               "type": "number"
+            },
+            "totalIsLowerBound": {
+              "description": "True when counting stopped at a limit: there are at least `total` results (log lines only)",
+              "type": "boolean"
             }
           },
           "required": [
@@ -4970,6 +4978,10 @@
             },
             "totalPages": {
               "type": "number"
+            },
+            "totalIsLowerBound": {
+              "description": "True when counting stopped at a limit: there are at least `total` results (log lines only)",
+              "type": "boolean"
             }
           },
           "required": [

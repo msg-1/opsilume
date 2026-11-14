@@ -18,7 +18,13 @@ const json = z.record(z.string(), z.unknown());
 
 export const Ref = z.object({ id: z.string(), name: z.string() });
 export const ServiceRef = Ref.extend({ slug: z.string() });
-export const PageMeta = z.object({ page: z.number(), pageSize: z.number(), total: z.number(), totalPages: z.number() });
+export const PageMeta = z.object({
+  page: z.number(),
+  pageSize: z.number(),
+  total: z.number(),
+  totalPages: z.number(),
+  totalIsLowerBound: z.boolean().optional().describe('True when counting stopped at a limit: there are at least `total` results (log lines only)'),
+});
 
 export const Session = z.object({
   user: z.object({ id: z.string(), email: z.string(), name: z.string(), title: z.string().nullable() }),

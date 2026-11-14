@@ -241,12 +241,12 @@ export function Table({ head, children, className }: { head: ReactNode; children
   );
 }
 
-export function Pagination({ page, totalPages, total, onPage }: { page: number; totalPages: number; total: number; onPage: (p: number) => void }) {
+export function Pagination({ page, totalPages, total, onPage, lowerBound }: { page: number; totalPages: number; total: number; onPage: (p: number) => void; /** The total is "at least this many": counting stopped at a limit. */ lowerBound?: boolean }) {
   if (totalPages <= 1) return <div className="px-4 py-2.5 text-[12px] text-ink-3">{total} result{total === 1 ? '' : 's'}</div>;
   return (
     <div className="flex items-center justify-between px-4 py-2.5 text-[13px] text-ink-2">
       <span>
-        Page {page} of {totalPages} · {total} results
+        Page {page} of {totalPages} · {lowerBound ? `more than ${total.toLocaleString('en-GB')} results; narrow the time range or add a filter to reach the rest` : `${total} results`}
       </span>
       <div className="flex gap-1">
         <Button size="sm" variant="ghost" disabled={page <= 1} onClick={() => onPage(page - 1)} icon={<ChevronLeft className="size-3.5" aria-hidden />}>
