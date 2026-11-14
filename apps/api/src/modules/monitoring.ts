@@ -6,6 +6,7 @@ import { notFound } from '../lib/errors';
 import { assertRange, paged, paginate, paginationQuery, param, timeParam } from '../lib/http';
 import { logger } from '../lib/logger';
 import { notifyRoles } from '../lib/notify';
+import { type Db, REPLAY_HEADER, withIdempotency } from '../lib/idempotency';
 import { describeRejection, noteAccepted, noteRejected } from '../lib/integrationState';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
@@ -41,7 +42,7 @@ export const metricsBody = z.object({
     .max(5000),
 });
 
-export async function ingestMetrics(organizationId: string, body: z.infer<typeof metricsBody>) {
+export async function ingestMetrics(organizationId: string, body: z.infer<typeof metricsBody>, db: Db = prisma) {
   const refs = [...new Set(body.samples.map((s) => s.service))];
   const services = await prisma.service.findMany({ where: { organizationId, OR: [{ id: { in: refs } }, { slug: { in: refs } }] }, select: { id: true, slug: true } });
   const byRef = new Map<string, string>();
@@ -59,7 +60,7 @@ export async function ingestMetrics(organizationId: string, body: z.infer<typeof
     }
     return [{ organizationId, serviceId, metric: s.metric, value: s.value, timestamp: s.timestamp ?? now }];
   });
-  const result = rows.length ? await prisma.metricSample.createMany({ data: rows }) : { count: 0 };
+  const result = rows.length ? await db.metricSample.createMany({ data: rows }) : { count: 0 };
   return { accepted: result.count, rejected: body.samples.length - result.count, unknownServices: [...unknown] };
 }
 
@@ -260,7 +261,12 @@ monitoringRouter.get('/series', requirePermission('read'), async (req, res) => {
 monitoringRouter.post('/metrics', requirePermission('metric:write'), async (req, res) => {
   const { organizationId } = authOf(req);
   try {
-    const result = await ingestMetrics(organizationId, metricsBody.parse(req.body));
+    const { value: result, replayed } = await withIdempotency(req, 'metrics', (db) => ingestMetrics(organizationId, metricsBody.parse(req.body), db));
+    if (replayed) {
+      res.setHeader(REPLAY_HEADER, 'true');
+      res.status(202).json(result);
+      return;
+    }
     // Samples for a service that is not registered are dropped. That is a rejection the sender
     // never notices (the request succeeds), so it is recorded where an operator will see it.
     if (result.accepted) await noteAccepted(organizationId, 'metrics', result.unknownServices);

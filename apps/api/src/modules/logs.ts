@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { assertRange, csv, paged, paginate, paginationQuery, timeParam } from '../lib/http';
 import { fingerprint, parseLevel, redact, redactAttributes } from '../lib/logParsing';
 import { logsIngested } from '../lib/metrics';
+import { type Db, REPLAY_HEADER, withIdempotency } from '../lib/idempotency';
 import { describeRejection, noteAccepted, noteRejected } from '../lib/integrationState';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
@@ -30,7 +31,7 @@ export const ingestBody = z.object({
   logs: z.array(logItem).min(1).max(5000),
 });
 
-export async function ingestLogs(organizationId: string, body: z.infer<typeof ingestBody>) {
+export async function ingestLogs(organizationId: string, body: z.infer<typeof ingestBody>, db: Db = prisma) {
   const settings = await getSettings(organizationId);
   const refs = [...new Set(body.logs.map((l) => l.service ?? body.service).filter((s): s is string => !!s))];
   const services = refs.length
@@ -63,7 +64,7 @@ export async function ingestLogs(organizationId: string, body: z.infer<typeof in
       attributes: (ref && !serviceId ? { ...(attributes as object | undefined), unresolvedService: ref } : attributes) as Prisma.InputJsonValue | undefined,
     };
   });
-  const result = await prisma.logEntry.createMany({ data: rows });
+  const result = await db.logEntry.createMany({ data: rows });
   logsIngested.inc(result.count);
   return { accepted: result.count, unknownServices: [...unknown] };
 }
@@ -279,8 +280,9 @@ logsRouter.get('/facets', requirePermission('read'), async (req, res) => {
 logsRouter.post('/', requirePermission('log:write'), async (req, res) => {
   const { organizationId } = authOf(req);
   try {
-    const result = await ingestLogs(organizationId, ingestBody.parse(req.body));
-    await noteAccepted(organizationId, 'logs', result.unknownServices);
+    const { value: result, replayed } = await withIdempotency(req, 'logs', (db) => ingestLogs(organizationId, ingestBody.parse(req.body), db));
+    if (replayed) res.setHeader(REPLAY_HEADER, 'true');
+    else await noteAccepted(organizationId, 'logs', result.unknownServices);
     res.status(202).json(result);
   } catch (err) {
     const why = describeRejection(err);

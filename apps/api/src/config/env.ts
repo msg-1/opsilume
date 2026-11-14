@@ -52,6 +52,8 @@ const schema = z.object({
   INVESTIGATION_TIMEOUT_MS: z.coerce.number().int().min(100).default(15 * 60_000),
   // On shutdown the worker lets running jobs finish for this long, then stops them and records them as interrupted
   WORKER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).default(10_000),
+  // How long an ingestion Idempotency-Key is remembered. A retry after this long is treated as a new request
+  INGEST_IDEMPOTENCY_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(12),
 });
 

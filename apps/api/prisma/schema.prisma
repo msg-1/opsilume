@@ -40,6 +40,7 @@ model Organization {
   repositories       Repository[]
   githubIntegration  GithubIntegration?
   integrationStates IntegrationState[]
+  ingestionRequests IngestionRequest[]
   documents          KnowledgeDocument[]
   investigations     Investigation[]
   remediationActions RemediationAction[]
@@ -547,6 +548,25 @@ model IntegrationState {
   organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@id([organizationId, integration])
+}
+
+// One row per ingestion request that carried an Idempotency-Key, written in the same
+// transaction as the data it stored. A retry with the same key finds it and is answered with
+// the stored response instead of storing the data again. Rows expire (expiresAt) and are removed.
+model IngestionRequest {
+  organizationId String
+  // logs | metrics | deployments | events
+  scope          String
+  key            String
+  // SHA-256 of the request body in canonical form: the same key with another body is refused
+  payloadHash    String
+  responseBody   Json
+  createdAt      DateTime     @default(now())
+  expiresAt      DateTime
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, scope, key])
+  @@index([expiresAt])
 }
 
 model Repository {
