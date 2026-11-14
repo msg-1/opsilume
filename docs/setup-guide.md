@@ -141,10 +141,10 @@ Sign in as `shop-demo@example.com` / `OpsPilot-demo-1`. No model is called and n
 ## 10. Tests
 
 ```bash
-npm test                 # API: 135 integration tests on database opspilot_test (26 of them use Redis and skip without it) · web: 53 tests
-npm run test:ai          # 177 tests, all against mocked model APIs or hand-written evidence
+npm test                 # API: 203 integration tests on database opspilot_test (26 of them use Redis and skip without it) · web: 53 tests
+npm run test:ai          # 192 tests, all against mocked model APIs or hand-written evidence
 npm run contracts:check  # shared contracts and generated frontend API types are up to date
-npm run evals -- --heuristic          # 11 scenarios on the rule-based engine
+npm run evals -- --heuristic          # 14 scenarios on the rule-based engine
 npm run db:seed && npm run test:e2e   # 9 browser tests; needs the stack running on the deterministic engine:
                                       #   AI_PROVIDER=deterministic docker compose --profile app up -d ai
                                       # (they skip themselves if a paid model is active)

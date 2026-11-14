@@ -5,6 +5,10 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 ## [Unreleased]
 
 ### Added
+- `npm run loadtest`: a small, reproducible load test on the isolated stack (log and metric ingestion, concurrent duplicates, reads under write load, investigations), reporting latencies, throughput, database connections, container resources and the environment it ran on.
+- `npm run github:validate`: a read-only check of the GitHub client against github.com with a token supplied in the environment for that purpose. docs/github-validation.md.
+- Evaluation scenarios for past incidents (a dependency down then, down only today, not on record): 14 scenarios in all. Scripted-model tests for unusable, contradictory and time-confused model output. docs/ai-validation.md lists what only a paid run can show.
+- docs/pilot-acceptance-report.md.
 - Backup and restore: docs/backup-and-restore.md, and `npm run drill:backup`, which backs up the isolated stack's database with `pg_dump`, restores it into a second database, compares every table, index, extension, foreign key and the content of seven central tables, and runs a second API and worker against the restored copy to a completed investigation. It runs in CI on every pull request. No point-in-time recovery.
 - Idempotent ingestion: `POST /logs`, `/monitoring/metrics`, `/deployments` and `/service-events` accept an `Idempotency-Key` header. A repeated request with the same key and body stores nothing and is answered as the first was (`Idempotent-Replayed: true`); the same key with another body is refused with 422; a failed request records no key. Keys are per organisation and endpoint and are kept for 24 hours (`INGEST_IDEMPOTENCY_TTL_HOURS`). Requests without the header behave as before.
 - A report to share: `/investigations/:id/report` shows an investigation as a document (conclusion, most probable cause with the evidence for and against it, established facts, deployments and changes, what is not known, recommended next steps with each action's effect, risk and approvals, and the evidence referred to). Facts, hypotheses and recommendations are labelled as such. It prints, and saves as a PDF, from the browser; no document library was added.
@@ -71,6 +75,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Failed sign-ins are audited; retrieved records are marked as untrusted data for the model.
 
 ### Fixed
+- A model call that timed out, or failed with anything other than the provider's own error, ended the investigation as failed instead of falling back to the rule-based engine. The text of a parsing failure, which can quote the model's output, was copied into the report; only the kind of failure is now passed on.
+- With more simultaneous duplicates of an idempotent request than the database pool has connections, all of them timed out.
 - Old incidents were judged with today's health: investigating a closed incident named whatever dependency happened to be down at the time of the investigation. For a window that is over, the health of a service and of its dependencies is now worked out from the alerts, incidents and metrics recorded in that window; evidence says whether it describes then or now; a dependency whose state at the time is not on record produces no hypothesis, is listed as not examined and lowers the confidence.
 - A report that arrived for an investigation that was no longer running (cancelled, failed, timed out) still created hypotheses and proposed remediation actions, and a repeated final event proposed the actions a second time. Everything that follows from a report now happens only if that report was stored.
 - A stream from the AI service that was cut in the middle of an event, or that carried an invalid line, was recorded as a JSON syntax error quoting the text received. Timeout, interrupted connection and invalid event now have their own messages, and none repeats the input.
