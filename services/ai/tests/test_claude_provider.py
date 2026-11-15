@@ -282,9 +282,10 @@ async def test_evaluation_run_never_exceeds_its_budget_and_skips_what_it_cannot_
         return provider
 
     settings = Settings(_env_file=None)
-    # One call can cost at most this: a full prompt written to the cache and a full-length answer.
+    # One call can cost at most this: the largest prompt the provider will send, all written to the
+    # cache, and a full-length answer.
     reserve = evals.worst_case_call_usd("claude-haiku-5-5", settings)
-    assert reserve == pytest.approx((60_000 * 0.125 + settings.ai_max_tokens * 0.50) / 1_000_000)
+    assert reserve == pytest.approx((90_000 * 0.125 + settings.ai_max_tokens * 0.50) / 1_000_000)
     original = evals.build_provider
     evals.build_provider = fake_build
     try:
@@ -294,9 +295,9 @@ async def test_evaluation_run_never_exceeds_its_budget_and_skips_what_it_cannot_
     # After 0.06 the third scenario is expected at 0.0375 plus one worst-case call, which does
     # not fit in the remaining 0.04, so the run stops there and starts nothing further.
     assert [r.cost_usd for r in results] == [0.03, 0.03] and skipped == [s.name for s in SCENARIOS[2:]]
-    # Each provider is capped one worst-case call BELOW what was left, because the limit is
-    # checked before a call: the call in flight when it is reached must still fit.
-    assert limits == pytest.approx([0.10 - reserve, 0.07 - reserve])
-    assert max(limits[i] + reserve + sum(r.cost_usd for r in results[:i]) for i in range(len(limits))) <= 0.10 + 1e-9
+    # Each provider is limited to exactly what was left: it reserves every call's upper bound
+    # before sending it (tests/test_eval_budget.py), so it cannot spend past that limit.
+    assert limits == pytest.approx([0.10, 0.07])
+    assert max(limits[i] + sum(r.cost_usd for r in results[:i]) for i in range(len(limits))) <= 0.10 + 1e-9
     with pytest.raises(SystemExit):
         evals.worst_case_call_usd("some-unpriced-model", settings)

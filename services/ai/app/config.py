@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # Optional price overrides in USD per million tokens, for models missing from the price table.
     ai_price_input_per_mtok: float | None = None
     ai_price_output_per_mtok: float | None = None
+    # Refuse a call whose prompt could exceed this many tokens (0: no cap). Set by the evaluation
+    # runner so that a call can never reach a higher price tier.
+    ai_max_prompt_tokens: int = 0
+    # When set, a response served by any other model stops all further calls of the investigation.
+    ai_expected_model: str = ""
+    # Reserve each call's upper bound before sending it, refuse it if the bound does not fit, and
+    # charge a call whose outcome is unknown (timeout, dropped connection, server error) at that
+    # bound. Set by the paid evaluation runner; investigations keep the plain accounting.
+    ai_strict_spending: bool = False
 
     # auto | openai | ollama | local
     embedding_provider: str = "auto"
@@ -89,6 +98,12 @@ PRICING: dict[str, tuple[float, float, float, float]] = {
     "claude-fable-5-2": (8.00, 40.00, 0.20, 10.00),
 }
 HAIKU_LONG_PROMPT_THRESHOLD = 100_000
+# Tokens the API adds around what is sent (tool-use instructions, message framing), allowed for
+# in the upper bound on a request's prompt.
+REQUEST_OVERHEAD_TOKENS = 2_000
+# Largest prompt, as bounded before sending, that one call of a paid evaluation may have. Below
+# the long-prompt threshold, so the higher prices cannot apply to any evaluation call.
+EVAL_MAX_PROMPT_TOKENS = 90_000
 HAIKU_LONG_PROMPT_PRICING = (0.50, 2.50, 0.05, 0.625)
 
 
