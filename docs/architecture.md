@@ -45,12 +45,13 @@ CI regenerates all of it and fails when a committed file would change.
 |---|---|---|---|
 | `routes.ts` | HTTP | `routes.ts` | HTTP |
 | `validation.ts` | Request bodies and queries | `proposals.ts` | Request bodies, creating a proposal |
-| `limits.ts` | Daily, concurrent and cost limits | `content.ts` | The hash approvals are bound to |
+| `limits.ts` | Daily, concurrent and cost limits | `content.ts` | The approval fingerprint |
 | `runner.ts` | Orchestrating one queued run | `effect.ts` | Effect, minimum risk, approvals required |
 | `stream.ts` | Consuming the AI service's event stream | `approvals.ts` | Submit, approve, reject, supersede |
 | `guardrails.ts` | The API's independent guardrail pass | `execution.ts` | Webhook or manual execution |
 | `persistence.ts` | Storing steps, evidence and the final report | `recording.ts` | Recording the outcome and its effects |
 | `schema.ts` | The report schema | `presenter.ts` | Loading and shaping responses |
+| `legacy.ts` | Read-time view of reports stored under earlier rules | `source.ts`, `safeguards.ts` | Checking the source investigation; raising risk and sending an action back for review |
 
 Each directory's `index.ts` exports what the rest of the API used before, so nothing outside them changed.
 
@@ -149,7 +150,7 @@ PROPOSED ─▶ PENDING_APPROVAL ─▶ APPROVED ─▶ EXECUTING ─▶ EXECUTE
    └─ CANCELLED ◀─┴─ REJECTED       └─ CANCELLED
 ```
 
-Every action is read-only or state-changing. A read-only diagnostic needs no approval and is never sent to the webhook; a state-changing action needs at least one approval, bound to a hash of its content. Editing it supersedes the approvals. A webhook timeout or a 5xx is recorded as outcome unknown, and such an action is retried only after a person confirms nothing was applied. Details: [reliability.md](reliability.md).
+Every action is read-only or state-changing. A read-only diagnostic needs no approval and is never sent to the webhook; a state-changing action needs at least one approval, bound to a fingerprint of everything an approver sees, what the webhook receives and where it is carried out. Editing it supersedes the approvals; approvals expire. A webhook timeout, a 5xx or a stopped process is recorded as outcome unknown; a person reconciles it, and it is retried only after they record that nothing was applied. Details: [reliability.md](reliability.md).
 
 Required approvals come from organisation settings by risk level (defaults 1 / 1 / 2). Approvers must differ from the proposer and requester unless self-approval is switched on. High-risk actions need an admin or owner. State changes use conditional updates, so two simultaneous requests cannot both succeed. Execution either POSTs an HMAC-signed payload to the organisation's webhook, or records an operator's attestation that they performed the action; both are mirrored onto the service's deployment or event history.
 
