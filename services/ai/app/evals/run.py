@@ -1,7 +1,9 @@
 """Evaluation harness for the investigation agent.
 
     uv run python -m app.evals.run --heuristic          # rule-based engine: free, used in CI
-    uv run python -m app.evals.run --max-cost 0.10      # configured model: REAL API CALLS, capped
+    AI_PROVIDER=anthropic ANTHROPIC_API_KEY=... uv run python -m app.evals.run --max-cost 1.00 --ledger eval-runs/<name>.json
+                                                        # configured model: REAL API CALLS, capped
+    uv run python -m app.evals.run --estimate           # what a paid run may cost at most; calls nothing
     uv run python -m app.evals.run --json
     uv run python -m app.evals.run --rescore eval-runs/<dir>   # score saved reports again: free
 
@@ -18,11 +20,22 @@ Scores, per scenario (app/evals/scoring.py explains each; every one carries an e
   root_cause service citations no_invention contradictions missing calibration diagnostics
   remediation deployment
 
-Spending. With a real model the ceiling is enforced three ways: a scenario starts only if the
-remaining budget covers its expected cost plus the worst case of one model call; its provider
-is limited to the remaining budget less that worst case, so the one call that may still be in
-flight when the limit is reached cannot cross the ceiling; and the run stops at the first
-scenario that does not fit.
+Spending. With a real model:
+  - Configuration comes from the process environment only. The repository's .env is not read,
+    so a key or a price override in it cannot be used by accident. AI_PROVIDER=anthropic must be
+    set explicitly, the model must have a known price, and price overrides are refused.
+  - The ceiling lives in a ledger file (--ledger, required) shared by every invocation that
+    names it, so a repeat or a resumed run spends from what is left, never from a fresh budget.
+    A scenario's limit is reserved in the ledger before it starts and replaced by its cost after.
+  - A scenario starts only if what is left covers its expected cost plus one worst-case call,
+    and its provider is limited to what is left (at most the per-investigation limit).
+  - Before every call the provider computes an upper bound on what that call can cost, from the
+    size of the request and the output limit, and refuses the call if the bound does not fit.
+    A prompt that could exceed EVAL_MAX_PROMPT_TOKENS is refused, so the long-prompt prices
+    cannot apply. The SDK does not retry (AI_MAX_RETRIES is forced to 0). A call that fails in a
+    way that may have been billed (timeout, dropped connection, server error) is charged at its
+    upper bound. A response from a different model stops the scenario's model calls.
+  - The run stops at the first scenario that does not fit.
 """
 
 from __future__ import annotations
@@ -31,6 +44,7 @@ import argparse
 import asyncio
 import json
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,36 +53,48 @@ from typing import Any
 import httpx
 
 from .. import guardrails
-from ..config import HAIKU_LONG_PROMPT_THRESHOLD, PRICING, Settings, get_settings
+from ..config import EVAL_MAX_PROMPT_TOKENS, HAIKU_LONG_PROMPT_THRESHOLD, PRICING, Settings
 from ..graph import Context, run_investigation
-from ..llm import LLMProvider, Resolution, build_provider, resolve
+from ..llm import LLMProvider, Resolution, build_provider, call_cost_bound, resolve
 from ..schemas import InvestigationReport, InvestigationRequest
 from ..tools import ToolClient
+from .ledger import Ledger, LedgerError
 from .scenarios import NOW, SCENARIOS, Scenario, t
 from .scoring import CRITERIA, DIAGNOSTIC_ACTIONS, Score, score, unsafe_actions
 
-__all__ = ["DIAGNOSTIC_ACTIONS", "Result", "evaluate", "rescore", "run_all", "unsafe_actions", "worst_case_call_usd"]
+__all__ = ["DIAGNOSTIC_ACTIONS", "Result", "evaluate", "live_settings", "max_calls_per_scenario", "rescore", "run_all", "unsafe_actions", "worst_case_call_usd"]
 
 RUNS_DIR = Path(__file__).resolve().parents[2] / "eval-runs"
 
 # Assumed cost of a scenario before any has run, used only to decide whether to start it.
 FIRST_SCENARIO_ESTIMATE_USD = 0.02
-# Largest prompt one call of an evaluation scenario can plausibly send. The report prompt, the
-# biggest, carries at most 40,000 characters of evidence plus instructions; tool loops stay far
-# below this. Deliberately generous: it only makes the budget check more cautious.
-WORST_CASE_INPUT_TOKENS = 60_000
 
 
 def worst_case_call_usd(model: str, settings: Settings) -> float:
-    """Upper bound on what a single model call can cost: a full prompt, written to the cache, and
-    an answer that uses every output token allowed."""
-    price = PRICING.get(model)
-    if settings.ai_price_input_per_mtok is not None and settings.ai_price_output_per_mtok is not None:
-        price = (settings.ai_price_input_per_mtok, settings.ai_price_output_per_mtok, 0.0, settings.ai_price_input_per_mtok * 1.25)
-    if price is None:
-        raise SystemExit(f"No price is known for {model}; set AI_PRICE_INPUT_PER_MTOK and AI_PRICE_OUTPUT_PER_MTOK so the spending ceiling can be enforced.")
-    assert WORST_CASE_INPUT_TOKENS < HAIKU_LONG_PROMPT_THRESHOLD
-    return (WORST_CASE_INPUT_TOKENS * max(price[0], price[3]) + settings.ai_max_tokens * price[1]) / 1_000_000
+    """Most one call of a paid evaluation can cost: the largest prompt the provider will send
+    (EVAL_MAX_PROMPT_TOKENS), all written to the cache, and an answer that uses every output token
+    allowed. The provider refuses any call whose own bound is higher, so this is a true ceiling."""
+    assert EVAL_MAX_PROMPT_TOKENS <= HAIKU_LONG_PROMPT_THRESHOLD
+    bound = call_cost_bound(model, EVAL_MAX_PROMPT_TOKENS, settings.ai_max_tokens, settings)
+    if bound is None:
+        raise SystemExit(f"No price is known for {model}, so the spending ceiling cannot be enforced.")
+    return bound
+
+
+def max_calls_per_scenario(settings: Settings) -> int:
+    """Model calls one scenario can make: the plan and the report (each may be asked again as plain
+    JSON when the API cannot compile its schema), and one call per round of the tool loop."""
+    return 2 + (settings.max_tool_rounds + 1) + 2
+
+
+def live_settings(settings: Settings, model: str, limit: float) -> Settings:
+    """The settings one paid scenario runs with: no SDK retries, a prompt cap below the long-prompt
+    prices, the model pinned, every call reserved at its upper bound before it is sent, and a
+    spending limit of `limit`."""
+    return settings.model_copy(update={
+        "ai_max_retries": 0, "ai_max_prompt_tokens": EVAL_MAX_PROMPT_TOKENS, "ai_expected_model": model, "ai_strict_spending": True,
+        "ai_max_cost_usd_per_investigation": min(limit, settings.ai_max_cost_usd_per_investigation),
+    })
 
 
 @dataclass
@@ -93,6 +119,12 @@ class Result:
     tokens: int = 0
     cost_usd: float = 0.0
     seconds: float = 0.0
+    #: Calls that failed in a way that may have been billed, and what they were charged
+    unknown_calls: int = 0
+    unknown_cost_usd: float = 0.0
+    #: Elapsed time of the whole scenario, tools and guardrails included (seconds is model time)
+    wall_seconds: float = 0.0
+    served_model: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -117,7 +149,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         # The scenario data is recorded at a fixed moment; the agent investigates as of that moment.
         current_time=t(0),
     )
-    ctx = Context(request=request, settings=settings or get_settings(), tools=tools, provider=provider, emit=emit)
+    ctx = Context(request=request, settings=settings or Settings(_env_file=None), tools=tools, provider=provider, emit=emit)
 
     # Keep the report as the engine wrote it, before the guardrails repair anything: citation
     # accuracy and invention are properties of the engine, not of the safety net behind it.
@@ -134,6 +166,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         return result
 
     guardrails.enforce = spy  # type: ignore[assignment]
+    began = time.perf_counter()
     try:
         report = await run_investigation(ctx)
     finally:
@@ -169,6 +202,10 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         tokens=usage.total_tokens if usage else 0,
         cost_usd=round(usage.cost_usd, 6) if usage else 0.0,
         seconds=round((usage.latency_ms if usage else 0) / 1000, 1),
+        unknown_calls=usage.unknown_calls if usage else 0,
+        unknown_cost_usd=round(usage.unknown_cost_usd, 6) if usage else 0.0,
+        wall_seconds=round(time.perf_counter() - began, 1),
+        served_model=provider.served_model if provider else None,
     )
     if save_to is not None:
         save_to.mkdir(parents=True, exist_ok=True)
@@ -192,39 +229,53 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
     return result
 
 
-async def run_all(resolution: Resolution | None, settings: Settings, max_cost: float | None, log: Any = print, save_to: Path | None = None, only: list[str] | None = None) -> tuple[list[Result], list[str]]:
-    """Runs the scenarios one after another. Returns the results and the names of any skipped for budget."""
+async def run_all(resolution: Resolution | None, settings: Settings, max_cost: float | None, log: Any = print, save_to: Path | None = None, only: list[str] | None = None, ledger: Ledger | None = None) -> tuple[list[Result], list[str]]:
+    """Runs the scenarios one after another. Returns the results and the names of any skipped for budget.
+
+    With a ledger, the ceiling is the ledger's and what was spent by earlier invocations counts;
+    without one, the ceiling is `max_cost` for this invocation alone (used by tests and mocks).
+    """
     results: list[Result] = []
     skipped: list[str] = []
     spent = 0.0
     scenarios = [s for s in SCENARIOS if not only or s.name in only]
     live = resolution is not None and resolution.available
-    reserve = worst_case_call_usd(resolution.model, settings) if live and max_cost is not None and resolution.provider != "mock" else 0.0  # type: ignore[union-attr]
+    paid = live and resolution.provider != "mock"  # type: ignore[union-attr]
+    reserve = worst_case_call_usd(resolution.model, settings) if paid and max_cost is not None else 0.0  # type: ignore[union-attr, arg-type]
+    run_name = save_to.name if save_to else ""
     for index, scenario in enumerate(scenarios):
         provider = None
         scenario_settings = settings
+        entry = None
         if live:
             assert resolution is not None
             if max_cost is not None:
-                remaining = max_cost - spent
+                remaining = ledger.remaining() if ledger else max_cost - spent
                 expected = max((r.cost_usd for r in results), default=FIRST_SCENARIO_ESTIMATE_USD) * 1.25
                 if expected + reserve > remaining:
                     # Stop here rather than skip ahead: later scenarios cost about the same.
                     skipped.extend(s.name for s in scenarios[index:])
                     log(f"  stopped before {scenario.name}: it needs about ${expected:.4f} plus ${reserve:.4f} for one worst-case call, and ${max(remaining, 0):.4f} of the budget is left")
                     break
-                # Hard ceiling for this scenario. Calls are refused once spend reaches the limit,
-                # so the limit sits one worst-case call below what is left.
-                scenario_settings = settings.model_copy(update={"ai_max_cost_usd_per_investigation": min(remaining - reserve, settings.ai_max_cost_usd_per_investigation)})
+                # The provider refuses any call whose upper bound does not fit in this limit, so
+                # the scenario cannot spend more than what is left.
+                scenario_settings = live_settings(settings, str(resolution.model), remaining) if paid else settings.model_copy(update={"ai_max_cost_usd_per_investigation": min(remaining, settings.ai_max_cost_usd_per_investigation)})
+                if ledger is not None:
+                    entry = ledger.reserve(scenario.name, scenario_settings.ai_max_cost_usd_per_investigation, run_name)
             # A fresh provider per scenario, so usage and limits are per investigation.
             provider = build_provider(resolution, scenario_settings)
+        # If this raises, the reservation stays open and charged in full: nothing is assumed.
         result = await evaluate(scenario, provider, scenario_settings, save_to)
         results.append(result)
         spent += result.cost_usd
+        if entry is not None:
+            assert ledger is not None
+            ledger.settle(entry, result.cost_usd, passed=result.passed, unknown_usd=result.unknown_cost_usd, calls=result.llm_calls)
         log(
-            f"  {scenario.name}: {'pass' if result.passed else 'FAIL'} · {result.mode} · {result.model or 'rule-based'} · {result.llm_calls} requests · "
-            f"in {result.input_tokens:,} / out {result.output_tokens:,} / cache read {result.cache_read_tokens:,} / cache write {result.cache_write_tokens:,} tokens · "
-            f"{result.seconds}s · ${result.cost_usd:.4f} · cumulative ${spent:.4f}"
+            f"  {scenario.name}: {'pass' if result.passed else 'FAIL'} · {result.mode} · {result.served_model or result.model or 'rule-based'} · {result.llm_calls} requests"
+            + (f" ({result.unknown_calls} of unknown outcome, charged ${result.unknown_cost_usd:.4f})" if result.unknown_calls else "")
+            + f" · in {result.input_tokens:,} / out {result.output_tokens:,} / cache read {result.cache_read_tokens:,} / cache write {result.cache_write_tokens:,} tokens · "
+            f"model {result.seconds}s, total {result.wall_seconds}s · ${result.cost_usd:.4f} · cumulative ${(ledger.committed() if ledger else spent):.4f}"
         )
     return results, skipped
 
@@ -276,6 +327,8 @@ def main() -> None:
     parser.add_argument("--only", action="append", default=None, metavar="SCENARIO", help="Run only this scenario (repeatable)")
     parser.add_argument("--estimate", action="store_true", help="Print the worst-case cost of the run and exit without calling a model")
     parser.add_argument("--rescore", type=Path, default=None, metavar="DIR", help="Score the reports saved in DIR again with the current scorer and guardrails. Calls no model")
+    parser.add_argument("--ledger", type=Path, default=None, metavar="FILE", help="Spending ledger shared by every invocation of one approved budget. Required for a paid run")
+    parser.add_argument("--repeat", action="store_true", help="Run the --only scenarios a second time; each must have failed once in the ledger and not been repeated")
     args = parser.parse_args()
     if args.rescore:
         rows = rescore(args.rescore)
@@ -287,35 +340,72 @@ def main() -> None:
                     print(f"{'':34} FAIL {f}")
         print(f"\n{sum(all(v.ok for v in a.values()) for _n, a, _b in rows)}/{len(rows)} pass as shown · {sum(all(v.ok for v in b.values()) for _n, _a, b in rows)}/{len(rows)} pass with current guardrails")
         sys.exit(0)
-    settings = get_settings()
+    # Never the repository's .env: a paid run uses only what is set in this process's environment.
+    settings = Settings(_env_file=None)
     resolution = None if args.heuristic else asyncio.run(resolve(settings))
     paid = resolution is not None and resolution.available and resolution.provider not in ("mock",)
     names = [s.name for s in SCENARIOS if not args.only or s.name in args.only]
     if args.estimate:
-        if not paid:
-            print("No paid model is configured: the run costs nothing.")
+        if settings.provider_choice != "anthropic":
+            print("AI_PROVIDER is not set to anthropic in this environment: a run would not call a paid model and costs nothing.")
             sys.exit(0)
-        assert resolution is not None
-        reserve = worst_case_call_usd(resolution.model, settings)
-        print(f"Model {resolution.model}; {len(names)} scenario(s); output limit {settings.ai_max_tokens:,} tokens per call; up to {settings.ai_max_retries} retries per call (rate limits, timeouts, server errors).")
-        print(f"Worst case for one call: ${reserve:.4f} ({WORST_CASE_INPUT_TOKENS:,} input tokens written to cache, {settings.ai_max_tokens:,} output tokens).")
-        print("The run can never exceed the --max-cost you give it: each scenario is limited to the remaining budget less one worst-case call.")
+        model = settings.anthropic_model
+        reserve = worst_case_call_usd(model, settings)
+        per = max_calls_per_scenario(settings)
+        print("Configuration (from the process environment; .env is not read):")
+        print(f"  provider anthropic · model {model} · effort {settings.anthropic_effort} · output limit {settings.ai_max_tokens:,} tokens per call · SDK retries 0 (forced)")
+        print(f"  prompt limit {EVAL_MAX_PROMPT_TOKENS:,} tokens per call, below the {HAIKU_LONG_PROMPT_THRESHOLD:,}-token threshold of the higher prices")
+        print(f"  ANTHROPIC_API_KEY is {'set' if settings.anthropic_api_key else 'NOT set'} in this environment (its value is not shown)")
+        print(f"{len(names)} scenario(s); at most {per} model calls each, {per * len(names)} in all, before the budget is considered.")
+        print(f"Worst case for one call: ${reserve:.5f} ({EVAL_MAX_PROMPT_TOKENS:,} prompt tokens all written to the cache, {settings.ai_max_tokens:,} output tokens).")
+        if args.ledger and args.ledger.exists():
+            data = json.loads(args.ledger.read_text())
+            spent = Ledger(args.ledger, float(data["maxCostUsd"]), str(data["model"]), list(data.get("entries") or [])).committed()
+            print(f"Ledger {args.ledger}: ceiling ${float(data['maxCostUsd']):.2f}, committed ${spent:.6f}, left ${float(data['maxCostUsd']) - spent:.6f}.")
+        print("No model was called.")
         sys.exit(0)
-    if paid and args.max_cost is None:
-        print("A real model is configured. Refusing to run without --max-cost <USD> (or use --heuristic).", file=sys.stderr)
-        sys.exit(2)
+    ledger: Ledger | None = None
+    if paid:
+        assert resolution is not None
+        problems = []
+        if settings.provider_choice != "anthropic":
+            problems.append("AI_PROVIDER=anthropic must be set explicitly for a paid run")
+        if resolution.model not in PRICING:
+            problems.append(f"no price is known for {resolution.model}")
+        if settings.ai_price_input_per_mtok is not None or settings.ai_price_output_per_mtok is not None:
+            problems.append("price overrides (AI_PRICE_*) are not accepted for a paid run")
+        if args.max_cost is None:
+            problems.append("--max-cost <USD> is required")
+        if args.ledger is None:
+            problems.append("--ledger FILE is required, so that every invocation spends from one budget")
+        if args.repeat and not args.only:
+            problems.append("--repeat needs --only <scenario>")
+        if problems:
+            print("Refusing to run a paid evaluation: " + "; ".join(problems) + ".", file=sys.stderr)
+            sys.exit(2)
+        try:
+            ledger = Ledger.open(args.ledger, float(args.max_cost), str(resolution.model))
+            ledger.check_allowed(names, args.repeat)
+        except LedgerError as exc:
+            print(f"Refusing to run: {exc}", file=sys.stderr)
+            sys.exit(2)
     log = (lambda *_a, **_k: None) if args.json else print
     if paid:
-        log(f"Evaluating {resolution.provider} / {resolution.model} with a ${args.max_cost:.2f} ceiling. These are real API calls.")  # type: ignore[union-attr]
+        assert ledger is not None
+        log(f"Evaluating {resolution.provider} / {resolution.model} (effort {settings.anthropic_effort}). Ceiling ${ledger.max_cost_usd:.2f} in {args.ledger}; "  # type: ignore[union-attr]
+            f"${ledger.committed():.4f} already committed, ${ledger.remaining():.4f} left. These are real API calls.")
     engine = f"{resolution.provider}-{resolution.model}" if paid or (resolution and resolution.available) else "rule-based"  # type: ignore[union-attr]
     save_to = None if args.no_save else RUNS_DIR / f"{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{engine}"
-    results, skipped = asyncio.run(run_all(resolution, settings, args.max_cost, log, save_to, args.only))
+    results, skipped = asyncio.run(run_all(resolution, settings, ledger.max_cost_usd if ledger else args.max_cost, log, save_to, args.only, ledger))
     total = sum(r.cost_usd for r in results)
     by_criterion = {c: {v: sum(1 for r in results if r.scores[c].verdict == v) for v in ("pass", "fail", "n/a")} for c in CRITERIA}
     summary = {
         "engine": engine, "scenarioClock": NOW.isoformat(), "results": [r.wire() for r in results], "byCriterion": by_criterion, "skipped": skipped,
-        "usage": {k: sum(getattr(r, k) for r in results) for k in ("llm_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")},
+        "usage": {k: sum(getattr(r, k) for r in results) for k in ("llm_calls", "unknown_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens")},
         "totalCostUsd": round(total, 6),
+        "unknownCostUsd": round(sum(r.unknown_cost_usd for r in results), 6),
+        "ledger": {"file": str(args.ledger), "ceilingUsd": ledger.max_cost_usd, "committedUsd": round(ledger.committed(), 6)} if ledger else None,
+        "settings": {"provider": settings.provider_choice, "model": settings.anthropic_model, "effort": settings.anthropic_effort, "maxTokens": settings.ai_max_tokens, "retries": 0 if paid else settings.ai_max_retries, "maxPromptTokens": EVAL_MAX_PROMPT_TOKENS if paid else None},
     }
     if save_to is not None and results:
         (save_to / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

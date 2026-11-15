@@ -24,7 +24,7 @@ import httpx
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from pydantic import BaseModel
 
-from .config import HAIKU_LONG_PROMPT_PRICING, HAIKU_LONG_PROMPT_THRESHOLD, PRICING, Settings
+from .config import HAIKU_LONG_PROMPT_PRICING, HAIKU_LONG_PROMPT_THRESHOLD, PRICING, REQUEST_OVERHEAD_TOKENS, Settings
 from .tools import ToolSpec
 
 T = TypeVar("T", bound=BaseModel)
@@ -48,6 +48,42 @@ class LLMError(Exception):
         return self.kind in self.FATAL
 
 
+def price_for(model: str, prompt_tokens: int, settings: Settings | None) -> tuple[float, float, float, float] | None:
+    """(input, output, cache read, cache write) in USD per million tokens for one request whose
+    prompt (input, cache reads and cache writes together) has this many tokens. None if unknown."""
+    price = PRICING.get(model)
+    if model == "claude-haiku-5-5" and prompt_tokens > HAIKU_LONG_PROMPT_THRESHOLD:
+        price = HAIKU_LONG_PROMPT_PRICING
+    if settings and settings.ai_price_input_per_mtok is not None and settings.ai_price_output_per_mtok is not None:
+        pi, po = settings.ai_price_input_per_mtok, settings.ai_price_output_per_mtok
+        price = (pi, po, pi * 0.1, pi * 1.25)
+    return price
+
+
+def call_cost_bound(model: str, prompt_tokens: int, max_tokens: int, settings: Settings | None) -> float | None:
+    """Most one request can cost: every prompt token at the dearest input rate (a cache write),
+    priced at the tier its size reaches, and an answer that uses every output token allowed."""
+    price = price_for(model, prompt_tokens, settings)
+    if price is None:
+        return None
+    return (prompt_tokens * max(price[0], price[2], price[3]) + max_tokens * price[1]) / 1_000_000
+
+
+def prompt_token_bound(params: dict[str, Any], replayed_output_tokens: int = 0) -> int:
+    """Upper bound on the prompt tokens of a request, computed before it is sent.
+
+    A token is never shorter than one byte, so the UTF-8 size of everything sent bounds the count
+    from above; the framing the API adds is allowed for separately. Thinking replayed in a tool
+    loop may be billed at its full length rather than the length of the summary that is sent
+    back, so every output token this investigation has produced so far is added as well.
+    """
+    sent: dict[str, Any] = {k: params[k] for k in ("system", "messages", "tools") if k in params}
+    schema = params.get("output_format")
+    if schema is not None:
+        sent["output_format"] = schema.model_json_schema() if hasattr(schema, "model_json_schema") else str(schema)
+    return len(json.dumps(sent, ensure_ascii=False, default=str).encode()) + REQUEST_OVERHEAD_TOKENS + replayed_output_tokens
+
+
 @dataclass
 class Usage:
     input_tokens: int = 0
@@ -58,6 +94,10 @@ class Usage:
     latency_ms: int = 0
     cost_usd: float = 0.0
     cost_known: bool = True
+    #: Calls that failed in a way that may still have been billed (a timeout, a dropped
+    #: connection, a server error). Each is charged at its upper bound, and included in cost_usd.
+    unknown_calls: int = 0
+    unknown_cost_usd: float = 0.0
 
     def record(self, model: str, settings: Settings | None, *, input_tokens: int | None, output_tokens: int | None, cache_read: int | None = 0, cache_write: int | None = 0, latency_ms: int = 0) -> None:
         i, o, cr, cw = input_tokens or 0, output_tokens or 0, cache_read or 0, cache_write or 0
@@ -69,16 +109,22 @@ class Usage:
         self.latency_ms += latency_ms
         if i + o + cr + cw == 0:
             return  # nothing was consumed (for example the mock provider)
-        price = PRICING.get(model)
-        if model == "claude-haiku-5-5" and i + cr + cw > HAIKU_LONG_PROMPT_THRESHOLD:
-            price = HAIKU_LONG_PROMPT_PRICING
-        if settings and settings.ai_price_input_per_mtok is not None and settings.ai_price_output_per_mtok is not None:
-            pi, po = settings.ai_price_input_per_mtok, settings.ai_price_output_per_mtok
-            price = (pi, po, pi * 0.1, pi * 1.25)
+        price = price_for(model, i + cr + cw, settings)
         if price is None:
             self.cost_known = False
             return
         self.cost_usd += (i * price[0] + o * price[1] + cr * price[2] + cw * price[3]) / 1_000_000
+
+    def charge_unknown(self, bound: float | None, latency_ms: int = 0) -> None:
+        """A call whose outcome is not known: charge what it can have cost at most."""
+        self.calls += 1
+        self.unknown_calls += 1
+        self.latency_ms += latency_ms
+        if bound is None:
+            self.cost_known = False
+            return
+        self.cost_usd += bound
+        self.unknown_cost_usd += bound
 
     @property
     def total_tokens(self) -> int:
@@ -205,6 +251,10 @@ def classify_anthropic_error(exc: Exception) -> LLMError:
     return LLMError(f"Unexpected error calling Anthropic: {type(exc).__name__}", "error")
 
 
+# Errors returned before the request was processed. Everything else may have been billed.
+_NOT_BILLED = {"auth", "permission", "model", "credit", "rate_limit", "bad_request"}
+
+
 class AnthropicProvider(LLMProvider):
     def __init__(self, settings: Settings, client: Any | None = None):
         super().__init__(name="anthropic", model=settings.anthropic_model, settings=settings)
@@ -232,13 +282,49 @@ class AnthropicProvider(LLMProvider):
             params["system"] = system
         return params
 
-    async def _call(self, fn: Any, **kwargs: Any) -> Any:
+    def reserve(self, params: dict[str, Any]) -> float | None:
+        """What the call about to be sent can cost at most, including every retry the SDK may
+        make. Refuses the call if that cannot fit within the investigation's limits.
+
+        Without ai_strict_spending only the plain check applies (spend so far below the limits)
+        and None is returned: nothing is reserved and no failed call is charged."""
         self.check_budget()
+        s = self.settings
+        prompt = prompt_token_bound(params, self.usage.output_tokens)
+        if s and s.ai_max_prompt_tokens and prompt > s.ai_max_prompt_tokens:
+            raise LLMError(f"The next model call could have a prompt of up to {prompt:,} tokens, over the limit of {s.ai_max_prompt_tokens:,}. It was not sent.", "budget")
+        if not (s and s.ai_strict_spending):
+            return None
+        one = call_cost_bound(self.model, prompt, int(params.get("max_tokens") or self._max_tokens), s)
+        if one is None:
+            return None
+        # A retried attempt may be billed too, and the SDK does not say whether it retried.
+        bound = one * (1 + (s.ai_max_retries if s else 0))
+        if s and s.ai_max_cost_usd_per_investigation > 0 and self.usage.cost_usd + bound > s.ai_max_cost_usd_per_investigation:
+            raise LLMError(
+                f"The next model call could cost up to ${bound:.4f}, and only ${max(s.ai_max_cost_usd_per_investigation - self.usage.cost_usd, 0):.4f} "
+                f"of this investigation's ${s.ai_max_cost_usd_per_investigation:.2f} limit is left. It was not sent.",
+                "budget",
+            )
+        return bound
+
+    async def _call(self, fn: Any, **kwargs: Any) -> Any:
+        bound = self.reserve(kwargs)
+        strict = bool(self.settings and self.settings.ai_strict_spending)
         started = time.perf_counter()
         try:
             response = await fn(**kwargs)
         except anthropic.APIError as exc:
-            raise classify_anthropic_error(exc) from exc
+            error = classify_anthropic_error(exc)
+            # Refused before any work (bad key, no credit, rate limit, invalid request): not billed.
+            # Anything else may have been processed and billed: charge its upper bound.
+            if strict and error.kind not in _NOT_BILLED:
+                self.usage.charge_unknown(bound, int((time.perf_counter() - started) * 1000))
+            raise error from exc
+        except BaseException:
+            if strict:
+                self.usage.charge_unknown(bound, int((time.perf_counter() - started) * 1000))
+            raise
         self.served_model = getattr(response, "model", None) or self.served_model
         u = response.usage
         self.usage.record(
@@ -246,6 +332,10 @@ class AnthropicProvider(LLMProvider):
             cache_read=getattr(u, "cache_read_input_tokens", 0), cache_write=getattr(u, "cache_creation_input_tokens", 0),
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
+        expected = self.settings.ai_expected_model if self.settings else ""
+        served = str(getattr(response, "model", "") or "")
+        if expected and served != expected and not re.fullmatch(re.escape(expected) + r"-\d{8}", served):
+            raise LLMError(f"The response came from {served or 'an unnamed model'}, not {expected}. No further model calls were made.", "model")
         if response.stop_reason == "refusal":
             raise LLMError("The model declined this request (stop_reason=refusal).", "refusal")
         if response.stop_reason == "max_tokens":

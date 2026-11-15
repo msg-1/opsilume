@@ -64,7 +64,7 @@ In order of importance for a pilot. Each line is a question, the scenario that a
 | `ANTHROPIC_EFFORT` | `medium` | The default; what a pilot would run with |
 | `AI_MAX_TOKENS` | 8,000 per call | Default |
 | Per-investigation limits | $0.50 and 400,000 tokens | Default; a scenario that hits either stops and is reported |
-| Retries, timeout | 2, 120 s | Default (5 s for question 8 only) |
+| Retries, timeout | **0**, 120 s | Retries are forced to 0 by the runner: the SDK does not report a retried attempt's cost, so a retry could spend outside the ceiling. This differs from the pilot default of 2 retries. Question 8 (5 s timeout) is a separate run that needs separate approval |
 | Data | The 14 synthetic scenarios, served by the fake tool API | Nothing of a customer's, and nothing from the demo organisation, is sent |
 | Key | Supplied by the owner in the environment of the one command | Not read from `.env` by the plan's commands, never printed or stored |
 
@@ -80,7 +80,16 @@ Measured in the last live run (Milestone 3, same model and effort): one scenario
 | **Expected total** | | **about 1 to 2.7 million** | **$0.12 to $0.42** |
 | **Maximum proposed: `--max-cost 1.00`** | | | **$1.00** |
 
-The ceiling is enforced by the runner, not by this table: it stops before any call that could take the estimated spend past `--max-cost`, and one worst-case call on this model is $0.0115 (`--estimate`, 15 November 2026). The figures are estimates from list prices in `services/ai/app/config.py`; the Anthropic Console shows what was billed. The report format is larger than it was in Milestone 3, so expect the upper half of the range.
+The ceiling is enforced by the runner, not by this table (`services/ai/app/evals/run.py`, `ledger.py`, and `AnthropicProvider.reserve` in `app/llm.py`; each property is tested against a mocked API in `services/ai/tests/test_eval_budget.py`):
+
+- **Configuration from the process environment only.** The runner does not read the repository's `.env`. A paid run needs `AI_PROVIDER=anthropic` set explicitly, a model with a known price, no price overrides, `--max-cost` and `--ledger`.
+- **One ledger for one approved budget.** Every invocation that names the ledger file spends from the same ceiling. Before a scenario starts, its limit is reserved in the ledger. When it ends, the reservation is replaced by what it cost. A reservation never closed (a crash) stays charged in full. A ledger's ceiling and model cannot be changed. A scenario runs at most twice: the second time only with `--repeat`, only if its first attempt finished and failed.
+- **Every call is reserved before it is sent.** The provider computes an upper bound on the call's cost, and refuses the call if the bound does not fit what is left. The bound counts every prompt token as one byte of the request (a token is never shorter), plus 2,000 for framing and every output token produced so far (replayed thinking), at the cache-write rate, and the full output limit.
+- **The higher prices cannot apply.** A call whose prompt bound exceeds 90,000 tokens is refused, below the 100,000-token threshold.
+- **No retries.** A call that fails in a way that may have been billed (timeout, dropped connection, server error) is charged at its upper bound. It is not retried. A response from any model other than `claude-haiku-5-5` (or its dated snapshot) stops the scenario's model calls.
+- **A scenario that cannot fit does not start.** It needs 1.25 times the last scenario's cost plus one worst-case call ($0.01525).
+
+The figures are estimates from list prices in `services/ai/app/config.py`; the Anthropic Console shows what was billed. The report format is larger than it was in Milestone 3, so expect the upper half of the range.
 
 ### Comparison with the deterministic baseline
 
@@ -104,12 +113,16 @@ The same 14 scenarios are scored by the same scorer for both engines, so the com
 
 ```bash
 cd services/ai
-uv run python -m app.evals.run --estimate                      # no call is made: prints the worst-case cost of one call
-ANTHROPIC_API_KEY=... AI_PROVIDER=anthropic uv run python -m app.evals.run --max-cost 1.00   # refuses to run against a model without --max-cost; saves each report under eval-runs/
+AI_PROVIDER=anthropic uv run python -m app.evals.run --estimate --ledger eval-runs/<budget>.json   # no call is made
+# the key must already be in this shell's environment; it is never typed into a file or a chat
+AI_PROVIDER=anthropic ANTHROPIC_MODEL=claude-haiku-5-5 ANTHROPIC_EFFORT=medium AI_MAX_TOKENS=8000 \
+  uv run python -m app.evals.run --max-cost 1.00 --ledger eval-runs/<budget>.json        # saves each report under eval-runs/
+# a failed scenario, once, from the same ledger:
+AI_PROVIDER=anthropic ... uv run python -m app.evals.run --max-cost 1.00 --ledger eval-runs/<budget>.json --repeat --only <scenario>
 uv run python -m app.evals.run --rescore eval-runs/<that directory>   # scores the saved reports again, free
 ```
 
-`--max-cost` stops the run before a call that could exceed it; `--only <scenario>` runs one. Record the results in [claude-live-verification.md](claude-live-verification.md), which holds the earlier runs and the total spent to date ($0.12).
+`--only <scenario>` runs one scenario. Record the results in [claude-live-verification.md](claude-live-verification.md), which holds the earlier runs and the total spent to date ($0.12).
 
 Saved reports contain only the synthetic scenario data. Keep them (`eval-runs/` is ignored by git): they are what later changes to guardrails and scoring are checked against without paying again.
 
