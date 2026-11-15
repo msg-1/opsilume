@@ -262,6 +262,14 @@ class AnthropicProvider(LLMProvider):
         self._max_tokens = settings.ai_max_tokens
         # Schemas the provider refused to compile; these are requested as plain JSON instead.
         self._plain_json: set[str] = set()
+        # Output of the tool loop so far: the only output that is sent back (as earlier assistant
+        # turns, thinking included) and so the only output that can be billed again as prompt.
+        self._loop_output_tokens = 0
+        # Strict spending: the bounds reserved for the call in flight, checked against the bill.
+        self._reserved_prompt = 0
+        self._reserved_one: float | None = None
+        #: Set when a response used more than its bound allowed: the accounting cannot be trusted.
+        self.bound_exceeded: str | None = None
         # The SDK retries rate limits, timeouts and 5xx with exponential backoff, at most
         # ai_max_retries times; nothing here retries on top of that.
         self._client = client or anthropic.AsyncAnthropic(
@@ -290,12 +298,14 @@ class AnthropicProvider(LLMProvider):
         and None is returned: nothing is reserved and no failed call is charged."""
         self.check_budget()
         s = self.settings
-        prompt = prompt_token_bound(params, self.usage.output_tokens)
+        replays = any(m.get("role") == "assistant" for m in params.get("messages") or [])
+        prompt = prompt_token_bound(params, self._loop_output_tokens if replays else 0)
         if s and s.ai_max_prompt_tokens and prompt > s.ai_max_prompt_tokens:
             raise LLMError(f"The next model call could have a prompt of up to {prompt:,} tokens, over the limit of {s.ai_max_prompt_tokens:,}. It was not sent.", "budget")
         if not (s and s.ai_strict_spending):
             return None
         one = call_cost_bound(self.model, prompt, int(params.get("max_tokens") or self._max_tokens), s)
+        self._reserved_prompt, self._reserved_one = prompt, one
         if one is None:
             return None
         # A retried attempt may be billed too, and the SDK does not say whether it retried.
@@ -327,11 +337,20 @@ class AnthropicProvider(LLMProvider):
             raise
         self.served_model = getattr(response, "model", None) or self.served_model
         u = response.usage
+        before = self.usage.cost_usd
         self.usage.record(
             self.model, self.settings, input_tokens=u.input_tokens, output_tokens=u.output_tokens,
             cache_read=getattr(u, "cache_read_input_tokens", 0), cache_write=getattr(u, "cache_creation_input_tokens", 0),
             latency_ms=int((time.perf_counter() - started) * 1000),
         )
+        if strict and self._reserved_one is not None:
+            # The bound rests on an assumption (a token is never shorter than one byte). If a bill
+            # ever contradicts it, stop: nothing after this call could be trusted to fit.
+            billed_prompt = (u.input_tokens or 0) + (getattr(u, "cache_read_input_tokens", 0) or 0) + (getattr(u, "cache_creation_input_tokens", 0) or 0)
+            if billed_prompt > self._reserved_prompt or self.usage.cost_usd - before > self._reserved_one + 1e-12:
+                self.bound_exceeded = (f"a response used {billed_prompt:,} prompt tokens and ${self.usage.cost_usd - before:.6f}, "
+                                       f"more than the {self._reserved_prompt:,} tokens and ${self._reserved_one:.6f} reserved for it")
+                raise LLMError(f"Spending accounting failed: {self.bound_exceeded}. No further model calls were made.", "budget")
         expected = self.settings.ai_expected_model if self.settings else ""
         served = str(getattr(response, "model", "") or "")
         if expected and served != expected and not re.fullmatch(re.escape(expected) + r"-\d{8}", served):
@@ -349,6 +368,7 @@ class AnthropicProvider(LLMProvider):
         # every round of the tool loop, so each round after the first reads them from cache.
         params["cache_control"] = {"type": "ephemeral"}
         response = await self._call(self._client.messages.create, **params)
+        self._loop_output_tokens += response.usage.output_tokens or 0
         text = "".join(b.text for b in response.content if b.type == "text")
         calls = [{"id": b.id, "name": b.name, "args": dict(b.input), "type": "tool_call"} for b in response.content if b.type == "tool_use"]
         raw = [b.model_dump(mode="json", exclude_none=True) for b in response.content]

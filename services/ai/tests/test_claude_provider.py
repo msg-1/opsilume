@@ -285,7 +285,7 @@ async def test_evaluation_run_never_exceeds_its_budget_and_skips_what_it_cannot_
     # One call can cost at most this: the largest prompt the provider will send, all written to the
     # cache, and a full-length answer.
     reserve = evals.worst_case_call_usd("claude-haiku-5-5", settings)
-    assert reserve == pytest.approx((90_000 * 0.125 + settings.ai_max_tokens * 0.50) / 1_000_000)
+    assert reserve == pytest.approx((98_000 * 0.125 + settings.ai_max_tokens * 0.50) / 1_000_000)
     original = evals.build_provider
     evals.build_provider = fake_build
     try:
