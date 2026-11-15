@@ -30,7 +30,8 @@ export const requestApprovalBody = z.object({ acknowledgeUnverifiedSource: z.boo
 export const rejectionBody = decisionBody.extend({ comment: z.string().trim().min(3, 'Give a reason for rejecting').max(2000) });
 // expectedHash: the fingerprint the person executing was shown (currentHash). A request from an older view is refused.
 export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
-export const retryBody = z.object({ confirmNotApplied: z.boolean().optional() });
+// `attempt` is the failed attempt being retried, so a retry made from an older view cannot land on another one.
+export const retryBody = z.object({ attempt: z.number().int().min(1) });
 // What a person found on the target system for the latest attempt whose outcome is unknown.
 // `attempt` is the attempt they looked at, so a decision cannot land on a newer one.
 export const reconcileBody = z.object({ outcome: z.enum(['applied', 'not_applied', 'unknown']), notes: z.string().trim().min(3, 'Say what you checked').max(2000), attempt: z.number().int().min(1) });

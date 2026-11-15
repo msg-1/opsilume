@@ -1,7 +1,6 @@
 import type { InvestigationEvent } from '../../integrations/aiService';
 import { prisma } from '../../lib/prisma';
 import { annotate, withSpan } from '../../lib/tracing';
-import { KNOWLEDGE_PROVENANCES } from '../../generated/contracts';
 import { applyGuardrails } from './guardrails';
 import { persistFinal, saveEngine, saveEvidence, savePlan, stepWriter } from './persistence';
 import { reportSchema } from './schema';
@@ -52,7 +51,8 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
         evidenceRefs.add(e.ref);
         if (e.kind === 'deployment' && e.sourceId) deploymentRefs.set(e.sourceId, e.ref);
         const provenance = (e.data as { provenance?: unknown } | null | undefined)?.provenance;
-        if (e.kind === 'document' && provenance !== 'document' && (KNOWLEDGE_PROVENANCES as readonly unknown[]).includes(provenance)) notEvidence.add(e.ref);
+        // An allowlist: only text people wrote supports anything. Earlier AI output, unknown origin, a missing or unrecognised value: not evidence.
+        if (e.kind === 'document' && provenance !== 'document') notEvidence.add(e.ref);
         await saveEvidence(investigationId, e);
         break;
       }

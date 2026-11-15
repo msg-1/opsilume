@@ -11,13 +11,24 @@ from typing import Any
 from .generated.contracts import KNOWLEDGE_PROVENANCES
 from .schemas import EvidenceItem
 
-# Knowledge results that quote what an earlier AI investigation reported (the API decides this
-# when it reads them: apps/api/src/modules/knowledgeProvenance.ts). They are never evidence.
+# Provenance of knowledge results, decided by the API when it reads them (apps/api/src/modules/
+# knowledgeProvenance.ts). An allowlist: only "document" (written by people) can support anything.
+# Earlier AI output, text of unknown origin and any value not recognised are never evidence.
 EARLIER_AI_OUTPUT = frozenset(p for p in KNOWLEDGE_PROVENANCES if p != "document")
 
 
+def provenance_of(hit: dict[str, Any]) -> str:
+    """A result without a provenance is a plain document, except a postmortem: those may quote an
+    earlier AI investigation, so one whose origin is not stated is of unknown origin."""
+    value = hit.get("provenance")
+    if value is None:
+        return "unknown" if hit.get("type") == "postmortem" else "document"
+    return str(value) if value in KNOWLEDGE_PROVENANCES else "unknown"
+
+
 def is_earlier_ai_output(item: EvidenceItem) -> bool:
-    return item.kind == "document" and (item.data or {}).get("provenance") in EARLIER_AI_OUTPUT
+    """Knowledge text that cannot support a cause, a fact or a production change."""
+    return item.kind == "document" and (item.data or {}).get("provenance", "document") != "document"
 
 NOTABLE_METRIC_CHANGE = 25.0  # percent
 
@@ -299,8 +310,10 @@ class EvidenceStore:
             section = str(h.get("section") or "").split(" › ")[-1]
             doc_title = str(h.get("title") or "Document")
             label = doc_title if not section or section == doc_title.split(": ")[-1] or section in doc_title else f"{doc_title} › {section}"
-            provenance = str(h.get("provenance") or "document")
-            if provenance in EARLIER_AI_OUTPUT:
+            provenance = provenance_of(h)
+            if provenance == "unknown":
+                label += " (origin unknown, not evidence)"
+            elif provenance in EARLIER_AI_OUTPUT:
                 label += " (earlier AI output, not evidence)"
             out.append(self.add(
                 "document", label, _clip(h.get("content"), 560),

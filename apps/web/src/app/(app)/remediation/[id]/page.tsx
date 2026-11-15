@@ -44,7 +44,7 @@ export default function RemediationDetailPage() {
   const session = useSession();
   const { data: a, error, isLoading } = useApi<RemediationDetail>(`/remediations/${id}`, { refetchInterval: 10_000 });
   const { run, busy, error: actionError } = useAction();
-  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'retry' | 'reconcile'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'reconcile'>(null);
   const [found, setFound] = useState<null | 'applied' | 'not_applied' | 'unknown'>(null);
   const [comment, setComment] = useState('');
   // The person has reviewed an AI proposal whose investigation no longer supports a production change.
@@ -104,9 +104,8 @@ export default function RemediationDetailPage() {
               </>
             )}
             {a.status === 'APPROVED' && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('execute')}>{readOnly ? 'Record as done' : manual ? 'Mark as executed' : 'Execute'}</Button>}
-            {a.status === 'FAILED' && !outcomeUnknown && session.can('remediation:execute') && <Button loading={busy === 'retry'} onClick={() => void act('retry', {}, 'retry')}>Retry</Button>}
+            {a.status === 'FAILED' && !outcomeUnknown && session.can('remediation:execute') && <Button loading={busy === 'retry'} onClick={() => void act('retry', { attempt: a.attempts }, 'retry')}>Retry</Button>}
             {outcomeUnknown && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('reconcile')}>Record what happened</Button>}
-            {outcomeUnknown && session.can('remediation:execute') && <Button variant="danger" onClick={() => setDialog('retry')}>Retry…</Button>}
             {['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && session.can('remediation:propose') && <Button variant="ghost" loading={busy === 'cancel'} onClick={() => void act('cancel', {}, 'cancel')}>Cancel action</Button>}
           </>
         }
@@ -114,7 +113,7 @@ export default function RemediationDetailPage() {
       <FormError error={actionError} />
       <Card className="mb-4"><Progress status={a.status} /></Card>
       {blocker && <div className="mb-4"><Notice tone="warn">{blocker}</Notice></div>}
-      {outcomeUnknown && <div className="mb-4"><Notice tone="warn"><strong>The outcome of the last attempt is unknown.</strong> The request was sent, but no clear answer came back, so the change may or may not have been applied. Check the target system before retrying: a retry could apply it a second time.</Notice></div>}
+      {outcomeUnknown && <div className="mb-4"><Notice tone="warn"><strong>The outcome of the last attempt is unknown.</strong> The request was sent, but no clear answer came back, so the change may or may not have been applied. Check the target system and record what happened. It can be retried only once it is recorded as not applied: a retry could otherwise apply it a second time.</Notice></div>}
       {readOnly && ['PROPOSED', 'APPROVED'].includes(a.status) && <div className="mb-4"><Notice>This is a read-only diagnostic. It changes nothing, so it needs no approval: carry it out and record what you found.</Notice></div>}
       {a.status === 'PROPOSED' && a.proposedByType === 'ai_agent' && !unverifiedSource && <div className="mb-4"><Notice>This action was proposed by an AI investigation. Review the rationale and evidence before submitting it for approval.</Notice></div>}
       {unverifiedSource && ['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && (
@@ -253,15 +252,6 @@ export default function RemediationDetailPage() {
           ))}
         </fieldset>
         <Field label="What you checked">{(fid) => <Textarea id={fid} rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />}</Field>
-      </Modal>
-      <Modal
-        open={dialog === 'retry'}
-        onClose={() => setDialog(null)}
-        title="Retry after an unknown outcome"
-        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="danger" loading={busy === 'retry'} onClick={() => void act('retry', { confirmNotApplied: true }, 'retry')}>I have checked: it was not applied</Button></>}
-      >
-        <FormError error={actionError} />
-        <p className="text-sm text-ink-2">The last attempt may have changed the target system. Retrying sends the action again with the same idempotency key, but a receiver that does not honour the key would apply it twice. Confirm only after you have checked the target system and the change is <strong className="text-ink">not</strong> in place. Your confirmation is recorded in the audit trail.</p>
       </Modal>
     </>
   );

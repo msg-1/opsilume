@@ -144,14 +144,18 @@ An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This i
   | still unknown | It stays blocked, with the check on record, and can be reconciled again later |
 
   The decision is conditional on the attempt and the state, so a second decision made from the same view is refused. Every decision is audited (`remediation.reconcile`) and kept on the execution record.
-- **Retry.** After `not_applied`, a retry needs nothing further. After `unknown`, a retry needs `confirmNotApplied: true`, which is recorded as a reconciliation (`via: retry`). A retry returns the action to `APPROVED`. Execution then checks everything again: fingerprint, source, risk, approvals and their age. Every attempt carries the same idempotency key (`Idempotency-Key` header and `idempotencyKey` in the body), so a receiver that did apply the first attempt can refuse the second.
+- **Retry only after "not applied" is established.** A retry names the attempt it retries (`{ attempt }`), and is accepted only for the latest attempt and only when its outcome is `not_applied`:
+  - either the webhook refused it (a 4xx, or a destination refused before sending), so nothing was sent or applied;
+  - or a person recorded "not applied" through reconciliation, as a separate decision.
+
+  An unknown outcome is never retried on anyone's word inside the retry request. The former `confirmNotApplied` shortcut is gone. A retry returns the action to `APPROVED`, conditionally on the attempt, so concurrent retries count once. Execution then checks everything again: the fingerprint, the source investigation and its evidence, the risk, and the number and age of the approvals. The audit records the reconciliation (`remediation.reconcile`) and the retry (`remediation.retry`, with `notAppliedBecause: refused | reconciled`). Every attempt carries the same idempotency key (`Idempotency-Key` header and `idempotencyKey` in the body), so a receiver that did apply the first attempt can refuse the second.
 - **Record.** The execution result and the audit trail carry the approval fingerprint, the approvers with the time of each approval, the attempt number, the source check, the mode and the outcome.
 
 **Operator procedure for an unknown outcome.**
 1. Open the action. An interrupted attempt says so under "Mode".
 2. Check the target system for the change, using the attempt number and the idempotency key (the action id).
 3. Record what you found with "Record what happened": applied, not applied, or still unknown, saying what you checked.
-4. Only after "not applied" is recorded, retry, and execute again under the current approvals.
+4. Only after "not applied" is recorded, retry (naming the attempt), and execute again. Execution checks the current approvals, which may have expired meanwhile, so fresh approval may be needed.
 5. Look in the audit log for a late outcome (`remediation.outcome_after_interruption`): it can tell you what the webhook answered after the attempt was marked interrupted.
 
 **What OPSILUME cannot guarantee:**
@@ -295,29 +299,41 @@ Limits:
 - **Labelling:** the investigation page and the printable report label the stored values as historical, not current.
 - **Where the shown values are used:** the list, the incident page, the dashboard and a postmortem drafted now. The analytics averages use the stored values.
 
-**Earlier AI output in the knowledge base.** A postmortem drafted by OPSILUME quotes what an AI investigation reported:
-- its "AI investigation findings (unconfirmed)" section;
-- timeline lines that begin "AI investigation completed".
+**Earlier AI output in the knowledge base.** A postmortem drafted by OPSILUME copies text from records that are still stored:
+- what the incident's AI investigations reported: their summaries, narratives and hypotheses, and the "AI investigation completed" timeline entries;
+- what people recorded on the incident: description, impact, root cause, resolution and the other timeline entries.
 
-Before summaries were built from the assessment, that text was a model's own narrative. Postmortems can be edited, so no stored flag is trusted. The agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance when it reads a result, from the section heading and the text:
+Before summaries were built from the assessment, an investigation's summary was a model's own narrative. Postmortems can be edited, so the agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance from structured records, not from formatting:
+- **Whether OPSILUME drafted the document:** the `postmortem.create` audit entry written when it was drafted. That is the only way a postmortem is linked to an incident through the API, and audit entries are never edited.
+- **Where each piece of text came from:** passages of the retrieved chunk are matched against the stored source records themselves. Text is compared after normalising whitespace and case, in overlapping windows of 48 characters, so a passage split across two chunks is found in each part long enough to hold a window. Renaming, removing or reordering headings, and where a chunk starts, do not change the answer. The heading is one more signal, never the only one.
 
-| Chunk | `provenance` | Given to the agent as |
-|---|---|---|
-| From the AI-findings section | `earlier_ai_output` | Labelled "[Earlier AI output, not evidence …]", as historical and unverified if it predates the verified summary; the incident's current verified assessment attached when there is one |
-| Quoting completion messages | `contains_earlier_ai_output` | Each such line labelled "[earlier AI output, unverified]" |
-| Anything else (runbooks, resolution steps, what people wrote) | `document` | As written |
+| Chunk of a drafted postmortem | `provenance` | `provenanceBasis` | Given to the agent as |
+|---|---|---|---|
+| Matches only what people recorded on the incident | `document` | `incident_record` | As written: usable operational knowledge, such as the resolution steps |
+| Matches what an AI investigation reported, and nothing people recorded | `earlier_ai_output` | `source_match` (or `heading`) | Labelled "[Earlier AI output, not evidence …]", as historical and unverified when it is a model's text rather than the verified summary; the incident's current verified assessment attached separately |
+| Matches both | `contains_earlier_ai_output` | `source_match` (or `heading`) | Each AI paragraph labelled "[earlier AI output, unverified]" where it stands; the rest as written |
+| Matches no stored source (edited or paraphrased text, a template line, sources no longer stored) | `unknown` | `unmatched` | Labelled "[Origin unknown, not evidence …]" |
 
-Neither the stored document nor the database row is changed. In the AI service:
-- **Labelled evidence:** the label reaches the evidence item.
-- **No support in either guardrail pass:** a hypothesis citing only earlier AI output is capped at `unsupportedHypothesisCap` and is not likely; a "fact" resting only on it becomes an assumption. This is a shared guardrail case in `contracts/fixtures/guardrail-cases.json`.
-- **Rule-based engine:** it no longer lets earlier AI output corroborate a mechanism or suggest a "documented procedure".
-- **Prompt:** the system prompt tells the model it is not evidence.
+Any document OPSILUME did not draft (runbooks, guides, postmortems people wrote, the seeded demo postmortem) is `document` (`not_generated`).
+
+**Only `document` can support anything.** This is an allowlist in both services:
+- earlier AI output, text of unknown origin, and a missing or unrecognised provenance may be read and cited, never as support;
+- a postmortem result that carries no provenance at all is `unknown` in the AI service.
+
+In both guardrail passes:
+- a hypothesis citing only such text is capped at `unsupportedHypothesisCap` and is not likely;
+- a "fact" resting only on it becomes an assumption;
+- a production change resting only on it is withdrawn (`withdrawalReasons.earlierAiOutput`, a shared guardrail case).
+
+It can never make an outcome INCIDENT, because the assessment counts only evidence that can be a cause, and a knowledge document is not one. The rule-based engine does not let it corroborate a mechanism or suggest a "documented procedure", and the system prompt says it is not evidence. Neither the stored document nor any database row is changed.
 
 Limits:
-- **The section heading is still inside the editable document.** A postmortem whose AI-findings heading was renamed, or whose text was moved to another section, loses the label.
-- **"Historical" is approximate.** A chunk is called historical when it does not contain the incident's current verified summary. A long section split across chunks, or a newer investigation of the same incident, can make a postmortem drafted under the current rules read as historical. That is the cautious direction.
-- **Only the agent's search is labelled.** The knowledge pages people read show documents as written.
-- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced is the guardrail rule and the rule-based engine's exclusion, which do not depend on the model reading the label.
+- **Matching recognises copied text, not meaning.** Model text that a person rewrote in their own words matches nothing, and is then `unknown`: not evidence, but not identified as AI output either. Text copied into a new document by hand loses the generator record, and reads as written by people.
+- **Chunk edges.** A fragment shorter than 48 characters left at a chunk boundary is not matched by itself. The chunk is still classified by the rest of its text, and is `unknown` if nothing else matches.
+- **"Historical" is approximate.** It means the chunk contains a model's own text, or does not contain the verified summary.
+- **Only the agent's search is labelled.** People see documents as written.
+- **No new column.** A stored per-chunk provenance field would need a migration and a backfill; none was added. The audit entry and the source records are the structured provenance.
+- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced does not depend on the model reading the label: the allowlist in both guardrail passes and the rule-based exclusion.
 
 **Copies made before.**
 
@@ -326,7 +342,7 @@ Limits:
 | Investigation detail, list, incident page and its completion entry, remediation actions, dashboard | Yes | Derived from the stored report at each read (section 4b and above) |
 | Postmortem drafted from now on | Yes | Built from the same view |
 | Postmortem drafted before, as shown to people | No | A document people may have edited and shared. It is not rewritten. |
-| Postmortem drafted before, as given to the investigation agent | Labelled, not rewritten | See "Earlier AI output in the knowledge base" |
+| Postmortem drafted before, as given to the investigation agent | Labelled when read, not rewritten | Classified from the generator's audit entry and the stored source records ("Earlier AI output in the knowledge base") |
 | In-app notification already delivered | No | A delivered message is not rewritten. Its body may quote an older model summary |
 | Audit log | No | A record of what happened at the time |
 
@@ -360,7 +376,15 @@ Other files:
   - after a success response, before it was stored.
 
   It also covers a timeout, a 5xx, duplicate sweeps, a late outcome, all three reconciliation decisions, duplicate decisions and an explicit retry.
-- `knowledge-provenance.test.ts` runs the real indexer and the agent's search, and covers the API guardrail pass.
+- `knowledge-provenance.test.ts` runs the real indexer and the agent's search over drafted postmortems:
+  - with their original headings, a renamed findings heading, no findings heading, and reordered sections;
+  - with model text split across chunks;
+  - with their sources deleted (then `unknown`);
+  - with findings and a resolution in one chunk;
+  - without a generator record (as the seed writes them).
+
+  It also runs a report through the API whose hypotheses, facts and production change rest only on earlier AI output, text of unknown origin, or text with no provenance.
+- `reconciliation.test.ts` also walks reconcile, retry and execute, with each current rule refusing in turn (changed content, a risk below the floor, an expired approval, a source that no longer supports it), and concurrent retries and executions resulting in exactly one webhook call.
 - `config.test.ts` covers the validity bounds.
 - `services/ai/tests/test_knowledge_provenance.py` covers the AI service side.
 - The lifecycle tests already in `safety.test.ts` were updated for the new policy: a rationale edit and a target change need fresh approval; risk cannot be lowered.

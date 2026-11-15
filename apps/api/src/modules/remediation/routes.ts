@@ -314,30 +314,30 @@ remediationRouter.patch('/:id', requirePermission('remediation:propose'), requir
 });
 
 /**
- * A failed execution can be sent back for another attempt. The approvals still have to match the
- * content when it is executed again. If the last attempt's outcome is unknown (timeout, dropped
- * connection, server error), a human must first confirm that the change was NOT applied:
- * otherwise a retry could apply it a second time.
+ * A failed execution can be sent back for another attempt, only once its outcome is known to be
+ * "not applied": refused by the webhook (a 4xx, or a destination refused before sending), or
+ * recorded so by a person who checked the target system (reconcile). An unknown outcome is never
+ * retried on anyone's word inside this request: it must be reconciled first, as a separate,
+ * recorded decision. Only the attempt named is retried. The retry returns the action to APPROVED;
+ * execution then checks everything again (fingerprint, source, risk, approvals and their age).
  */
 remediationRouter.post('/:id/retry', requirePermission('remediation:execute'), requireUser, async (req, res) => {
   const auth = userOf(req);
   const body = retryBody.parse(req.body ?? {});
   const action = await load(auth.organizationId, param(req.params.id));
   if (action.status !== 'FAILED') throw conflict('Only failed actions can be retried');
-  const last = (action.executionResult ?? {}) as Record<string, unknown> & { outcome?: string };
-  const uncertain = last.outcome !== 'not_applied';
-  if (uncertain && !body.confirmNotApplied) {
-    throw conflict('The outcome of the last attempt is unknown: the change may have been applied. Check the target system and record what happened (reconcile), or retry with confirmNotApplied: true.');
+  if (body.attempt !== action.attempts) throw conflict(`Attempt ${body.attempt} is not the latest attempt (${action.attempts}). Reload the action.`);
+  const last = (action.executionResult ?? {}) as Record<string, unknown> & { outcome?: string; reconciliations?: { outcome: string }[] };
+  if (last.outcome !== 'not_applied') {
+    throw conflict(`The outcome of attempt ${action.attempts} is ${last.outcome ?? 'unknown'}: the change may have been applied. Check the target system and record what happened (reconcile); it can be retried once it is recorded as not applied.`);
   }
-  // Confirming "not applied" here is a reconciliation of the last attempt, recorded as one.
-  const executionResult = uncertain ? reconciled(last, { outcome: 'not_applied', by: auth.userId, byLabel: auth.label, at: new Date().toISOString(), notes: 'Confirmed not applied when retrying.', via: 'retry' }) : undefined;
   const updated = await prisma.remediationAction.updateMany({
     where: { id: action.id, organizationId: auth.organizationId, status: 'FAILED', attempts: action.attempts, updatedAt: action.updatedAt },
-    data: { status: 'APPROVED', ...(executionResult ? { executionResult: executionResult as Prisma.InputJsonValue } : {}) },
+    data: { status: 'APPROVED' },
   });
   if (!updated.count) throw conflict('This action changed; reload it before retrying');
-  if (uncertain) await audit(req, 'remediation.reconcile', 'remediation_action', action.id, { attempt: action.attempts, outcome: 'not_applied', previousOutcome: last.outcome ?? 'unknown', interrupted: !!last.interrupted, via: 'retry' });
-  await audit(req, 'remediation.retry', 'remediation_action', action.id, { previousOutcome: last.outcome ?? 'unknown', confirmedNotApplied: uncertain ? true : undefined, attempt: action.attempts });
+  const reconciled = Array.isArray(last.reconciliations) && last.reconciliations.at(-1)?.outcome === 'not_applied';
+  await audit(req, 'remediation.retry', 'remediation_action', action.id, { attempt: action.attempts, previousOutcome: 'not_applied', notAppliedBecause: reconciled ? 'reconciled' : 'refused' });
   res.json(await present(auth.organizationId, param(req.params.id)));
 });
 

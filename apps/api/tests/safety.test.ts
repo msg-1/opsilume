@@ -262,7 +262,7 @@ describe('state-changing actions', () => {
     expect((await org.owner.get(base)).body).toMatchObject({ status: 'EXECUTED', attempts: 1 });
   });
 
-  it('record an unknown outcome on timeout and are not retried until a person confirms nothing was applied', async () => {
+  it('record an unknown outcome on timeout and are not retried until a person records that nothing was applied', async () => {
     const org = await createOrg();
     await useWebhook(org);
     const service = await createService(org.owner, 'Orders');
@@ -276,17 +276,21 @@ describe('state-changing actions', () => {
     expect(await prisma.serviceEvent.count({ where: { organizationId: org.organizationId } })).toBe(0); // no effect is recorded for something that may not have happened
     expect((await auditOf(action.id)).at(-1)).toMatchObject({ action: 'remediation.execute_failure', meta: { outcome: 'unknown' } });
 
-    const blocked = await org.owner.post(`${base}/retry`).send({});
+    const blocked = await org.owner.post(`${base}/retry`).send({ attempt: 1 });
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.message).toContain('the change may have been applied');
+    // The one-step confirmation is gone: it is not accepted in place of a recorded decision.
+    expect((await org.owner.post(`${base}/retry`).send({ attempt: 1, confirmNotApplied: true })).status).toBe(409);
     expect((await org.owner.post(`${base}/execute`).send({})).status).toBe(409);
-    await org.owner.post(`${base}/retry`).send({ confirmNotApplied: true }).expect(200);
+    await org.owner.post(`${base}/reconcile`).send({ outcome: 'not_applied', notes: 'No flush in the cache logs.', attempt: 1 }).expect(200);
+    await org.owner.post(`${base}/retry`).send({ attempt: 1 }).expect(200);
     respond.delayMs = 0;
     const done = (await org.owner.post(`${base}/execute`).send({}).expect(200)).body;
     expect(done).toMatchObject({ status: 'EXECUTED', attempts: 2, executionResult: { outcome: 'applied', attempt: 2 } });
     // Both attempts carried the same idempotency key, so a receiver that did apply the first can refuse the second.
     expect(received.map((r) => [r.headers['idempotency-key'], r.body.attempt])).toEqual([[action.id, 1], [action.id, 2]]);
-    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.retry')!.meta).toMatchObject({ previousOutcome: 'unknown', confirmedNotApplied: true });
+    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.reconcile')!.meta).toMatchObject({ outcome: 'not_applied', previousOutcome: 'unknown', attempt: 1 });
+    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.retry')!.meta).toMatchObject({ attempt: 1, previousOutcome: 'not_applied', notAppliedBecause: 'reconciled' });
     expect(await prisma.serviceEvent.count({ where: { organizationId: org.organizationId, source: 'remediation' } })).toBe(1);
   });
 
@@ -296,13 +300,13 @@ describe('state-changing actions', () => {
     const first = await approved(org);
     respond.status = 500;
     expect((await org.owner.post(`${first.base}/execute`).send({})).body).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'unknown', detail: { status: 500 } } });
-    expect((await org.owner.post(`${first.base}/retry`).send({})).status).toBe(409);
+    expect((await org.owner.post(`${first.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     const second = await approved(org);
     respond.status = 403;
     const refused = (await org.owner.post(`${second.base}/execute`).send({})).body;
     expect(refused).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'not_applied' } });
     expect(refused.executionResult.summary).toContain('Nothing was applied');
-    await org.owner.post(`${second.base}/retry`).send({}).expect(200); // nothing was applied, so no confirmation is needed
+    await org.owner.post(`${second.base}/retry`).send({ attempt: 1 }).expect(200); // refused by the webhook: certainly not applied, so no reconciliation is needed
     // A retry does not skip the binding: the content is checked again when it is executed.
     await prisma.remediationAction.update({ where: { id: second.action.id }, data: { title: 'Flush everything' } });
     expect((await org.owner.post(`${second.base}/execute`).send({})).status).toBe(409);

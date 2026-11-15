@@ -491,7 +491,7 @@ describe('remediation approvals', () => {
       expect((await org.owner.post(`${base}/execute`).send({})).body).toMatchObject({ status: 'FAILED', executionResult: { mode: 'webhook', success: false, outcome: 'not_applied' } });
       expect(await prisma.serviceEvent.count({ where: { organizationId: org.organizationId } })).toBe(0);
       status = 200;
-      await org.owner.post(`${base}/retry`).expect(200);
+      await org.owner.post(`${base}/retry`).send({ attempt: 1 }).expect(200);
       const executed = (await org.owner.post(`${base}/execute`).send({})).body;
       expect(executed.status).toBe('EXECUTED');
       // Only the status code is kept: the webhook's response body is never stored or returned.

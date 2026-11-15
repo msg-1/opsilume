@@ -72,11 +72,11 @@ beforeEach(() => {
 const auditOf = async (id: string) => (await prisma.auditLog.findMany({ where: { resourceId: id }, orderBy: { createdAt: 'asc' } })).map((a) => ({ action: a.action, meta: a.metadata as Record<string, unknown> | null }));
 
 /** A restart, approved by an admin, in an organisation whose actions are carried out by the stand-in webhook. */
-async function approvedAction(org: Org) {
+async function approvedAction(org: Org, investigationId?: string) {
   await org.owner.patch('/api/v1/settings').send({ remediationWebhookUrl: `http://127.0.0.1:${(hook.address() as AddressInfo).port}/hook` }).expect(200);
   const approver = await org.member('ADMIN');
   const service = await createService(org.owner, `Orders ${Math.random().toString(36).slice(2, 7)}`);
-  const action = (await org.owner.post('/api/v1/remediations').send({ type: 'restart_service', title: 'Restart orders', description: 'Restart the orders pods.', risk: 'MEDIUM', serviceId: service.id }).expect(201)).body;
+  const action = (await org.owner.post('/api/v1/remediations').send({ type: 'restart_service', title: 'Restart orders', description: 'Restart the orders pods.', risk: 'MEDIUM', serviceId: service.id, ...(investigationId ? { investigationId } : {}) }).expect(201)).body;
   const base = `/api/v1/remediations/${action.id}`;
   await org.owner.post(`${base}/request-approval`).send({}).expect(200);
   const { currentHash } = (await org.owner.get(base)).body;
@@ -123,7 +123,7 @@ describe('an execution whose process stops', () => {
 
     // Nothing retries it: not the sweep, not a plain retry request.
     await reapStranded();
-    expect((await org.owner.post(`${a.base}/retry`).send({})).status).toBe(409);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     expect((await org.owner.post(`${a.base}/execute`).send({})).status).toBe(409);
     expect(received).toHaveLength(sent);
   });
@@ -166,7 +166,7 @@ describe('an outcome the webhook could not confirm', () => {
     expect(failed).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'unknown' } });
     await new Promise((r) => setTimeout(r, 1_100));
     await reapStranded();
-    expect((await org.owner.post(`${a.base}/retry`).send({})).status).toBe(409);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     expect(received).toHaveLength(1);
   });
 });
@@ -187,7 +187,7 @@ describe('a person reconciling an unknown outcome', () => {
     expect(done).toMatchObject({ status: 'EXECUTED', executionResult: { outcome: 'applied', success: true, reconciliations: [expect.objectContaining({ outcome: 'applied', previousOutcome: 'unknown', notes: 'Pods show the restart at 10:02.' })] } });
     expect(await prisma.serviceEvent.count({ where: { serviceId: a.serviceId } })).toBe(1);
     expect((await auditOf(a.id)).at(-1)).toMatchObject({ action: 'remediation.reconcile', meta: { attempt: 1, outcome: 'applied', previousOutcome: 'unknown' } });
-    expect((await org.owner.post(`${a.base}/retry`).send({ confirmNotApplied: true })).status).toBe(409);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     expect(received).toHaveLength(1);
   });
 
@@ -196,7 +196,7 @@ describe('a person reconciling an unknown outcome', () => {
     const a = await unknownOutcome(org);
     expect((await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'not_applied', notes: 'No restart in the pod events.', attempt: 1 }).expect(200)).body).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'not_applied' } });
     expect(received).toHaveLength(1);
-    await org.owner.post(`${a.base}/retry`).send({}).expect(200);
+    await org.owner.post(`${a.base}/retry`).send({ attempt: 1 }).expect(200);
     const retried = (await org.owner.post(`${a.base}/execute`).send({}).expect(200)).body;
     expect(retried).toMatchObject({ status: 'EXECUTED', attempts: 2 });
     expect(received.map((r) => [r.attempt, r.key])).toEqual([[1, a.id], [2, a.id]]);
@@ -207,7 +207,7 @@ describe('a person reconciling an unknown outcome', () => {
     const a = await unknownOutcome(org);
     const still = (await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'unknown', notes: 'The target logs are not available yet.', attempt: 1 }).expect(200)).body;
     expect(still).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'unknown', reconciliations: [expect.objectContaining({ outcome: 'unknown' })] } });
-    expect((await org.owner.post(`${a.base}/retry`).send({})).status).toBe(409);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'not_applied', notes: 'Logs show no restart.', attempt: 1 }).expect(200);
     expect((await row(a.id)).executionResult).toMatchObject({ outcome: 'not_applied', reconciliations: [expect.objectContaining({ outcome: 'unknown' }), expect.objectContaining({ outcome: 'not_applied' })] });
   });
@@ -235,13 +235,84 @@ describe('a person reconciling an unknown outcome', () => {
     expect((await org.owner.post(`${fresh.base}/reconcile`).send({ outcome: 'not_applied', notes: 'Checked.', attempt: 1 })).status).toBe(409);
   });
 
-  it('a retry that confirms "not applied" is recorded as a reconciliation too', async () => {
+  it('a retry is refused until "not applied" is recorded, and only for the attempt named', async () => {
     const org = await createOrg();
     const a = await unknownOutcome(org);
-    await org.owner.post(`${a.base}/retry`).send({ confirmNotApplied: true }).expect(200);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 1, confirmNotApplied: true })).status).toBe(409);
+    expect((await org.owner.post(`${a.base}/retry`).send({})).status).toBe(400);
+    await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'not_applied', notes: 'No restart in the pod events.', attempt: 1 }).expect(200);
+    expect((await org.owner.post(`${a.base}/retry`).send({ attempt: 2 })).status).toBe(409);
+    await org.owner.post(`${a.base}/retry`).send({ attempt: 1 }).expect(200);
     const trail = await auditOf(a.id);
     expect(trail.slice(-2).map((x) => x.action)).toEqual(['remediation.reconcile', 'remediation.retry']);
-    expect(trail.at(-2)!.meta).toMatchObject({ outcome: 'not_applied', via: 'retry', attempt: 1 });
-    expect((await row(a.id)).executionResult).toMatchObject({ outcome: 'not_applied', reconciliations: [expect.objectContaining({ via: 'retry' })] });
+    expect(trail.at(-1)!.meta).toMatchObject({ attempt: 1, previousOutcome: 'not_applied', notAppliedBecause: 'reconciled' });
+  });
+});
+
+describe('a retry after reconciliation is held to every current rule', () => {
+  /** An investigation showing a verified incident, so an action linked to it needs no extra review. */
+  const incidentInvestigation = async (org: Org) =>
+    prisma.investigation.create({
+      data: {
+        organizationId: org.organizationId, question: 'Why?', status: 'COMPLETED', analysisMode: 'llm', summary: 'Assessed outcome: INCIDENT.', confidence: 0.8, outcome: 'INCIDENT', completedAt: new Date(),
+        report: { summary: 'Assessed outcome: INCIDENT.', summarySource: 'assessment', analysisMode: 'llm', confidence: 0.8, assessment: { outcome: 'INCIDENT', confidence: 0.9, rationale: 'A failure is evident.', supportingRefs: ['E1'] }, hypotheses: [] } as never,
+        evidence: { create: [{ ref: 'E1', kind: 'log_pattern', title: 'E1', summary: 'E1' }] },
+      },
+    });
+
+  /** Attempt 1 ended unknown, a person recorded "not applied", and the action was retried: it is APPROVED again. */
+  async function retried(org: Org, investigationId?: string) {
+    const a = await approvedAction(org, investigationId);
+    respond.status = 503;
+    await org.owner.post(`${a.base}/execute`).send({}).expect(200);
+    respond.status = 200;
+    await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'not_applied', notes: 'Checked: no restart.', attempt: 1 }).expect(200);
+    await org.owner.post(`${a.base}/retry`).send({ attempt: 1 }).expect(200);
+    expect((await row(a.id)).status).toBe('APPROVED');
+    return a;
+  }
+
+  it.each([
+    ['its content changed', async (a: { id: string }) => { await prisma.remediationAction.update({ where: { id: a.id }, data: { description: 'Restart every pod in every region.' } }); }, 'changed after it was approved or submitted'],
+    ['its risk is below the current floor', async (a: { id: string }) => { await prisma.remediationAction.update({ where: { id: a.id }, data: { risk: 'LOW' } }); }, 'medium risk, not low'],
+    ['its approval expired', async (a: { id: string }) => { await prisma.approval.updateMany({ where: { actionId: a.id }, data: { createdAt: new Date(Date.now() - (env.REMEDIATION_APPROVAL_VALIDITY_HOURS + 1) * 3_600_000) } }); }, 'no longer count'],
+  ])('is refused when %s, and nothing is sent', async (_label, change, message) => {
+    const org = await createOrg();
+    const a = await retried(org);
+    await change(a);
+    const run = await org.owner.post(`${a.base}/execute`).send({});
+    expect(run.status).toBe(409);
+    expect(run.body.error.message).toContain(message);
+    expect(received).toHaveLength(1);
+  });
+
+  it('is refused when the investigation it is linked to no longer supports a production change', async () => {
+    const org = await createOrg();
+    const inv = await incidentInvestigation(org);
+    const a = await retried(org, inv.id);
+    await prisma.investigation.update({ where: { id: inv.id }, data: { report: { ...(inv.report as object), assessment: { outcome: 'DEGRADED', confidence: 0.6, rationale: 'r', supportingRefs: ['E1'] } } as never } });
+    const run = await org.owner.post(`${a.base}/execute`).send({});
+    expect(run.status).toBe(409);
+    expect(run.body.error.message).toContain('its verified outcome is DEGRADED, not an incident');
+    expect(received).toHaveLength(1);
+  });
+
+  it('goes ahead once when everything still holds, however often retry and execute are asked for at once', async () => {
+    const org = await createOrg();
+    const inv = await incidentInvestigation(org);
+    const a = await approvedAction(org, inv.id);
+    respond.status = 503;
+    await org.owner.post(`${a.base}/execute`).send({}).expect(200);
+    respond.status = 200;
+    await org.owner.post(`${a.base}/reconcile`).send({ outcome: 'not_applied', notes: 'Checked: no restart.', attempt: 1 }).expect(200);
+    const retries = await Promise.all([1, 2, 3].map(() => org.owner.post(`${a.base}/retry`).send({ attempt: 1 })));
+    expect(retries.map((r) => r.status).sort()).toEqual([200, 409, 409]);
+    const runs = await Promise.all([1, 2, 3].map(() => org.owner.post(`${a.base}/execute`).send({})));
+    expect(runs.map((r) => r.status).sort()).toEqual([200, 409, 409]);
+    expect(received.map((r) => r.attempt)).toEqual([1, 2]);
+    const trail = (await auditOf(a.id)).map((x) => x.action);
+    expect(trail.filter((x) => x === 'remediation.retry')).toHaveLength(1);
+    expect(trail.filter((x) => x === 'remediation.execute_start')).toHaveLength(2);
+    expect(await row(a.id)).toMatchObject({ status: 'EXECUTED', attempts: 2 });
   });
 });

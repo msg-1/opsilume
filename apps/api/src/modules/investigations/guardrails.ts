@@ -148,6 +148,11 @@ export async function applyGuardrails(
   held.forEach((r) => doubted.delete(r));
   result.recommendedActions = result.recommendedActions.filter((a) => {
     if (a.effect !== 'state_changing') return true;
+    // 0. Knowledge-base text that is earlier AI output, or of unknown origin, supports no change.
+    if (a.evidenceRefs.length && a.evidenceRefs.every((r) => notEvidence.has(r))) {
+      withdraw(a, LIMITS.withdrawalReasons.earlierAiOutput);
+      return false;
+    }
     // A rollback rests on the deployment it rolls back, not on every record it cites (the
     // previous version's deployment is cited as the target, whatever else that record supports).
     const id = a.type === 'rollback_deployment' ? (a.parameters as { deploymentId?: unknown } | null | undefined)?.deploymentId : undefined;

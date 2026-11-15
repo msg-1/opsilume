@@ -639,25 +639,19 @@ describe('viewing execution outcomes', () => {
     expect(screen.getByText('Outcome').nextElementSibling).toHaveTextContent('Not applied');
     expect(screen.queryByText('The outcome of the last attempt is unknown.')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: {} }]));
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: { attempt: 1 } }]));
   });
 
-  it('an unknown outcome: is never shown as failed-and-safe, and a retry needs an explicit confirmation', async () => {
-    const api = fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'FAILED', approvalsGranted: 1, attempts: 1, executionResult: result('unknown', 'The webhook did not answer within 10 s.') }, 'POST /remediations/act-1/retry': { ok: true } });
+  it('an unknown outcome: is never shown as failed-and-safe, and cannot be retried until someone records what happened', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'FAILED', approvalsGranted: 1, attempts: 1, executionResult: result('unknown', 'The webhook did not answer within 10 s.') } });
     show(<RemediationDetailPage />, ada);
 
     expect(await screen.findByText('The outcome of the last attempt is unknown.')).toBeInTheDocument();
     expect(screen.getByText(/the change may or may not have been applied/)).toBeInTheDocument();
     expect(screen.getByText('Outcome').nextElementSibling).toHaveTextContent('Unknown: may or may not have been applied');
-    // No one-click retry: the plain button is replaced by one that opens a confirmation.
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry…' }));
-    expect(api.writes()).toEqual([]);
-
-    const dialog = screen.getByRole('dialog', { name: 'Retry after an unknown outcome' });
-    expect(dialog).toHaveTextContent('a receiver that does not honour the key would apply it twice');
-    await userEvent.click(within(dialog).getByRole('button', { name: 'I have checked: it was not applied' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: { confirmNotApplied: true } }]));
+    // No retry of any kind: only recording what happened.
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Record what happened' })).toBeInTheDocument();
   });
 
   it('without a webhook: the person carries the change out and confirms it, with notes', async () => {

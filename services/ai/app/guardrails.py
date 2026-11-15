@@ -245,6 +245,10 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
     for a in report.recommended_actions:
         if a.effect != "state_changing":
             continue
+        # Knowledge-base text that is earlier AI output, or of unknown origin, supports no change.
+        if a.evidence_refs and all(r in earlier for r in a.evidence_refs):
+            withdraw(a, LIMITS["withdrawalReasons"]["earlierAiOutput"])
+            continue
         # A rollback rests on the deployment it rolls back, not on every record it cites: the
         # previous version's deployment is cited as the target, whatever else that record supports.
         subject = by_source.get(a.parameters.deployment_id) if a.type == "rollback_deployment" and a.parameters and a.parameters.deployment_id else None

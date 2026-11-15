@@ -14,10 +14,11 @@ from app.rules import Case
 from app.schemas import EvidenceItem, Fact, HypothesisOut, InvestigationReport
 
 
-def search_result(provenance: str | None, content: str = "The connection pool was exhausted.") -> dict:
-    hit = {"chunkId": "c1", "documentId": "d1", "title": "Postmortem: Orders outage", "type": "postmortem", "section": "AI investigation findings (unconfirmed)", "content": content, "similarity": 0.8, "matchedBy": ["vector"]}
+def search_result(provenance: str | None, content: str = "The connection pool was exhausted.", doc_type: str = "postmortem") -> dict:
+    hit = {"chunkId": "c1", "documentId": "d1", "title": "Postmortem: Orders outage", "type": doc_type, "section": "AI investigation findings (unconfirmed)", "content": content, "similarity": 0.8, "matchedBy": ["vector"]}
     if provenance:
         hit["provenance"] = provenance
+    if provenance and provenance != "document":
         hit["currentAssessment"] = {"investigationId": "inv-1", "outcome": "INCIDENT", "summary": "Assessed outcome: INCIDENT. A failure is evident (E1)."}
     return {"mode": "hybrid", "results": [hit]}
 
@@ -38,9 +39,21 @@ def test_earlier_ai_output_is_labelled_in_the_evidence_and_keeps_its_text():
 
 def test_a_document_people_wrote_is_plain_evidence():
     store = EvidenceStore()
-    store.ingest("search_knowledge_base", search_result(None))
+    store.ingest("search_knowledge_base", search_result("document"))
     assert not store.items[0].title.endswith("not evidence)") and store.items[0].data["provenance"] == "document"
     assert store.not_evidence() == set()
+
+
+def test_a_missing_or_unrecognised_provenance_is_treated_conservatively():
+    # A postmortem that does not say where its text came from may quote an earlier AI investigation.
+    for hit, expected in [(search_result(None), "unknown"), (search_result("from-the-future"), "unknown"), (search_result(None, doc_type="runbook"), "document")]:
+        store = EvidenceStore()
+        store.ingest("search_knowledge_base", hit)
+        assert store.items[0].data["provenance"] == expected
+        assert (store.not_evidence() == {store.items[0].ref}) == (expected != "document")
+    store = EvidenceStore()
+    store.ingest("search_knowledge_base", search_result(None))
+    assert store.items[0].title.endswith("(origin unknown, not evidence)")
 
 
 def test_the_guardrails_count_it_as_no_support():
@@ -83,7 +96,7 @@ def _case(provenance: str | None) -> Case:
 
 
 def test_only_documents_people_wrote_corroborate_a_mechanism_or_suggest_a_procedure():
-    plain, earlier = _case(None), _case("earlier_ai_output")
+    plain, earlier = _case("document"), _case("earlier_ai_output")
     for case in (plain, earlier):
         rules.rule_recent_change(case)
     plain_h, earlier_h = plain.hypotheses[0], earlier.hypotheses[0]

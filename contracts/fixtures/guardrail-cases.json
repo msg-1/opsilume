@@ -1035,7 +1035,18 @@
         "nextSteps": [
           "Review the diff"
         ],
-        "recommendedActions": []
+        "recommendedActions": [
+          {
+            "type": "config_change",
+            "title": "Raise the connection pool size, as the old postmortem said",
+            "description": "Set DB_POOL_MAX=40 for orders.",
+            "risk": "MEDIUM",
+            "serviceSlug": "orders",
+            "evidenceRefs": [
+              "E4"
+            ]
+          }
+        ]
       },
       "expect": {
         "hypotheses": [
@@ -1061,6 +1072,9 @@
         "maxConfidence": 0.6,
         "facts": [
           "v1.5.0 was deployed before the errors."
+        ],
+        "nextStepsContain": [
+          "rests only on knowledge-base text that is earlier AI output"
         ],
         "assumptionsContain": [
           "The connection pool was exhausted last time."
