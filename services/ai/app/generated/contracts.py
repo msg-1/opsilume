@@ -35,6 +35,9 @@ VERIFICATION_STATUSES: tuple[str, ...] = ("verified", "partly", "unsupported", "
 SummarySource = Literal["assessment", "unverified", "rule_based"]
 SUMMARY_SOURCES: tuple[str, ...] = ("assessment", "unverified", "rule_based")
 
+KnowledgeProvenance = Literal["document", "earlier_ai_output", "contains_earlier_ai_output"]
+KNOWLEDGE_PROVENANCES: tuple[str, ...] = ("document", "earlier_ai_output", "contains_earlier_ai_output")
+
 GUARDRAIL_LIMITS: dict[str, Any] = {
     "maxConfidence": {
         "llm": 0.9,

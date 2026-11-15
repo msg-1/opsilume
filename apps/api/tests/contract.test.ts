@@ -108,7 +108,7 @@ describe('shared contracts', () => {
 
   interface GuardrailCase {
     name: string;
-    evidence: { ref: string; kind: string; sourceId: string }[];
+    evidence: { ref: string; kind: string; sourceId: string; data?: { provenance?: string } }[];
     report: unknown;
     expect: {
       actions: [string, string][];
@@ -131,7 +131,8 @@ describe('shared contracts', () => {
   it.each(cases.map((c) => [c.name, c] as const))('guardrail case: %s', async (_name, c) => {
     const known = new Set(c.evidence.map((e) => e.ref));
     const deployments = new Map(c.evidence.filter((e) => e.kind === 'deployment').map((e) => [e.sourceId, e.ref]));
-    const result = await applyGuardrails(reportSchema.parse(c.report), known, async () => undefined, deployments);
+    const notEvidence = new Set(c.evidence.filter((e) => e.kind === 'document' && e.data?.provenance && e.data.provenance !== 'document').map((e) => e.ref));
+    const result = await applyGuardrails(reportSchema.parse(c.report), known, async () => undefined, deployments, notEvidence);
     const e = c.expect;
     expect(result.recommendedActions.map((a) => [a.type, a.title])).toEqual(e.actions);
     for (const text of e.nextStepsContain ?? []) expect(result.nextSteps.some((s) => s.includes(text)), result.nextSteps.join(' | ')).toBe(true);

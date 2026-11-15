@@ -167,11 +167,17 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
             notes.append(f"Removed {dropped} citation(s) of evidence that does not exist from {where}.")
         return kept
 
+    # Earlier AI output found in the knowledge base may be cited, but supports nothing.
+    earlier = store.not_evidence()
     for h in report.hypotheses:
         h.evidence_refs = keep(h.evidence_refs, f'hypothesis "{h.title[:60]}"')
         h.contradicting_evidence_refs = keep(h.contradicting_evidence_refs, f'the evidence against "{h.title[:60]}"')
-        if not h.evidence_refs and (h.confidence > UNSUPPORTED_CONFIDENCE_CAP or h.status == "likely"):
-            notes.append(f'Hypothesis "{h.title[:60]}" cites no evidence: confidence capped at {UNSUPPORTED_CONFIDENCE_CAP} and status set to possible.')
+        supporting = [r for r in h.evidence_refs if r not in earlier]
+        if not supporting and (h.confidence > UNSUPPORTED_CONFIDENCE_CAP or h.status == "likely"):
+            if h.evidence_refs:
+                notes.append(f'Hypothesis "{h.title[:60]}" cites only earlier AI output, which is not evidence: confidence capped at {UNSUPPORTED_CONFIDENCE_CAP} and status set to possible.')
+            else:
+                notes.append(f'Hypothesis "{h.title[:60]}" cites no evidence: confidence capped at {UNSUPPORTED_CONFIDENCE_CAP} and status set to possible.')
             h.confidence = min(h.confidence, UNSUPPORTED_CONFIDENCE_CAP)
             h.status = "possible"
         if h.confidence > cap:
@@ -184,8 +190,11 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
     supported: list = []
     for f in report.facts:
         f.evidence_refs = keep(f.evidence_refs, "a stated fact")
-        if f.evidence_refs:
+        if any(r not in earlier for r in f.evidence_refs):
             supported.append(f)
+        elif f.evidence_refs:
+            notes.append(f'Moved a "fact" resting only on earlier AI output to assumptions: "{f.statement[:80]}"')
+            report.assumptions.append(f.statement)
         else:
             notes.append(f'Moved an uncited "fact" to assumptions: "{f.statement[:80]}"')
             report.assumptions.append(f.statement)

@@ -10,6 +10,7 @@ import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
 import { incidentContext, incidentKey } from './incidents';
 import { searchKnowledge } from './knowledge';
+import { withProvenance } from './knowledgeProvenance';
 import { type LogFilter, logAnomalies, logHistogram, logPatterns, resolveServiceIds, searchLogs } from './logs';
 import { healthDuring, isPastWindow } from './healthHistory';
 import { KNOWN_METRICS, metricSummary } from './monitoring';
@@ -324,10 +325,12 @@ toolsRouter.post('/knowledge/search', async (req, res) => {
   const body = z.object({ query: z.string().trim().min(2).max(500), limit: z.number().int().min(1).max(10).default(5), service: z.string().optional() }).parse(req.body);
   const service = body.service ? await findService(organizationId, body.service) : null;
   const result = await searchKnowledge(organizationId, body.query, { limit: body.limit, serviceId: service?.id });
+  // Earlier AI output inside postmortems is labelled as such (knowledgeProvenance.ts).
+  const labelled = await withProvenance(organizationId, result.hits.map((h) => ({ chunkId: h.chunkId, documentId: h.documentId, title: h.title, type: h.type, section: h.heading, content: h.content, similarity: h.similarity, matchedBy: h.matchedBy })));
   res.json({
     mode: result.mode,
     note: result.note,
-    results: result.hits.map((h) => ({ chunkId: h.chunkId, documentId: h.documentId, title: h.title, type: h.type, section: h.heading, content: clip(h.content, 1400), similarity: h.similarity, matchedBy: h.matchedBy })),
+    results: labelled.map((h) => ({ ...h, content: clip(h.content, 1400) })),
   });
 });
 

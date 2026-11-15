@@ -8,7 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
+from .generated.contracts import KNOWLEDGE_PROVENANCES
 from .schemas import EvidenceItem
+
+# Knowledge results that quote what an earlier AI investigation reported (the API decides this
+# when it reads them: apps/api/src/modules/knowledgeProvenance.ts). They are never evidence.
+EARLIER_AI_OUTPUT = frozenset(p for p in KNOWLEDGE_PROVENANCES if p != "document")
+
+
+def is_earlier_ai_output(item: EvidenceItem) -> bool:
+    return item.kind == "document" and (item.data or {}).get("provenance") in EARLIER_AI_OUTPUT
 
 NOTABLE_METRIC_CHANGE = 25.0  # percent
 
@@ -56,6 +65,10 @@ class EvidenceStore:
 
     def refs(self) -> set[str]:
         return {e.ref for e in self.items}
+
+    def not_evidence(self) -> set[str]:
+        """References to earlier AI output: they may be cited for context, never as support."""
+        return {e.ref for e in self.items if is_earlier_ai_output(e)}
 
     # ── extraction per tool ──
 
@@ -286,10 +299,14 @@ class EvidenceStore:
             section = str(h.get("section") or "").split(" › ")[-1]
             doc_title = str(h.get("title") or "Document")
             label = doc_title if not section or section == doc_title.split(": ")[-1] or section in doc_title else f"{doc_title} › {section}"
+            provenance = str(h.get("provenance") or "document")
+            if provenance in EARLIER_AI_OUTPUT:
+                label += " (earlier AI output, not evidence)"
             out.append(self.add(
                 "document", label, _clip(h.get("content"), 560),
                 source_type="knowledge_chunk", source_id=h["chunkId"], relevance=h.get("similarity"),
-                data={"documentId": h.get("documentId"), "content": h.get("content"), "matchedBy": h.get("matchedBy"), "docType": h.get("type")},
+                data={"documentId": h.get("documentId"), "content": h.get("content"), "matchedBy": h.get("matchedBy"), "docType": h.get("type"), "provenance": provenance,
+                      **({"currentAssessment": h["currentAssessment"]} if h.get("currentAssessment") else {})},
             ))
         return out
 

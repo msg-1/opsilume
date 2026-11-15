@@ -33,6 +33,9 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 export const SUMMARY_SOURCES = ["assessment","unverified","rule_based"] as const;
 export type SummarySource = (typeof SUMMARY_SOURCES)[number];
 
+export const KNOWLEDGE_PROVENANCES = ["document","earlier_ai_output","contains_earlier_ai_output"] as const;
+export type KnowledgeProvenance = (typeof KNOWLEDGE_PROVENANCES)[number];
+
 export const GUARDRAIL_LIMITS = {
   "maxConfidence": {
     "llm": 0.9,

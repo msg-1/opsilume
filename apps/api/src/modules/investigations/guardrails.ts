@@ -70,6 +70,8 @@ export async function applyGuardrails(
   known: Set<string>,
   addStep: (step: StepInput) => Promise<unknown>,
   deploymentRefs: Map<string, string> = new Map(),
+  // References to earlier AI output found in the knowledge base (knowledgeProvenance.ts): citable, never support.
+  notEvidence: Set<string> = new Set(),
 ): Promise<InvestigationReport> {
   const notes: string[] = [];
   const clean = (list: string[], where: string) => {
@@ -87,8 +89,8 @@ export async function applyGuardrails(
   const hypotheses = report.hypotheses.map((h) => {
     const evidence = clean(h.evidenceRefs, `hypothesis "${h.title}"`);
     let { confidence, status } = h;
-    if (!evidence.length) {
-      if (confidence > LIMITS.unsupportedHypothesisCap || status === 'likely') notes.push(`Hypothesis "${h.title}" has no supporting evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.`);
+    if (!evidence.some((r) => !notEvidence.has(r))) {
+      if (confidence > LIMITS.unsupportedHypothesisCap || status === 'likely') notes.push(evidence.length ? `Hypothesis "${h.title}" cites only earlier AI output, which is not evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.` : `Hypothesis "${h.title}" has no supporting evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.`);
       confidence = Math.min(confidence, LIMITS.unsupportedHypothesisCap);
       if (status === 'likely') status = 'possible';
     }
@@ -118,8 +120,8 @@ export async function applyGuardrails(
     hypotheses: hypotheses.sort((a, b) => b.confidence - a.confidence),
     timeline: report.timeline.map((t) => ({ ...t, evidenceRefs: clean(t.evidenceRefs, 'the timeline') })),
     facts: report.facts.map((f) => ({ ...f, evidenceRefs: clean(f.evidenceRefs, 'a stated fact') })).filter((f) => {
-      if (f.evidenceRefs.length) return true;
-      notes.push(`Moved unsupported statement to assumptions: "${f.statement.slice(0, 80)}"`);
+      if (f.evidenceRefs.some((r) => !notEvidence.has(r))) return true;
+      notes.push(f.evidenceRefs.length ? `Moved a statement resting only on earlier AI output to assumptions: "${f.statement.slice(0, 80)}"` : `Moved unsupported statement to assumptions: "${f.statement.slice(0, 80)}"`);
       report.assumptions.push(f.statement);
       return false;
     }),
