@@ -152,6 +152,23 @@ Reviewed on 15 November 2026 against the workflow files and the branch protectio
 Not covered by any job:
 
 - **Static security analysis.** Python dependency advisories and container images are scanned by `security.yml`, which is not a required check. The image scan only reports: it fails on nothing until its findings have been reviewed and a threshold agreed.
+- **The image scan's first findings are open.** First run on 15 November 2026 (run 43704593518): `pip-audit` found no known vulnerabilities. Trivy reported HIGH findings with a fix and no critical ones:
+
+  | Image | Findings | Package | Installed | Fixed |
+  |---|---|---|---|---|
+  | `api`, `web` | 10 HIGH each, in Node packages | `brace-expansion`: five CVEs | 2.0.2 | 2.1.6 |
+  | | | `ip-address` | 10.1.0 | 10.3.1 |
+  | | | `pacote` | 19.0.2, 20.0.1 | 21.5.1 |
+  | | | `picomatch` | 4.0.3 | 4.0.4 |
+  | | | `sigstore` | 3.1.0 | 4.1.1 |
+  | `ai` | 2 HIGH, in Debian packages | `zlib1g` | `1:1.3.dfsg+really1.3.1-1+b1` | `…-1+deb13u1` |
+
+  **Where they come from.** None of the Node packages, at these versions, is in `package-lock.json`. Our `brace-expansion` is 2.1.8 and our `picomatch` 4.0.7. `pacote` and `sigstore` are npm's own internals. So these are very likely the npm CLI bundled in the `node:22-slim` base image, not the application's dependencies. The scan output does not show file paths, so this is not confirmed. One of the two `zlib1g` entries carries a title naming an unrelated package (webpack-dev-middleware) in the scanner's database.
+
+  **Remediation options, not applied here** (each changes a runtime image):
+  - remove npm from the `web` runtime stage, which does not use it;
+  - for `api`, change the `migrate` command from `npx prisma migrate deploy` to run Prisma directly before removing npm;
+  - for `ai`, rebuild on a refreshed `python:3.12-slim` or upgrade `zlib1g` in the image.
 - **Five moderate advisories in shipped Node dependencies are open**, reviewed on 15 November 2026. `npm audit --omit=dev` fails only at high, and passes. They are two advisories and the packages that depend on them, all reached through one chain: `@opentelemetry/auto-instrumentations-node` → `@opentelemetry/resource-detector-gcp` → `gcp-metadata` 8.1.4 → `gaxios` 7.1.3 → `rimraf` 5 → `glob` 10 → `minimatch` 9.
   - `glob` >=9.0.0 <=14.0.1: GHSA-3g3m-2fjr-6pw4.
   - `minimatch` >=7.0.0 <11.0.1: GHSA-g3hv-75wg-m249.
