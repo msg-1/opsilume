@@ -104,6 +104,10 @@ const report = (overrides: Record<string, unknown> = {}) => ({
   summary: 'Errors began after v2 was deployed.',
   confidence: 0.95,
   analysisMode: 'llm',
+  // As the AI service sends every report: an assessment computed from the evidence. The API takes
+  // only this as the verified outcome, never the report's own claim.
+  outcome: 'INCIDENT',
+  assessment: { outcome: 'INCIDENT', confidence: 0.9, rationale: 'A failure is evident and an explanation is supported.', supportingRefs: ['E1'], signals: [], missingTelemetry: [] },
   timeline: [{ timestamp: minutesAgo(30), description: 'v2 deployed', evidenceRefs: ['E1'] }],
   facts: [{ statement: 'v2 was deployed 5 minutes before errors.', evidenceRefs: ['E1'] }, { statement: 'Aliens were involved.', evidenceRefs: ['E77'] }],
   assumptions: [],
@@ -232,6 +236,21 @@ describe('investigations', () => {
     const guardrail = inv.steps.find((s: { type: string }) => s.type === 'guardrail').detail;
     expect(guardrail).toContain('rated unlikely');
     expect(guardrail).toContain('moved to next steps');
+  });
+
+  it('stores no outcome, and offers no production change, for a report that claims an incident without an assessment', async () => {
+    const org = await createOrg();
+    const service = await createService(org.owner, 'Checkout');
+    const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing', serviceIds: [service.id] })).body;
+    // What only something other than the AI service could send: the author's own outcome, no assessment.
+    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: report({ assessment: undefined }) }];
+    const started = await org.owner.post('/api/v1/investigations').send({ question: 'Why is checkout failing?', incidentId: incident.id });
+    const inv = (await org.owner.get(`/api/v1/investigations/${started.body.id}`)).body;
+    expect(inv).toMatchObject({ status: 'COMPLETED', outcome: null });
+    expect(inv.report.outcome).toBeNull();
+    expect(inv.hypotheses[0]).toMatchObject({ title: 'Regression in v2', status: 'possible', confidence: 0.45 });
+    expect(await prisma.remediationAction.count({ where: { organizationId: org.organizationId } })).toBe(0);
+    expect(inv.report.nextSteps.some((s: string) => s.includes('the report carries no assessment of the evidence'))).toBe(true);
   });
 
   it('refuses new investigations once the organisation reaches its limits', async () => {

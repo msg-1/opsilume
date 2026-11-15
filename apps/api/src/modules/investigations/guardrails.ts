@@ -5,16 +5,21 @@ import type { InvestigationReport } from './schema';
 
 export type StepInput = Extract<InvestigationEvent, { type: 'step' }>['step'];
 
+/** Added to the uncertainties of a report that arrived without an assessment of the evidence. */
+const UNVERIFIED = 'This report arrived without an assessment of the evidence, so its outcome is not verified.';
+
 /**
  * Server-side guardrails, applied regardless of what the model produced:
  *  - every evidence reference must point at evidence that was actually collected;
  *  - a hypothesis with no supporting evidence cannot be rated "likely" and its confidence is capped;
- *  - when the outcome is DEGRADED (the cause is not established) no hypothesis is rated "likely",
- *    and each is capped at the unestablished-cause cap;
+ *  - the outcome is the one the AI service computed from the evidence (the assessment), never the
+ *    outcome the report's author states; a report without an assessment has no verified outcome;
+ *  - when the outcome is DEGRADED (the cause is not established), or there is no verified outcome,
+ *    no hypothesis is rated "likely" and each is capped at the unestablished-cause cap;
  *  - overall confidence cannot exceed the best-supported hypothesis;
  *  - what each action would do is decided here from its type and text;
  *  - a production change resting on a hypothesis rated unlikely is withdrawn;
- *  - a production change is withdrawn when the outcome is not an incident;
+ *  - a production change is withdrawn unless the verified outcome is an incident;
  *  - a high-risk action offered next to a safer one moves to the next steps.
  *
  * This pass is independent of the AI service's own guardrails on purpose: a report might arrive
@@ -33,8 +38,10 @@ export async function applyGuardrails(
     if (kept.length !== list.length) notes.push(`Removed ${list.length - kept.length} reference(s) to non-existent evidence from ${where}.`);
     return kept;
   };
-  // The outcome as the AI service assessed it, or as the report states it when no assessment came.
-  const outcome = report.assessment?.outcome ?? report.outcome;
+  // The assessment is computed by the AI service's code from the evidence; the report's own
+  // `outcome` is what its author (possibly a model) claims, and is never taken as verified.
+  const verified = report.assessment?.outcome ?? null;
+  if (verified === null && report.outcome) notes.push(LIMITS.unverifiedOutcomeNote.replace('{claimed}', report.outcome));
   const hypotheses = report.hypotheses.map((h) => {
     const evidence = clean(h.evidenceRefs, `hypothesis "${h.title}"`);
     let { confidence, status } = h;
@@ -43,9 +50,11 @@ export async function applyGuardrails(
       confidence = Math.min(confidence, LIMITS.unsupportedHypothesisCap);
       if (status === 'likely') status = 'possible';
     }
-    // DEGRADED means the cause is not established; "likely" would claim that it is.
-    if (outcome === 'DEGRADED' && (confidence > LIMITS.unestablishedCauseCap || status === 'likely')) {
-      notes.push(LIMITS.unestablishedCauseNote.replace('{title}', h.title.slice(0, 60)).replace('{cap}', String(LIMITS.unestablishedCauseCap)));
+    // DEGRADED means the cause is not established, and without an assessment nothing is verified:
+    // in either case "likely" would claim more than is known.
+    if ((verified === 'DEGRADED' || verified === null) && (confidence > LIMITS.unestablishedCauseCap || status === 'likely')) {
+      const note = verified === null ? LIMITS.unverifiedCauseNote : LIMITS.unestablishedCauseNote;
+      notes.push(note.replace('{title}', h.title.slice(0, 60)).replace('{cap}', String(LIMITS.unestablishedCauseCap)));
       confidence = Math.min(confidence, LIMITS.unestablishedCauseCap);
       if (status === 'likely') status = 'possible';
     }
@@ -59,6 +68,9 @@ export async function applyGuardrails(
   }
   const result: InvestigationReport = {
     ...report,
+    // As in the AI service, the outcome a report carries is the assessed one, or none.
+    outcome: verified,
+    uncertainties: verified === null && !report.uncertainties.includes(UNVERIFIED) ? [...report.uncertainties, UNVERIFIED] : report.uncertainties,
     confidence,
     hypotheses: hypotheses.sort((a, b) => b.confidence - a.confidence),
     timeline: report.timeline.map((t) => ({ ...t, evidenceRefs: clean(t.evidenceRefs, 'the timeline') })),
@@ -99,11 +111,12 @@ export async function applyGuardrails(
     withdraw(a, LIMITS.withdrawalReasons.unlikelyHypothesis);
     return false;
   });
-  // 1b. Without an incident and an established cause, nothing justifies changing production.
-  if (outcome && outcome !== LIMITS.outcomeAllowingProductionChanges) {
+  // 1b. Without a verified incident and an established cause, nothing justifies changing production.
+  if (verified !== LIMITS.outcomeAllowingProductionChanges) {
+    const reason = verified === null ? LIMITS.withdrawalReasons.noAssessment : LIMITS.withdrawalReasons.noIncident.replace('{outcome}', verified);
     result.recommendedActions = result.recommendedActions.filter((a) => {
       if (a.effect !== 'state_changing') return true;
-      withdraw(a, LIMITS.withdrawalReasons.noIncident.replace('{outcome}', outcome));
+      withdraw(a, reason);
       return false;
     });
   }
