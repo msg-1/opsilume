@@ -5,6 +5,7 @@ import { assertRange, csvCell, param, timeParam } from '../lib/http';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
 import { incidentKey, requireIncident } from './incidents';
+import { applyTimelineViews, legacyViews } from './investigations/legacy';
 import { createDocument } from './knowledge';
 import { logHistogram } from './logs';
 
@@ -242,6 +243,9 @@ postmortemRouter.post('/:id/postmortem', requirePermission('knowledge:write'), a
     prisma.investigation.findFirst({ where: { incidentId: incident.id, status: 'COMPLETED' }, orderBy: { completedAt: 'desc' }, include: { hypotheses: { orderBy: { rank: 'asc' }, take: 3 } } }),
     prisma.remediationAction.findMany({ where: { incidentId: incident.id }, orderBy: { createdAt: 'asc' } }),
   ]);
+  // An older stored report's summary is used as a new one's would be (investigations/legacy.ts).
+  const views = investigation ? await legacyViews(auth.organizationId, [investigation.id]) : new Map();
+  const timeline = applyTimelineViews(events, views);
   const key = incidentKey(incident.number);
   const fmt = (d: Date | null) => (d ? d.toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—');
   const duration = incident.resolvedAt ? `${Math.round(minutes(incident.startedAt, incident.resolvedAt))} minutes` : 'ongoing';
@@ -273,14 +277,14 @@ postmortemRouter.post('/:id/postmortem', requirePermission('knowledge:write'), a
           '## AI investigation findings (unconfirmed)',
           `Analysis by ${investigation.provider ?? 'unknown'}${investigation.model ? ` / ${investigation.model}` : ''}, overall confidence ${Math.round((investigation.confidence ?? 0) * 100)}%. These are hypotheses, not confirmed causes.`,
           '',
-          investigation.summary ?? '',
+          views.get(investigation.id)?.summary ?? investigation.summary ?? '',
           '',
           ...investigation.hypotheses.map((h) => `${h.rank}. **${h.title}** (${Math.round(h.confidence * 100)}%, ${h.status}) — ${h.description}`),
           '',
         ]
       : []),
     '## Timeline',
-    ...events.map((e) => `- ${fmt(e.createdAt)} — ${e.message}${e.actorLabel ? ` _(${e.actorLabel})_` : ''}`),
+    ...timeline.map((e) => `- ${fmt(e.createdAt)} — ${e.message}${e.actorLabel ? ` _(${e.actorLabel})_` : ''}`),
     '',
     '## Remediation actions',
     ...(remediations.length ? remediations.map((r) => `- **${r.title}** — ${r.status.toLowerCase().replace(/_/g, ' ')} (${r.risk.toLowerCase()} risk)`) : ['_None recorded._']),

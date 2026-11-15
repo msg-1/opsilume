@@ -8,9 +8,21 @@ export type StepInput = Extract<InvestigationEvent, { type: 'step' }>['step'];
 const SUMMARY = LIMITS.reportSummary;
 
 /** The summary of a model or mock report: the assessed outcome and the assessment's rationale, as in guardrails.py. */
-export function verifiedSummary(assessment: NonNullable<InvestigationReport['assessment']>): string {
+export function verifiedSummary(assessment: Pick<NonNullable<InvestigationReport['assessment']>, 'outcome' | 'rationale' | 'supportingRefs'>): string {
   const rationale = assessment.rationale.replace(/[. ]+$/, '') + (assessment.supportingRefs.length ? ` (${assessment.supportingRefs.join(', ')})` : '') + '.';
   return SUMMARY.verified.replace('{outcome}', assessment.outcome).replace('{rationale}', rationale);
+}
+
+/**
+ * Whether an assessment is consistent with the evidence the API itself recorded for the run:
+ * every reference it cites was received as evidence, and an incident (the only outcome that
+ * allows production changes) cites at least one. This is a consistency check, not proof of
+ * where the assessment came from: the API trusts that because the report is the answer to its
+ * own request to the AI service, whose code computes the assessment (docs/reliability.md §4b).
+ */
+export function trustedAssessment(assessment: { outcome: string; supportingRefs: string[] }, recorded: Set<string>): boolean {
+  if (!assessment.supportingRefs.every((r) => recorded.has(r))) return false;
+  return !(assessment.outcome === LIMITS.outcomeAllowingProductionChanges && !assessment.supportingRefs.length);
 }
 
 /**
@@ -34,6 +46,7 @@ const UNVERIFIED = 'This report arrived without an assessment of the evidence, s
 /**
  * Server-side guardrails, applied regardless of what the model produced:
  *  - every evidence reference must point at evidence that was actually collected;
+ *  - an assessment is used only if it cites evidence that was collected (an incident at least one);
  *  - a hypothesis with no supporting evidence cannot be rated "likely" and its confidence is capped;
  *  - the outcome is the one the AI service computed from the evidence (the assessment), never the
  *    outcome the report's author states; a report without an assessment has no verified outcome;
@@ -66,7 +79,10 @@ export async function applyGuardrails(
   };
   // The assessment is computed by the AI service's code from the evidence; the report's own
   // `outcome` is what its author (possibly a model) claims, and is never taken as verified.
-  const verified = report.assessment?.outcome ?? null;
+  // An assessment that cites evidence this run did not record (or an incident citing none) is not used.
+  const assessment = report.assessment && trustedAssessment(report.assessment, known) ? report.assessment : null;
+  if (report.assessment && !assessment) notes.push(`The assessment (${report.assessment.outcome}) is not used: it cites evidence this run did not record, or no evidence for an incident. The outcome is not verified.`);
+  const verified = assessment?.outcome ?? null;
   if (verified === null && report.outcome) notes.push(LIMITS.unverifiedOutcomeNote.replace('{claimed}', report.outcome));
   const hypotheses = report.hypotheses.map((h) => {
     const evidence = clean(h.evidenceRefs, `hypothesis "${h.title}"`);
@@ -94,6 +110,7 @@ export async function applyGuardrails(
   }
   const result: InvestigationReport = {
     ...report,
+    assessment,
     // As in the AI service, the outcome a report carries is the assessed one, or none.
     outcome: verified,
     uncertainties: verified === null && !report.uncertainties.includes(UNVERIFIED) ? [...report.uncertainties, UNVERIFIED] : report.uncertainties,

@@ -143,6 +143,25 @@ Tests: `apps/api/tests/historical-health.test.ts` (the tool API and the incident
 
 **How it is enforced.** `present_summary` in `services/ai/app/guardrails.py` runs after the outcome and the hypotheses are final. The API builds the summary again in `apps/api/src/modules/investigations/guardrails.ts` and never trusts a summary it receives. The text of both comes from the shared contract, and a shared case in `contracts/fixtures/guardrail-cases.json` checks that the Python and TypeScript passes produce the same full string.
 
+**Where the API's trust in the assessment comes from.** The API does not recompute the assessment and cannot prove how one was computed. Its trust rests on three things:
+- **The service boundary.** A report reaches the API only as the final event of the API's own request to `AI_SERVICE_URL`. No route accepts a report from a client. The `x-internal-token` header authenticates the API to the AI service, not the response to the API: the API trusts the answer because it asked the configured service.
+- **The AI service's code.** The model's answer has no field for an assessment, and `guardrails.enforce` replaces any assessment a report carries with the one `assessment.py` computes (`services/ai/tests/test_summary_consistency.py` pins this).
+- **A consistency check at the API** (`trustedAssessment` in `guardrails.ts`). An assessment is used only if every reference it cites is evidence the API itself recorded for that run, and an INCIDENT, the only outcome that allows production changes, cites at least one. Otherwise it is dropped: the outcome is not verified, no production change is offered, and a guardrail note says why. Every INCIDENT assessment in the golden snapshot and in every saved evaluation run cites at least one reference, and every evidence item the AI service cites is sent to the API before the report, so a genuine report is never dropped. This check catches an assessment that does not fit the evidence. It does not catch one that fits the evidence but was not computed by `assessment.py`.
+
+Signing the assessment would add a key to manage and rotate, and would protect only against something that can already answer as the AI service. It was not added.
+
+**Reports stored before this change.** They are not migrated and nothing stored is changed. When one is read, `apps/api/src/modules/investigations/legacy.ts` presents it as a new report would be:
+
+| Stored report | Shown as |
+|---|---|
+| Carries `summarySource` (every report from this change on) | Exactly as stored |
+| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Exactly as stored |
+| Model or mock, engine unknown included, with a trusted assessment (well-formed outcome, rationale and references; the same consistency check against the evidence stored for it) | The summary built from that assessment; the stored text as the unverified narrative; the outcome is the assessment's |
+| Model or mock without one (absent, malformed, citing unrecorded evidence, or an INCIDENT citing nothing) | "Outcome not verified"; the stored text as the unverified narrative; no outcome, and no assessment, shown |
+
+The layer applies in every response that carries the summary: the investigation detail (and so the printable report), the list, the incident page and its timeline entry (both completion-message formats), the remediation actions, and a postmortem drafted from now on.
+
+
 **Guarantees.**
 - **No model text in the verified summary.** It is built from the assessment alone, so what the model wrote cannot change it: a contradiction in a later paragraph, a paraphrase ("checkout looks fine"), a claimed recovery and a confident claim under UNDETERMINED all leave it the same. This does not rely on recognising what the model said.
 - **No assessment, no outcome.** When a report carries no assessment (API only; the AI service always computes one), the summary says the outcome is not verified and names no classification. The narrative is kept, marked unverified, and no action that changes production is offered.
@@ -150,11 +169,11 @@ Tests: `apps/api/tests/historical-health.test.ts` (the tool API and the incident
 - **The narrative is still checked:** secrets are removed, wording that presents a cause as confirmed is rephrased, and its figures are checked against the evidence. A narrative that fails these checks is flagged, not hidden.
 - **Idempotent.** Running the guardrails again gives the same summary and narrative, with no repeated prefix.
 - **The model's findings are untouched:** hypotheses, evidence references, confidence after the guardrails, contradictions, missing evidence and uncertainties.
-- **Older reports are labelled, not rewritten.** A stored report without `summarySource` is shown as written by the model before summaries were built from the assessment.
+- **Older reports are presented, not rewritten.** A stored model or mock report without `summarySource` is shown with a summary derived from its trusted assessment, or as unverified, everywhere it appears (see above). The stored row is unchanged.
 
 **Tests.**
 - **Python:** `services/ai/tests/test_summary_consistency.py`, including HEALTHY with a contradicting paraphrase, HEALTHY with an explicit DEGRADED claim, DEGRADED with a positive narrative, INCIDENT with a claimed recovery, UNDETERMINED with confident claims, an empty narrative, a contradiction in a later paragraph, repeated processing, and the live reports copied unedited into `tests/fixtures/live_summary_contradictions.json`.
-- **API:** the API pass, including a missing assessment, in `apps/api/tests/contract.test.ts`. Storage and retrieval, with the summary checked on the detail, the list, the incident, the timeline and the remediation action, in `intelligence.test.ts`.
+- **API:** the API pass, including a missing assessment and assessments that cite unrecorded evidence or, for an incident, none, in `apps/api/tests/contract.test.ts`. Through the real path (a scripted AI service stream, the guardrails, storage, then every response) in `intelligence.test.ts`: a contradictory model report with a verified assessment, a missing assessment, an assessment citing unrecorded evidence, a rule-based report, and stored older reports with a trusted, absent, unrecorded-evidence or malformed assessment and a rule-based one. Each of these checks the detail, the list, the incident, its timeline entry and the remediation actions, and that reading leaves the stored row unchanged. The view rules alone are in `legacy.test.ts`.
 - **Web:** the investigation page (model, empty narrative, no assessment, older report, mock), the printable report, the list, the incident page and the remediation page in `apps/web/src/test/journeys.test.tsx`.
 
 **In the evaluation.** The scorer now has 12 criteria; documents that say 11 predate this. The `summary` criterion passes a summary built from the assessment, which agrees by construction. The narrative is scored separately, on the report as the model wrote it. Each scenario is scored in three views, and a pass that needed a guardrail is recorded (`guardrailAssisted`, `unaidedFailures`). `--rescore` prints all three views.
@@ -182,9 +201,11 @@ The fifth, `degraded_incomplete_evidence`, is the scenario that failed at the ti
 - **Consistency is not correctness.** The summary agrees with the assessment by construction. That says nothing about whether the assessment, or the leading hypothesis, is right about the cause.
 - **The verified summary is formulaic.** It is built from the assessment's rationale, not written for the reader.
 - **The narrative can still contradict the assessment.** It is labelled as unverified rather than corrected. The evaluation recognises a stated outcome in it with three patterns (`services/ai/app/evals/scoring.py`), which catch explicit statements only and undercount paraphrases. The patterns are an evaluation measure, not a guarantee.
-- **Rule-based summaries are kept as written** (`summarySource: rule_based`). The API relies on `analysisMode` to recognise them, and on the assessment it is given.
-- **Stored reports are unchanged, and are labelled on one page only.** A model or mock report stored before this change keeps its old summary, the model's own text, and the investigation list, the incident page and the remediation page show it without any label. Only the investigation page labels it, as written by the model before summaries were built from the assessment; the printable report never showed the summary. A fresh install has no such rows: the seed creates no investigations and the demo uses the rule-based engine.
-- **The evaluation scores the AI service's output.** It does not run the API pass, which is tested separately.
+- **Rule-based summaries are kept as written** (`summarySource: rule_based`). The API relies on `analysisMode` to recognise them. A report that arrives labelled rule-based keeps its own summary: the label comes from the same trusted service.
+- **The API's trust in the assessment is a boundary and a consistency check, not proof.** An assessment that fits the recorded evidence is used whoever produced it. See above.
+- **Copies made before this change keep the old text.** The read-time view changes what is shown, not what was copied: notifications already sent, postmortems already drafted, and remediation actions already proposed from an older report. An older report without a trusted assessment may have proposed a production change at the time; the action remains, and still needs a person to submit, another to approve, and one to execute it. A fresh install has no older rows: the seed creates no investigations and the demo uses the rule-based engine.
+- **An older report shown as verified is verified now, not then.** Its summary is derived when it is read, from the assessment it stored.
+- **The evaluation scores the AI service's output.** It does not run the API pass or the read-time view, which are tested separately, and its outcome patterns undercount paraphrases (above).
 - **The model is not told the computed outcome before it writes.** The outcome depends on the hypotheses, which come in the same answer. The prompt is unchanged.
 
 ## 5. Figures and identifiers

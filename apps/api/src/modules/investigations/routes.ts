@@ -11,6 +11,7 @@ import { enqueueInvestigation } from './runner';
 import { addIncidentEvent, incidentKey, requireIncident } from '../incidents';
 import { assertWithinLimits, organizationLimits, usageToday } from './limits';
 import { createBody, listQuery } from './validation';
+import { applyViews, legacyViews, presentDetail } from './legacy';
 
 /** HTTP routes under /api/v1/investigations. Starting one only queues it; the worker runs it. */
 export const investigationsRouter = Router();
@@ -44,7 +45,7 @@ investigationsRouter.get('/', requirePermission('read'), async (req, res) => {
     prisma.investigation.findMany({ where, orderBy: { createdAt: 'desc' }, ...paginate(q), select: listSelect }),
     prisma.investigation.count({ where }),
   ]);
-  res.json(paged(rows, total, q));
+  res.json(paged(applyViews(rows, await legacyViews(organizationId, rows.map((r) => r.id))), total, q));
 });
 
 /** Which model will run the next investigation; shown in the workspace before submitting. */
@@ -104,7 +105,7 @@ investigationsRouter.get('/:id', requirePermission('read'), async (req, res) => 
   });
   if (!investigation) throw notFound('Investigation');
   const creator = investigation.createdById ? await prisma.user.findUnique({ where: { id: investigation.createdById }, select: { id: true, name: true } }) : null;
-  res.json({ ...investigation, createdBy: creator });
+  res.json({ ...presentDetail(investigation), createdBy: creator });
 });
 
 investigationsRouter.post('/:id/cancel', requirePermission('investigation:run'), async (req, res) => {

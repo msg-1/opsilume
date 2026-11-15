@@ -60,7 +60,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -222,7 +222,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -375,7 +375,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -524,7 +524,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -733,7 +733,7 @@
           "outcome": "DEGRADED",
           "confidence": 0.61,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E1", "E2"],
           "signals": [],
           "missingTelemetry": []
         },

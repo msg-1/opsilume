@@ -219,7 +219,7 @@ describe('shared contracts', () => {
   // the evidence, so a report without one cannot arise there.
   const degraded = cases.find((c) => c.name.startsWith('under DEGRADED'))!;
   const known = new Set(degraded.evidence.map((e) => e.ref));
-  const assessed = (outcome: string) => ({ outcome, confidence: 0.9, rationale: 'r', supportingRefs: [], signals: [], missingTelemetry: [] });
+  const assessed = (outcome: string, supportingRefs: string[] = ['E1']) => ({ outcome, confidence: 0.9, rationale: 'r', supportingRefs, signals: [], missingTelemetry: [] });
   const restart = { type: 'restart_service', title: 'Restart orders', description: 'Restart the pods.', risk: 'LOW', serviceSlug: 'orders', evidenceRefs: ['E1'] };
   const run = async (change: (r: Record<string, unknown>) => void) => {
     const report = structuredClone(degraded.report) as Record<string, unknown>;
@@ -270,6 +270,31 @@ describe('shared contracts', () => {
     expect(result.recommendedActions).toEqual([]);
     expect(notes).toContain('the outcome is DEGRADED, so the cause is not established');
     expect(result.uncertainties).not.toContain('This report arrived without an assessment of the evidence, so its outcome is not verified.');
+  });
+
+  // Whether an assessment is used: consistency with the evidence the API recorded, not proof of
+  // where it came from (docs/reliability.md §4b). API-only: the AI service computes the assessment
+  // from that same evidence, so it cannot cite anything else.
+  it.each([
+    ['cites evidence this run did not record', assessed('INCIDENT', ['E1', 'E99'])],
+    ['claims an incident but cites no evidence', assessed('INCIDENT', [])],
+  ])('an assessment that %s is not used: no outcome, no production change', async (_label, assessment) => {
+    const { result, notes } = await run((r) => { r.assessment = assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down.'; });
+    expect(result.assessment ?? null).toBeNull();
+    expect(result.outcome).toBeNull();
+    expect(result.summarySource).toBe('unverified');
+    expect(result.summary).toBe(LIMITS.reportSummary.unverified);
+    expect(result.narrative).toBe('Checkout is down.');
+    expect(result.recommendedActions.filter((a) => a.effect === 'state_changing')).toEqual([]);
+    expect(result.hypotheses.every((h) => h.status !== 'likely')).toBe(true);
+    expect(notes).toContain('The assessment (INCIDENT) is not used');
+  });
+
+  it.each(['HEALTHY', 'UNDETERMINED'])('a %s assessment citing no evidence is used', async (outcome) => {
+    const { result, notes } = await run((r) => { r.assessment = assessed(outcome, []); });
+    expect(result.outcome).toBe(outcome);
+    expect(result.summarySource).toBe('assessment');
+    expect(notes).not.toContain('is not used');
   });
 });
 

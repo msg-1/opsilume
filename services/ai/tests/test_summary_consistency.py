@@ -245,3 +245,24 @@ async def test_the_evaluation_scores_the_model_text_separately_from_what_is_show
 ])
 def test_the_evaluation_recognises_explicit_statements_only(text, expected):
     assert stated_outcomes(text) == expected
+
+
+# ── Where the assessment comes from ──
+
+
+def test_the_model_cannot_supply_an_assessment_and_any_incoming_one_is_replaced():
+    # The API trusts the assessment because the AI service's code computes it. The model's answer
+    # has no field for one, and enforce() overwrites whatever a report arrives with.
+    from app import assessment as assessing
+    from app.schemas import Assessment
+
+    assert "assessment" not in LLMReport.model_fields
+    store = EvidenceStore()
+    store.items = [item("E1", "deployment", version="v1.5.0", status="SUCCEEDED", isRollback=False), item("E2", "log_pattern", level="ERROR", count=300, kind="new", baselineCount=0)]
+    r = InvestigationReport(summary="s", confidence=0.5, analysis_mode="llm", hypotheses=[HypothesisOut(title="v1.5.0 broke orders", description="d", confidence=0.8, status="likely", evidence_refs=["E1", "E2"])], uncertainties=["u"], next_steps=["n"],
+                            assessment=Assessment(outcome="HEALTHY", confidence=0.9, rationale="Forged.", supporting_refs=["E99"]))
+    guardrails.enforce(r, store, scope=["orders"], tool_failures=[])
+    computed = assessing.assess(store, r.hypotheses, ["orders"], [])
+    assert r.assessment.outcome == computed.outcome == "INCIDENT"
+    assert r.assessment.supporting_refs == computed.supporting_refs and "E99" not in r.assessment.supporting_refs
+    assert r.assessment.rationale != "Forged."
