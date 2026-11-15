@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ACTION_EFFECTS, ANALYSIS_MODES, CLAIM_KINDS, CLAIM_STATUSES, HYPOTHESIS_STATUSES, OUTCOMES, REMEDIATION_TYPES, RISK_LEVELS, SIGNAL_LEVELS, SUMMARY_CORRECTION_KINDS, VERIFICATION_STATUSES } from '../../generated/contracts';
+import { ACTION_EFFECTS, ANALYSIS_MODES, CLAIM_KINDS, CLAIM_STATUSES, HYPOTHESIS_STATUSES, OUTCOMES, REMEDIATION_TYPES, RISK_LEVELS, SIGNAL_LEVELS, SUMMARY_SOURCES, VERIFICATION_STATUSES } from '../../generated/contracts';
 
 /**
  * The investigation report as the API accepts it from the AI service. The authoritative
@@ -41,15 +41,6 @@ export const assessmentObject = z.object({
   missingTelemetry: z.array(z.string()).default([]),
 });
 
-// Set when the summary was made consistent with the computed outcome (guardrails.ts and the AI
-// service's guardrails.py). The model's original summary is kept here, never discarded.
-export const summaryCorrectionObject = z.object({
-  kind: z.enum(SUMMARY_CORRECTION_KINDS),
-  statedOutcome: z.enum(OUTCOMES).nullable().optional(),
-  verifiedOutcome: z.enum(OUTCOMES).nullable().optional(),
-  originalSummary: z.string().max(6000),
-});
-
 export const integrityObject = z.object({
   checked: z.number().int().min(0),
   supported: z.number().int().min(0),
@@ -63,7 +54,10 @@ export const reportSchema = z.object({
   // Whether the evidence shows a fault at all. Computed by the AI service from the evidence.
   outcome: z.enum(OUTCOMES).nullable().optional(),
   assessment: assessmentObject.nullable().optional(),
-  summaryCorrection: summaryCorrectionObject.nullable().optional(),
+  // Where `summary` comes from (assessment, unverified or rule_based); absent on older reports.
+  summarySource: z.enum(SUMMARY_SOURCES).nullable().optional(),
+  // What a model or the scripted mock wrote as its summary, kept as written: never verified.
+  narrative: z.string().max(6000).nullable().optional(),
   observations: z.array(statementSchema).default([]),
   integrity: integrityObject.nullable().optional(),
   // The agent never confirms a root cause; a human does that on the incident.

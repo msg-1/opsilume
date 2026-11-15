@@ -548,70 +548,6 @@
       "title": "Signal",
       "type": "object"
     },
-    "SummaryCorrection": {
-      "description": "Set when the summary had to be made consistent with the computed outcome (guardrails.py).\n\nreplaced: the summary stated an outcome the assessment contradicts, or was empty, and was\nrewritten from the assessment. prefixed: the model concluded a different outcome but its\nsummary states none; a sentence giving the computed outcome was put in front of it.\nunverified: the report carries no assessment (set by the API only); nothing is verified.\nThe original text is kept, so nothing the model wrote is lost.",
-      "properties": {
-        "kind": {
-          "enum": [
-            "replaced",
-            "prefixed",
-            "unverified"
-          ],
-          "title": "Kind",
-          "type": "string"
-        },
-        "statedOutcome": {
-          "anyOf": [
-            {
-              "enum": [
-                "HEALTHY",
-                "DEGRADED",
-                "INCIDENT",
-                "UNDETERMINED"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The outcome the model's summary, or its own outcome field, stated",
-          "title": "Statedoutcome"
-        },
-        "verifiedOutcome": {
-          "anyOf": [
-            {
-              "enum": [
-                "HEALTHY",
-                "DEGRADED",
-                "INCIDENT",
-                "UNDETERMINED"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "The computed outcome; None when there is no assessment",
-          "title": "Verifiedoutcome"
-        },
-        "originalSummary": {
-          "description": "The summary as written before the correction",
-          "maxLength": 6000,
-          "title": "Originalsummary",
-          "type": "string"
-        }
-      },
-      "required": [
-        "kind",
-        "originalSummary"
-      ],
-      "title": "SummaryCorrection",
-      "type": "object"
-    },
     "TimelineEntry": {
       "properties": {
         "timestamp": {
@@ -668,7 +604,7 @@
   },
   "properties": {
     "summary": {
-      "description": "3-6 sentences: what happened, the leading explanation, and how sure we are",
+      "description": "What the reader is told first. For model and mock reports it is built from the computed assessment only (guardrails.py); for rule-based reports it is the rule-based engine's own",
       "title": "Summary",
       "type": "string"
     },
@@ -724,16 +660,35 @@
       ],
       "default": null
     },
-    "summaryCorrection": {
+    "summarySource": {
       "anyOf": [
         {
-          "$ref": "#/$defs/SummaryCorrection"
+          "enum": [
+            "assessment",
+            "unverified",
+            "rule_based"
+          ],
+          "type": "string"
         },
         {
           "type": "null"
         }
       ],
-      "default": null
+      "default": null,
+      "title": "Summarysource"
+    },
+    "narrative": {
+      "anyOf": [
+        {
+          "maxLength": 6000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Narrative"
     },
     "observations": {
       "items": {

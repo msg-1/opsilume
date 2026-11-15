@@ -432,6 +432,8 @@ def verify_report(report: InvestigationReport, store: EvidenceStore, known_times
     statements(report.facts, "fact")
     statements(report.observations, "observation")
     tally("summary", checker.check(report.summary, [], cite_all=True))
+    if report.narrative:
+        tally("narrative", checker.check(report.narrative, [], cite_all=True))
     for i, h in enumerate(report.hypotheses, 1):
         tally(f"hypothesis {i}", checker.check(f"{h.title}. {h.description}", [*h.evidence_refs, *h.contradicting_evidence_refs]))
     for i, t in enumerate(report.timeline, 1):

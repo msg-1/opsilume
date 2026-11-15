@@ -1,10 +1,10 @@
-"""The summary a user reads must not state an outcome the computed assessment contradicts.
+"""What the reader is told first is verified; what the model wrote is kept, and labelled as not.
 
 Found by the Milestone 10 audit: in two healthy-state scenarios the model wrote "the outcome is
-DEGRADED", the assessment computed HEALTHY, and the report showed both. The model writes its
-summary before the outcome is computed, and the guardrails corrected the structured fields but
-never the text. guardrails.reconcile_summary now rewrites such a summary from the assessment, or
-puts the computed outcome in front of it, and keeps the model's original.
+DEGRADED", the assessment computed HEALTHY, and the report showed both. For model and mock
+reports the summary is now built from the computed assessment alone, and the model's own text is
+kept as an unverified narrative. A rule-based report keeps its own summary: it is not a model's
+narrative. Nothing here depends on recognising how a narrative phrases its conclusion.
 """
 
 import json
@@ -15,12 +15,14 @@ import pytest
 from app import guardrails
 from app.evals.run import evaluate
 from app.evals.scenarios import SCENARIOS
+from app.evals.scoring import stated_outcomes
 from app.evidence import EvidenceStore
 from app.llm import LLMError
 from app.mock_provider import MockProvider
 from app.schemas import EvidenceItem, HypothesisOut, InvestigationReport, LLMReport, RecommendedAction
 
-LIVE = json.loads((Path(__file__).parent / "fixtures" / "live_summary_contradictions.json").read_text())["reports"]
+FIXTURES = Path(__file__).parent / "fixtures"
+LIVE = json.loads((FIXTURES / "live_summary_contradictions.json").read_text())["reports"]
 SCENARIO = {s.name: s for s in SCENARIOS}
 
 
@@ -29,7 +31,7 @@ def item(ref: str, evidence_kind: str, **data) -> EvidenceItem:
 
 
 def store_for(outcome: str) -> EvidenceStore:
-    """Evidence that the assessment judges as `outcome` (with the hypothesis from hypothesis_for)."""
+    """Evidence that the assessment judges as `outcome` (with the hypotheses of report_with)."""
     store = EvidenceStore()
     if outcome == "HEALTHY":
         store.items = [item("E1", "metric_baseline", metric="error_rate", unit="%", avg=0.2, baselineAvg=0.2)]
@@ -43,186 +45,149 @@ def store_for(outcome: str) -> EvidenceStore:
     return store
 
 
-def report_with(summary: str, claimed: str | None, verified: str, actions: list[RecommendedAction] | None = None) -> InvestigationReport:
+def report_with(narrative: str, claimed: str | None, verified: str, actions: list[RecommendedAction] | None = None, mode: str = "llm") -> InvestigationReport:
     hypotheses = [HypothesisOut(title="v1.5.0 broke orders", description="d", confidence=0.8, status="likely", evidence_refs=["E1", "E2"])] if verified == "INCIDENT" else [
-        HypothesisOut(title="Something slowed orders", description="d", confidence=0.3, status="possible", evidence_refs=["E1"], contradicting_evidence_refs=[], contradictions=["Nothing else changed."])
+        HypothesisOut(title="Something slowed orders", description="d", confidence=0.3, status="possible", evidence_refs=["E1"], contradictions=["Nothing else changed."])
     ]
-    return InvestigationReport(summary=summary, confidence=hypotheses[0].confidence, analysis_mode="llm", outcome=claimed, hypotheses=hypotheses, uncertainties=["Traces were not available."], next_steps=["n"], recommended_actions=actions or [])
+    return InvestigationReport(summary=narrative, confidence=hypotheses[0].confidence, analysis_mode=mode, outcome=claimed, hypotheses=hypotheses, uncertainties=["Traces were not available."], next_steps=["n"], recommended_actions=actions or [])
 
 
 def enforce(report: InvestigationReport, store: EvidenceStore) -> list[str]:
     return guardrails.enforce(report, store, scope=["orders"], tool_failures=[])
 
 
-# ── The detector ──
+# ── The summary depends on the assessment and on nothing the model wrote ──
 
 
-@pytest.mark.parametrize(("text", "expected"), [
-    ("The evidence shows warnings but no material failure, so the outcome is DEGRADED with confidence about 0.3.", ["DEGRADED"]),
-    ("I rate the outcome DEGRADED rather than HEALTHY.", ["DEGRADED"]),
-    ("The mechanism matches, so this is DEGRADED rather than INCIDENT.", ["DEGRADED"]),
-    ("so this is an incident", ["INCIDENT"]),
-    ("I would classify it as healthy.", ["HEALTHY"]),
-    ("Assessed outcome: HEALTHY.", ["HEALTHY"]),
-    ("inventory-api is recorded as HEALTHY with no alert firing.", []),
-    ("The outcome is not HEALTHY, and this is not an INCIDENT.", []),
-    ("web-app was recorded as DEGRADED during the window.", []),
-    ("", []),
-])
-def test_only_statements_of_the_outcome_count_not_recorded_health_or_negations(text, expected):
-    assert guardrails.stated_outcomes(text) == expected
+ADVERSARIAL = [
+    ("HEALTHY", "DEGRADED", "Checkout is clearly broken: customers cannot pay and the service is failing."),
+    ("HEALTHY", "DEGRADED", "A new warning appeared, so the outcome is DEGRADED."),
+    ("DEGRADED", "HEALTHY", "Checkout looks fine and nothing needs attention."),
+    ("INCIDENT", "HEALTHY", "The service has fully recovered and is operating normally again."),
+    ("UNDETERMINED", "INCIDENT", "I am certain the database caused this outage; it is definitely an INCIDENT with a confirmed root cause."),
+    ("UNDETERMINED", "HEALTHY", "Everything is healthy.\n\nLater analysis, however: the outcome is INCIDENT and payments are failing."),
+    ("INCIDENT", "DEGRADED", "Errors rose after v1.5.0 (E1, E2)."),
+]
 
 
-# ── Every combination of computed outcome and summary ──
-
-
-@pytest.mark.parametrize(("verified", "claimed", "summary", "kind"), [
-    ("HEALTHY", "DEGRADED", "A new warning appeared, so the outcome is DEGRADED.", "replaced"),
-    ("DEGRADED", "HEALTHY", "orders looks fine, so the outcome is HEALTHY.", "replaced"),
-    ("INCIDENT", "HEALTHY", "Nothing is wrong: the outcome is HEALTHY.", "replaced"),
-    ("INCIDENT", "DEGRADED", "orders errors rose after v1.5.0 (E1, E2).", "prefixed"),
-    ("INCIDENT", "DEGRADED", "Errors rose, so this is DEGRADED.", "replaced"),
-    ("UNDETERMINED", "HEALTHY", "The outcome is HEALTHY.", "replaced"),
-    ("UNDETERMINED", "INCIDENT", "The outcome is INCIDENT.", "replaced"),
-])
-def test_a_summary_that_contradicts_the_computed_outcome_is_made_consistent_and_the_original_kept(verified, claimed, summary, kind):
-    report = report_with(summary, claimed, verified)
+@pytest.mark.parametrize(("verified", "claimed", "narrative"), ADVERSARIAL)
+def test_whatever_the_model_wrote_the_summary_is_the_assessment_and_the_narrative_is_kept(verified, claimed, narrative):
+    report = report_with(narrative, claimed, verified)
     before = report.model_copy(deep=True)
-    notes = enforce(report, store_for(verified))
+    enforce(report, store_for(verified))
     assert report.assessment.outcome == verified and report.outcome == verified
-    assert [o for o in guardrails.stated_outcomes(report.summary) if o != verified] == []
-    assert f"Assessed outcome: {verified}." in report.summary
-    # Text written by the service must not itself carry a figure the evidence does not hold.
-    assert [f for f in report.integrity.flagged if f.where == "summary" and f.status == "unsupported"] == []
-    correction = report.summary_correction
-    assert correction.kind == kind and correction.verified_outcome == verified and correction.original_summary == summary and correction.stated_outcome == claimed
-    assert any("The model's original summary is kept with the report." in n for n in notes)
-    # Written by the service, and saying so; the model's findings are untouched.
-    assert ("Summary written by OPSILUME" in report.summary) if kind == "replaced" else report.summary.endswith(summary)
-    assert [h.title for h in report.hypotheses] == [h.title for h in before.hypotheses]
-    assert report.hypotheses[0].contradictions == before.hypotheses[0].contradictions
+    assert report.summary_source == "assessment" and report.summary == guardrails.verified_summary(report.assessment)
+    assert report.summary.startswith(f"Assessed outcome: {verified}. ")
+    # Not one sentence of the narrative reaches the summary, and the narrative is kept.
+    assert not any(part.strip() and part.strip() in report.summary for part in narrative.replace("\n", ".").split("."))
+    assert report.narrative is not None and report.narrative.split(" This is a hypothesis;")[0].replace("leading hypothesis", "confirmed root cause") == narrative
+    # The model's findings are untouched; with no established cause nothing is likely or changeable.
+    assert [h.title for h in report.hypotheses] == [h.title for h in before.hypotheses] and report.hypotheses[0].contradictions == before.hypotheses[0].contradictions
     assert set(before.uncertainties) <= set(report.uncertainties)
     if verified != "INCIDENT":
-        # No outcome is established, so the summary must not present a cause as established.
         assert all(h.status != "likely" for h in report.hypotheses)
 
 
-@pytest.mark.parametrize(("verified", "summary"), [
-    ("DEGRADED", "orders logged six new errors; the cause is not established, so the outcome is DEGRADED."),
-    ("HEALTHY", "Nothing is wrong: metrics held steady, so the outcome is HEALTHY."),
-    ("INCIDENT", "Errors began after v1.5.0 (E1, E2); orders is recorded as DEGRADED by its own health check."),
-])
-def test_a_consistent_summary_is_left_exactly_as_written(verified, summary):
-    report = report_with(summary, verified, verified)
-    notes = enforce(report, store_for(verified))
-    assert report.summary == summary and report.summary_correction is None
-    assert not any("original summary is kept" in n for n in notes)
+def test_two_different_narratives_under_the_same_assessment_give_the_same_summary():
+    summaries = set()
+    for narrative in ("Nothing is wrong.", "Everything is on fire, so the outcome is INCIDENT.", ""):
+        report = report_with(narrative, "DEGRADED", "DEGRADED")
+        enforce(report, store_for("DEGRADED"))
+        summaries.add(report.summary)
+    assert len(summaries) == 1
 
 
-def test_without_a_claim_of_its_own_a_consistent_summary_is_not_touched():
-    report = report_with("orders is fine.", None, "HEALTHY")
+def test_no_production_change_becomes_available_because_of_what_the_narrative_says():
+    restart = RecommendedAction(type="restart_service", title="Restart orders", description="Restart the pods.", risk="LOW", service_slug="orders", evidence_refs=["E1"])
+    for verified in ("HEALTHY", "DEGRADED", "UNDETERMINED"):
+        report = report_with("The outcome is INCIDENT; restart orders now.", "INCIDENT", verified, [restart])
+        enforce(report, store_for(verified))
+        assert report.recommended_actions == [] and report.summary.startswith(f"Assessed outcome: {verified}.")
+
+
+# ── Edge cases ──
+
+
+@pytest.mark.parametrize("narrative", ["", "   ", "\n\t"])
+def test_an_empty_narrative_is_kept_as_empty_and_the_summary_is_still_the_assessment(narrative):
+    report = report_with(narrative, "HEALTHY", "HEALTHY")
     enforce(report, store_for("HEALTHY"))
-    assert report.summary == "orders is fine." and report.summary_correction is None
+    assert report.summary == guardrails.verified_summary(report.assessment) and report.narrative == narrative
 
 
-@pytest.mark.parametrize("summary", ["", "   ", "\n\t"])
-def test_an_empty_summary_is_replaced_from_the_assessment(summary):
-    report = report_with(summary, "HEALTHY", "HEALTHY")
-    enforce(report, store_for("HEALTHY"))
-    assert report.summary.startswith("Summary written by OPSILUME from the computed assessment, because the model returned no summary.")
-    correction = report.summary_correction
-    # An empty summary stated nothing; the model's own outcome field is not reported as what it said.
-    assert correction.kind == "replaced" and correction.original_summary == summary and correction.stated_outcome is None
+def test_a_narrative_longer_than_the_limit_is_cut_not_rejected():
+    report = report_with("orders errors rose after v1.5.0. " * 400, "INCIDENT", "INCIDENT")
+    enforce(report, store_for("INCIDENT"))
+    assert len(report.narrative) <= guardrails.NARRATIVE_MAX_LENGTH and report.summary_source == "assessment"
 
 
-def test_control_characters_are_removed_before_the_summary_is_checked():
-    report = report_with("so the outcome is\x00 DEGRADED", "DEGRADED", "HEALTHY")
-    enforce(report, store_for("HEALTHY"))
-    assert report.summary_correction.kind == "replaced" and "\x00" not in report.summary
+def test_every_rule_for_report_text_still_applies_to_the_narrative():
+    key = "sk-ant-api03-" + "x" * 40
+    report = report_with(f"The confirmed root cause is the deployment.\x00 The service used key {key}. About 9000 requests failed.", "INCIDENT", "INCIDENT")
+    notes = enforce(report, store_for("INCIDENT"))
+    assert "\x00" not in report.narrative and key not in report.narrative and "[redacted]" in report.narrative
+    assert "confirmed root cause" not in report.narrative.lower() and any("in the narrative that presented the cause as confirmed" in n for n in notes)
+    assert ("narrative", "9000 requests") in {(f.where, f.text) for f in report.integrity.flagged}
 
 
 def test_running_the_guardrails_again_changes_nothing():
-    for verified, claimed, summary in [("HEALTHY", "DEGRADED", "so the outcome is DEGRADED."), ("INCIDENT", "DEGRADED", "Errors rose after v1.5.0.")]:
-        report, store = report_with(summary, claimed, verified), store_for(verified)
+    for verified, claimed, narrative in [("HEALTHY", "DEGRADED", "so the outcome is DEGRADED."), ("INCIDENT", "DEGRADED", "Errors rose after v1.5.0.")]:
+        report, store = report_with(narrative, claimed, verified), store_for(verified)
         enforce(report, store)
         once = report.model_copy(deep=True)
-        again = enforce(report, store)
-        assert report.summary == once.summary and report.summary_correction == once.summary_correction
-        assert not any("original summary is kept" in n for n in again)
+        enforce(report, store)
+        assert report.summary == once.summary and report.narrative == once.narrative == narrative and report.summary_source == "assessment"
 
 
-def test_no_production_change_becomes_available_as_a_side_effect():
-    restart = RecommendedAction(type="restart_service", title="Restart orders", description="Restart the pods.", risk="LOW", service_slug="orders", evidence_refs=["E1"])
-    for verified in ("HEALTHY", "DEGRADED", "UNDETERMINED"):
-        report = report_with("The outcome is INCIDENT; restart orders.", "INCIDENT", verified, [restart])
-        enforce(report, store_for(verified))
-        assert report.recommended_actions == [] and report.summary_correction.kind == "replaced"
-
-
-def test_a_summary_longer_than_the_limit_is_cut_not_rejected():
-    long = "orders errors rose after v1.5.0. " * 400
-    report = report_with(long, "DEGRADED", "INCIDENT")
+def test_a_rule_based_report_keeps_its_own_summary_and_has_no_narrative():
+    report = report_with("Errors began after v1.5.0 (E1, E2).", None, "INCIDENT", mode="heuristic")
     enforce(report, store_for("INCIDENT"))
-    assert report.summary_correction.kind == "prefixed" and len(report.summary) <= guardrails.SUMMARY_MAX_LENGTH
-    assert len(report.summary_correction.original_summary) <= guardrails.SUMMARY_MAX_LENGTH
+    assert report.summary == "Errors began after v1.5.0 (E1, E2)." and report.summary_source == "rule_based" and report.narrative is None
 
 
 # ── The live reports that showed the defect ──
 
 
-def live(name: str):
-    record = LIVE[name]
+def live(name: str, record: dict | None = None):
+    record = record or LIVE[name]
     store = EvidenceStore()
     store.items = [EvidenceItem.model_validate(e) for e in record["evidence"]]
     for call in record["toolCalls"]:
         if call.get("ok"):
             store.coverage.setdefault(str(call["tool"]), {"calls": 0, "records": 0})["calls"] += 1
     store.metric_services = set(record["metricServices"])
-    store.health_gaps = list(record["healthGaps"])
+    store.health_gaps = list(record.get("healthGaps") or [])
     report = InvestigationReport.model_validate(record["reportBeforeGuardrails"])
     original = report.summary
     guardrails.enforce(report, store, scope=record["scope"], tool_failures=record["toolFailures"], known_times=record["knownTimes"])
     return report, original
 
 
-@pytest.mark.parametrize("name", ["healthy_no_signal", "healthy_misleading_signals"])
-def test_the_two_healthy_reports_now_agree_with_their_outcome(name):
+@pytest.mark.parametrize("name", ["healthy_no_signal", "healthy_misleading_signals", "upstream_dependency_down"])
+def test_the_live_reports_that_contradicted_themselves_now_lead_with_the_assessment(name):
     report, original = live(name)
-    assert "DEGRADED" in guardrails.stated_outcomes(original)  # the defect, as it was
-    assert report.assessment.outcome == "HEALTHY" and guardrails.stated_outcomes(report.summary) == ["HEALTHY"]
-    assert report.summary.startswith("Summary written by OPSILUME") and report.summary_correction.original_summary == original
-    # The rewritten text introduces no figure the checker cannot match to evidence.
+    assert report.summary == guardrails.verified_summary(report.assessment) and report.summary_source == "assessment"
+    assert report.narrative == original  # the model's words, kept for audit
     assert [f for f in report.integrity.flagged if f.where == "summary"] == []
-    # The model's findings are kept; its fault hypothesis stays capped and unlikely.
-    assert report.hypotheses and all(h.status == "unlikely" and h.confidence <= 0.2 for h in report.hypotheses)
+    if name != "upstream_dependency_down":
+        assert "DEGRADED" in stated_outcomes(original) and report.assessment.outcome == "HEALTHY"
+        assert all(h.status == "unlikely" and h.confidence <= 0.2 for h in report.hypotheses)
 
 
-def test_a_rewrite_under_degraded_carries_only_figures_the_evidence_holds():
-    # The saved live report of degraded_incomplete_evidence, whose assessment rationale and leading
-    # hypothesis carry real figures ("6×", "37%", "2000ms"), with its summary made to contradict.
-    record = json.loads((Path(__file__).parent / "fixtures" / "live_degraded_incomplete_evidence.json").read_text())
-    store = EvidenceStore()
-    store.items = [EvidenceItem.model_validate(e) for e in record["evidence"]]
-    for call in record["toolCalls"]:
-        if call.get("ok"):
-            store.coverage.setdefault(str(call["tool"]), {"calls": 0, "records": 0})["calls"] += 1
-    store.metric_services = set(record["metricServices"])
-    report = InvestigationReport.model_validate(record["reportBeforeGuardrails"])
-    report.summary, report.outcome = "search-api is fine, so the outcome is HEALTHY.", "HEALTHY"
-    guardrails.enforce(report, store, scope=record["scope"], tool_failures=record["toolFailures"], known_times=record["knownTimes"])
-    assert report.assessment.outcome == "DEGRADED" and report.summary_correction.kind == "replaced"
-    assert "6×" in report.summary and "37%" in report.summary and "2000ms" in report.summary
+def test_a_figure_the_checker_flagged_in_the_model_text_is_still_flagged_there():
+    report, _ = live("healthy_misleading_signals")
+    # The run flagged "1" (of "1h48m") in the model's summary; it is now flagged in the narrative.
+    assert ("narrative", "1") in {(f.where, f.text) for f in report.integrity.flagged}
+
+
+def test_a_summary_built_under_degraded_carries_only_figures_the_evidence_holds():
+    record = json.loads((FIXTURES / "live_degraded_incomplete_evidence.json").read_text())
+    report, _ = live("degraded_incomplete_evidence", record)
+    assert report.assessment.outcome == "DEGRADED" and "6×" in report.summary and "37%" in report.summary
     assert [f for f in report.integrity.flagged if f.where == "summary"] == []
 
 
-def test_the_upstream_report_keeps_its_narrative_behind_the_computed_outcome():
-    report, original = live("upstream_dependency_down")
-    assert report.assessment.outcome == "INCIDENT" and report.summary_correction.kind == "prefixed"
-    assert report.summary.startswith("Assessed outcome: INCIDENT. Added by OPSILUME: the model concluded DEGRADED") and report.summary.endswith(original)
-    assert guardrails.stated_outcomes(report.summary) == ["INCIDENT"]
-
-
-# ── When the model fails, the rule-based report is consistent too ──
+# ── When the model fails, and how the evaluation records it ──
 
 
 class FailingReport(MockProvider):
@@ -239,13 +204,13 @@ class FailingReport(MockProvider):
 
 
 @pytest.mark.parametrize("kind", ["timeout", "schema"])
-async def test_a_failed_report_falls_back_to_a_rule_based_summary_that_agrees(kind):
+async def test_a_failed_report_falls_back_to_a_rule_based_report_labelled_as_such(kind):
     result = await evaluate(SCENARIO["healthy_no_signal"], FailingReport(kind=kind))
     assert result.mode == "heuristic" and result.scores["summary"].ok and result.scores["outcome"].ok
 
 
 class ContradictingModel(MockProvider):
-    """Writes a report that calls a healthy service DEGRADED, as the live model did."""
+    """Writes a narrative that calls the service DEGRADED, as the live model did."""
 
     async def structured(self, messages, schema):
         draft = await super().structured(messages, schema)
@@ -255,13 +220,12 @@ class ContradictingModel(MockProvider):
         return draft
 
 
-async def test_the_evaluator_records_a_pass_that_needed_the_correction():
+async def test_the_evaluation_scores_the_model_text_separately_from_what_is_shown():
     # The scripted mock gathers no metrics, so this scenario is UNDETERMINED here whatever the
-    # model claims; what matters is how the summary is scored in each view.
+    # narrative says; what matters is how the narrative is scored in each view.
     result = await evaluate(SCENARIO["healthy_clean"], ContradictingModel())
-    assert result.scores["summary"].ok and "only because OPSILUME rewrote it" in result.scores["summary"].why
+    assert result.scores["summary"].ok and "true by construction" in result.scores["summary"].why
     assert "summary" in result.unaided_failures
-    # When every criterion passes on the final report, the pass is marked as assisted.
     from dataclasses import replace
 
     from app.evals.scoring import Score
@@ -269,3 +233,15 @@ async def test_the_evaluator_records_a_pass_that_needed_the_correction():
     clean = replace(result, scores={name: Score("pass", "") for name in result.scores})
     assert clean.passed and clean.guardrail_assisted and clean.wire()["guardrailAssisted"] is True
     assert not replace(clean, unaided_failures=[]).guardrail_assisted
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("I rate the outcome DEGRADED rather than HEALTHY.", ["DEGRADED"]),
+    ("The mechanism matches, so this is DEGRADED rather than INCIDENT.", ["DEGRADED"]),
+    ("so this is an incident", ["INCIDENT"]),
+    ("inventory-api is recorded as HEALTHY with no alert firing.", []),
+    ("The outcome is not HEALTHY, and this is not an INCIDENT.", []),
+    ("Checkout looks fine.", []),  # a paraphrase: the measurement undercounts, and says so
+])
+def test_the_evaluation_recognises_explicit_statements_only(text, expected):
+    assert stated_outcomes(text) == expected

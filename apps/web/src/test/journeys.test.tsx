@@ -213,6 +213,29 @@ describe('starting an investigation', () => {
   });
 });
 
+describe('where an investigation summary is shown outside its own page', () => {
+  const verified = 'Assessed outcome: INCIDENT. A new error pattern appeared and an explanation is supported (E2).';
+  it('the list, the incident and the remediation action show the summary built from the assessment', async () => {
+    fakeApi({ 'GET /investigations': { ...investigationList, data: [{ ...investigationList.data[0]!, summary: verified }] } });
+    const list = show(<InvestigationsPage />, session('ENGINEER'));
+    expect(await screen.findByText(verified)).toBeInTheDocument();
+    list.unmount();
+
+    nav.params = { id: 'inc-1' };
+    fakeApi({ 'GET /incidents/inc-1': { ...incident, investigations: [{ ...incident.investigations[0]!, summary: verified }] }, 'GET /members': { data: [] } });
+    const onIncident = show(<IncidentPage />, session('ENGINEER'));
+    expect(await screen.findByText(verified)).toBeInTheDocument();
+    onIncident.unmount();
+
+    nav.params = { id: 'act-1' };
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, investigation: { ...remediation.investigation!, summary: verified } } });
+    show(<RemediationDetailPage />, session('ENGINEER'));
+    expect(await screen.findByText(verified)).toBeInTheDocument();
+    // None of these views carries a narrative: the API does not send one with them.
+    expect(screen.queryByText(/Unverified model narrative/)).not.toBeInTheDocument();
+  });
+});
+
 describe('viewing an investigation report', () => {
   beforeEach(() => {
     nav.params = { id: 'inv-1' };
@@ -255,31 +278,54 @@ describe('viewing an investigation report', () => {
     expect(screen.queryByRole('button', { name: /approve|execute/i })).not.toBeInTheDocument();
   });
 
-  it('says when OPSILUME rewrote a summary that contradicted the computed outcome, and keeps the original one click away', async () => {
-    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
-    const corrected = structuredClone(investigation);
-    corrected.report!.summary = 'Summary written by OPSILUME from the computed assessment, because the model\'s summary stated an outcome the evidence does not support (HEALTHY). Assessed outcome: INCIDENT. A new error pattern appeared.';
-    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original };
-    fakeApi({ 'GET /investigations/inv-1': corrected });
-    show(<InvestigationPage />, session('ENGINEER'));
+  const modelReport = (changes: Record<string, unknown> = {}) => {
+    const shown = structuredClone(investigation);
+    Object.assign(shown, { provider: 'anthropic', model: 'claude-haiku-5-5' });
+    Object.assign(shown.report!, { analysisMode: 'llm', summary: 'Assessed outcome: INCIDENT. A new error pattern appeared and an explanation is supported (E2).', summarySource: 'assessment', narrative: 'Checkout looks fine and has fully recovered; nothing needs attention.', ...changes });
+    return shown;
+  };
 
-    expect(await screen.findByText(/Summary written by OPSILUME from the computed assessment/)).toBeInTheDocument();
-    const note = screen.getByRole('note', { name: 'Summary correction' });
-    expect(note).toHaveTextContent("OPSILUME wrote this summary from the computed assessment. The model's summary stated HEALTHY, which the evidence does not support (assessed INCIDENT).");
-    // The model's words are kept, behind a labelled toggle, not presented as the summary.
-    expect(within(note).getByText("Show the model's original summary")).toBeInTheDocument();
-    expect(within(note).getByText(original)).toBeInTheDocument();
+  it('leads with the summary built from the assessment and shows the model text only as an unverified narrative', async () => {
+    fakeApi({ 'GET /investigations/inv-1': modelReport() });
+    show(<InvestigationPage />, session('ENGINEER'));
+    // The ref (E2) renders as a link into the evidence, so the sentence is matched across elements.
+    expect(await screen.findByText((_, el) => el?.tagName === 'P' && el.textContent === 'Assessed outcome: INCIDENT. A new error pattern appeared and an explanation is supported (E2).')).toBeInTheDocument();
+    expect(screen.getByText(/Built by OPSILUME from the computed assessment, not written by the model\./)).toBeInTheDocument();
+    const narrative = screen.getByRole('region', { name: 'Unverified model narrative' });
+    expect(narrative).toHaveTextContent('Written by claude-haiku-5-5. Not verified: it may contradict the assessment above');
+    // The narrative's words appear once, inside the labelled region, and nowhere else.
+    expect(screen.getAllByText(/Checkout looks fine and has fully recovered/)).toHaveLength(1);
+    expect(within(narrative).getByText(/Checkout looks fine and has fully recovered/)).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Assessment' })).toHaveTextContent('Incident');
   });
 
-  it('says plainly when the model returned no summary, rather than claiming it stated an outcome', async () => {
-    const corrected = structuredClone(investigation);
-    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: null, verifiedOutcome: 'INCIDENT', originalSummary: '' };
-    fakeApi({ 'GET /investigations/inv-1': corrected });
+  it('says when the model returned no narrative', async () => {
+    fakeApi({ 'GET /investigations/inv-1': modelReport({ narrative: '' }) });
     show(<InvestigationPage />, session('ENGINEER'));
-    const note = await screen.findByRole('note', { name: 'Summary correction' });
-    expect(note).toHaveTextContent('OPSILUME wrote this summary from the computed assessment, because the model returned no summary.');
-    expect(note).not.toHaveTextContent('which the evidence does not support');
+    expect(within(await screen.findByRole('region', { name: 'Unverified model narrative' })).getByText('The model returned no narrative.')).toBeInTheDocument();
+  });
+
+  it('states no outcome when the report carries no assessment, and keeps the model text unverified', async () => {
+    const unverified = 'Outcome not verified: this report carries no assessment of the evidence, so no outcome is stated here. The narrative is its author\'s own and has not been verified.';
+    fakeApi({ 'GET /investigations/inv-1': modelReport({ summary: unverified, summarySource: 'unverified', assessment: null, outcome: null }) });
+    show(<InvestigationPage />, session('ENGINEER'));
+    expect(await screen.findByText(unverified)).toBeInTheDocument();
+    expect(screen.getByText(/The outcome is not verified: this report carries no assessment of the evidence\./)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Assessment' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Unverified model narrative' })).toHaveTextContent('Checkout looks fine');
+  });
+
+  it('does not present an older model summary as verified', async () => {
+    fakeApi({ 'GET /investigations/inv-1': modelReport({ summary: 'Errors began after v2.4.0.', summarySource: undefined, narrative: undefined }) });
+    show(<InvestigationPage />, session('ENGINEER'));
+    expect(await screen.findByText(/Written by claude-haiku-5-5 before summaries were built from the assessment, and not checked against it\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Built by OPSILUME from the computed assessment/)).not.toBeInTheDocument();
+  });
+
+  it('labels a mock narrative as scripted', async () => {
+    fakeApi({ 'GET /investigations/inv-1': modelReport({ analysisMode: 'mock' }) });
+    show(<InvestigationPage />, session('ENGINEER'));
+    expect(await screen.findByRole('region', { name: 'Unverified mock narrative' })).toHaveTextContent('Scripted by the mock provider: not an analysis.');
   });
 
   it('marks a figure the evidence does not support where it is read, and counts it in the evidence check', async () => {
@@ -641,15 +687,18 @@ describe('the report to share', () => {
     nav.params = { id: 'inv-1' };
   });
 
-  it('prints the computed conclusion, not a summary the model got wrong', async () => {
-    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
-    const corrected = structuredClone(investigation);
-    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original };
-    fakeApi({ 'GET /investigations/inv-1': corrected, 'GET /remediations': actions });
+  it('prints the computed conclusion, and the model text only in its own unverified section', async () => {
+    const shown = structuredClone(investigation);
+    Object.assign(shown, { provider: 'anthropic', model: 'claude-haiku-5-5' });
+    Object.assign(shown.report!, { analysisMode: 'llm', summarySource: 'assessment', narrative: 'Checkout looks fine and has fully recovered; nothing needs attention.' });
+    fakeApi({ 'GET /investigations/inv-1': shown, 'GET /remediations': actions });
     show(<InvestigationReportPage />, session('VIEWER'));
     const conclusion = await screen.findByRole('region', { name: 'Conclusion' });
-    expect(conclusion).toHaveTextContent("The model's own summary concluded HEALTHY. This conclusion is the computed assessment of the evidence.");
-    expect(screen.queryByText(original)).not.toBeInTheDocument();
+    expect(conclusion).not.toHaveTextContent('Checkout looks fine');
+    const narrative = screen.getByRole('region', { name: 'Unverified model narrative Not verified' });
+    expect(narrative).toHaveTextContent('Not verified');
+    expect(narrative).toHaveTextContent('It has not been verified and may contradict the conclusion above, which is the computed assessment.');
+    expect(narrative).toHaveTextContent('Checkout looks fine and has fully recovered; nothing needs attention.');
   });
 
   it('reads as a document: conclusion, probable cause, facts, changes, limits, next steps, in words a reader outside the team can follow', async () => {

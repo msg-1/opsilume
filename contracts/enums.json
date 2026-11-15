@@ -10,5 +10,5 @@
   "claimStatuses": ["exact", "rounded", "calculated", "estimate", "uncited", "unsupported"],
   "claimKinds": ["number", "timestamp", "version", "commit", "pull_request", "incident"],
   "verificationStatuses": ["verified", "partly", "unsupported", "no_claims"],
-  "summaryCorrectionKinds": ["replaced", "prefixed", "unverified"]
+  "summarySources": ["assessment", "unverified", "rule_based"]
 }

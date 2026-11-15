@@ -157,9 +157,10 @@ async def test_control_characters_credentials_and_claims_of_certainty_do_not_sur
     text = str(shown)
     for secret in (key, token, "AKIAIOSFODNN7EXAMPLE"):
         assert secret not in text
-    assert "[redacted]" in report.summary and "[redacted]" in report.facts[0].statement
+    # The model's words now live in the narrative, and every rule still applies to them there.
+    assert "[redacted]" in report.narrative and "[redacted]" in report.facts[0].statement
     assert not any(ord(ch) < 32 and ch not in "\n\t\r" for ch in text)
-    assert "confirmed root cause" not in report.summary.lower()
+    assert "confirmed root cause" not in report.narrative.lower() and "confirmed root cause" not in report.summary.lower()
     assert any("credential-like" in (e["step"].get("detail") or "") for e in events if e["type"] == "step" and e["step"]["type"] == "guardrail")
 
 

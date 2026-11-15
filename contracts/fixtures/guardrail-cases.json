@@ -805,7 +805,7 @@
       }
     },
     {
-      "name": "a summary that states an outcome the assessment contradicts is rewritten from the assessment, and the original is kept",
+      "name": "the summary of a model report is built from the assessment, and the model's text is kept as an unverified narrative",
       "evidence": [
         {
           "ref": "E1",
@@ -846,13 +846,27 @@
         "outcome": "HEALTHY",
         "assessment": {
           "outcome": "INCIDENT",
-          "confidence": 0.9,
-          "rationale": "A failure is evident and an explanation is supported",
+          "confidence": 0.82,
+          "rationale": "A failure is evident (300\u00d7 ERROR in orders (new pattern)) and at least one explanation is supported by evidence.",
           "supportingRefs": [
             "E2"
           ],
-          "signals": [],
-          "missingTelemetry": []
+          "signals": [
+            {
+              "level": "strong",
+              "kind": "logs",
+              "text": "300\u00d7 ERROR in orders (new pattern)",
+              "evidenceRefs": [
+                "E2"
+              ]
+            }
+          ],
+          "missingTelemetry": [
+            "Logs were not searched.",
+            "No metric samples exist in the window for: orders.",
+            "Traces were not examined.",
+            "Deployment history was not examined."
+          ]
         },
         "observations": [],
         "timeline": [],
@@ -884,13 +898,9 @@
       },
       "expect": {
         "actions": [],
-        "summaryStartsWith": "Summary written by OPSILUME from the computed assessment, because the model's summary stated an outcome the evidence does not support (HEALTHY). Assessed outcome: INCIDENT.",
-        "summaryCorrection": {
-          "kind": "replaced",
-          "statedOutcome": "HEALTHY",
-          "verifiedOutcome": "INCIDENT",
-          "originalSummary": "Nothing is materially wrong with orders, so the outcome is HEALTHY."
-        }
+        "summary": "Assessed outcome: INCIDENT. A failure is evident (300\u00d7 ERROR in orders (new pattern)) and at least one explanation is supported by evidence (E2).",
+        "narrative": "Nothing is materially wrong with orders, so the outcome is HEALTHY.",
+        "summarySource": "assessment"
       }
     }
   ]

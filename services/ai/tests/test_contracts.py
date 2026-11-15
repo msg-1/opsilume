@@ -86,7 +86,9 @@ def test_guardrail_case_shared_with_the_api(case):
         assert [f.statement for f in report.facts] == expect["facts"]
     for text in expect.get("assumptionsContain", []):
         assert text in report.assumptions
-    if "summaryStartsWith" in expect:
-        assert report.summary.startswith(expect["summaryStartsWith"]), report.summary
-    if "summaryCorrection" in expect:
-        assert report.summary_correction is not None and report.summary_correction.model_dump(by_alias=True) == expect["summaryCorrection"]
+    if "summary" in expect:
+        assert report.summary == expect["summary"]
+    if "narrative" in expect:
+        assert report.narrative == expect["narrative"]
+    if "summarySource" in expect:
+        assert report.summary_source == expect["summarySource"]

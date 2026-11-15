@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { GUARDRAIL_LIMITS as LIMITS, OUTCOMES } from '../src/generated/contracts';
 import { applyGuardrails, reportSchema } from '../src/modules/investigations';
 
 /** Every key path in a JSON value, with list items collapsed. */
@@ -118,8 +119,9 @@ describe('shared contracts', () => {
       maxConfidence?: number;
       facts?: string[];
       assumptionsContain?: string[];
-      summaryStartsWith?: string;
-      summaryCorrection?: Record<string, unknown>;
+      summary?: string;
+      narrative?: string;
+      summarySource?: string;
     };
   }
   const { cases } = readContract('fixtures/guardrail-cases.json') as { cases: GuardrailCase[] };
@@ -148,62 +150,66 @@ describe('shared contracts', () => {
     if (e.maxConfidence !== undefined) expect(result.confidence).toBeLessThanOrEqual(e.maxConfidence);
     if (e.facts) expect(result.facts.map((f) => f.statement)).toEqual(e.facts);
     for (const text of e.assumptionsContain ?? []) expect(result.assumptions).toContain(text);
-    if (e.summaryStartsWith) expect(result.summary.startsWith(e.summaryStartsWith), result.summary).toBe(true);
-    if (e.summaryCorrection) expect(result.summaryCorrection).toEqual(e.summaryCorrection);
+    // The same full text as the AI service builds from the same assessment.
+    if (e.summary !== undefined) expect(result.summary).toBe(e.summary);
+    if (e.narrative !== undefined) expect(result.narrative).toBe(e.narrative);
+    if (e.summarySource !== undefined) expect(result.summarySource).toBe(e.summarySource);
   });
 
-  // The summary at the API boundary, beyond the shared case.
-  describe('summary consistency', () => {
-    const base = cases.find((c) => c.name.startsWith('a summary that states an outcome'))!;
+  // The summary at the API boundary, beyond the shared case. The incoming summary is never trusted.
+  describe('verified summary and unverified narrative', () => {
+    const base = cases.find((c) => c.name.startsWith('the summary of a model report is built from the assessment'))!;
     const knownRefs = new Set(base.evidence.map((e) => e.ref));
+    const expected = base.expect.summary!;
     const guard = async (change: (r: Record<string, unknown>) => void) => {
       const report = structuredClone(base.report) as Record<string, unknown>;
       change(report);
-      const steps: { detail?: string | null }[] = [];
-      const result = await applyGuardrails(reportSchema.parse(report), knownRefs, async (s) => steps.push(s));
-      return { result, notes: steps.map((s) => s.detail).join('\n') };
+      return applyGuardrails(reportSchema.parse(report), knownRefs, async () => undefined);
     };
 
-    it('marks a summary without an assessment as not verified, and writes no outcome into it', async () => {
-      const { result, notes } = await guard((r) => { delete r.assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down, so the outcome is INCIDENT.'; });
+    it.each([
+      ['a paraphrase that contradicts', 'Checkout looks fine and nothing needs attention.'],
+      ['a claimed recovery', 'The service has fully recovered and is operating normally.'],
+      ['a contradiction in a later paragraph', 'All good.\n\nOn closer reading the outcome is HEALTHY.'],
+      ['an empty narrative', ' '],
+    ])('rebuilds the summary from the assessment whatever the model wrote: %s', async (_label, narrative) => {
+      const result = await guard((r) => { r.summary = narrative; });
+      expect(result.summary).toBe(expected);
+      expect(result.narrative).toBe(narrative);
+      expect(result.summarySource).toBe('assessment');
+    });
+
+    it('rebuilds a summary that arrives already set, keeping the narrative it came with', async () => {
+      const result = await guard((r) => { r.summary = 'Anything at all.'; r.narrative = 'What the model wrote.'; r.summarySource = 'assessment'; });
+      expect(result.summary).toBe(expected);
+      expect(result.narrative).toBe('What the model wrote.');
+    });
+
+    it('states no outcome when there is no assessment, and keeps the narrative as unverified', async () => {
+      const result = await guard((r) => { delete r.assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down, so the outcome is INCIDENT.'; });
       expect(result.outcome).toBeNull();
-      expect(result.summary.startsWith('Not verified: this report carries no assessment of the evidence')).toBe(true);
-      expect(result.summary).not.toContain('Assessed outcome');
-      expect(result.summaryCorrection).toMatchObject({ kind: 'unverified', statedOutcome: 'INCIDENT', verifiedOutcome: null, originalSummary: 'Checkout is down, so the outcome is INCIDENT.' });
-      expect(notes).toContain('The summary is marked as not verified');
+      expect(result.summarySource).toBe('unverified');
+      expect(result.summary).toBe(LIMITS.reportSummary.unverified);
+      for (const label of OUTCOMES) expect(result.summary).not.toContain(label);
+      expect(result.narrative).toBe('Checkout is down, so the outcome is INCIDENT.');
+      expect(result.recommendedActions.filter((a) => a.effect === 'state_changing')).toEqual([]);
     });
 
-    it('puts the assessed outcome in front of a summary that states none, when the author concluded another', async () => {
-      const { result } = await guard((r) => { r.summary = 'Errors began after v1.5.0 (E1, E2).'; r.outcome = 'DEGRADED'; });
-      expect(result.summary).toBe('Assessed outcome: INCIDENT. Added by OPSILUME: the model concluded DEGRADED, but the evidence supports INCIDENT. The model\'s summary follows. Errors began after v1.5.0 (E1, E2).');
-      expect(result.summaryCorrection).toMatchObject({ kind: 'prefixed', statedOutcome: 'DEGRADED', verifiedOutcome: 'INCIDENT' });
-    });
-
-    it('leaves a consistent summary, and one the AI service already corrected, exactly as they are', async () => {
-      const consistent = await guard((r) => { r.summary = 'Errors began after v1.5.0, so this is an INCIDENT.'; r.outcome = 'INCIDENT'; });
-      expect(consistent.result.summary).toBe('Errors began after v1.5.0, so this is an INCIDENT.');
-      expect(consistent.result.summaryCorrection ?? null).toBeNull();
-      const corrected = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: 'the outcome is HEALTHY' };
-      const upstream = await guard((r) => { r.summary = 'Summary written by OPSILUME from the computed assessment. Assessed outcome: INCIDENT. A failure is evident.'; r.outcome = 'INCIDENT'; r.summaryCorrection = corrected; });
-      expect(upstream.result.summary).toBe('Summary written by OPSILUME from the computed assessment. Assessed outcome: INCIDENT. A failure is evident.');
-      expect(upstream.result.summaryCorrection).toEqual(corrected);
+    it('leaves a rule-based summary as the rule-based engine wrote it', async () => {
+      const result = await guard((r) => { r.analysisMode = 'heuristic'; r.summary = 'Errors began after v1.5.0 (E1, E2).'; });
+      expect(result.summary).toBe('Errors began after v1.5.0 (E1, E2).');
+      expect(result.summarySource).toBe('rule_based');
+      expect(result.narrative ?? null).toBeNull();
     });
 
     it('changes nothing when applied a second time', async () => {
-      for (const change of [(r: Record<string, unknown>) => void r, (r: Record<string, unknown>) => { delete r.assessment; }, (r: Record<string, unknown>) => { r.summary = 'Errors rose.'; r.outcome = 'DEGRADED'; }]) {
-        const { result: once } = await guard(change);
+      for (const change of [(r: Record<string, unknown>) => void r, (r: Record<string, unknown>) => { delete r.assessment; }, (r: Record<string, unknown>) => { r.narrative = ''; }]) {
+        const once = await guard(change);
         const twice = await applyGuardrails(reportSchema.parse(structuredClone(once)), knownRefs, async () => undefined);
         expect(twice.summary).toBe(once.summary);
-        expect(twice.summaryCorrection).toEqual(once.summaryCorrection);
+        expect(twice.narrative).toBe(once.narrative);
+        expect(twice.summarySource).toBe(once.summarySource);
       }
-    });
-
-    it('recognises the same statements of an outcome as the AI service', async () => {
-      const { statedOutcomes } = await import('../src/modules/investigations/guardrails');
-      expect(statedOutcomes('I rate the outcome DEGRADED rather than HEALTHY.')).toEqual(['DEGRADED']);
-      expect(statedOutcomes('so this is an incident')).toEqual(['INCIDENT']);
-      expect(statedOutcomes('inventory-api is recorded as HEALTHY with no alert firing.')).toEqual([]);
-      expect(statedOutcomes('The outcome is not HEALTHY, and this is not an INCIDENT.')).toEqual([]);
     });
   });
 

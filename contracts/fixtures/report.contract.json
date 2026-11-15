@@ -42,7 +42,8 @@
       "The trace store returned no traces for the window (none recorded, or no trace store is connected)."
     ]
   },
-  "summaryCorrection": null,
+  "summarySource": "rule_based",
+  "narrative": null,
   "observations": [
     {
       "statement": "Most recent deployment on record: Deployment of orders-api v4.2.0 (succeeded), at 2026-06-01T11:22:00Z.",

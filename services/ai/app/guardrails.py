@@ -14,7 +14,7 @@ from . import claims
 from .effects import action_effect
 from .evidence import EvidenceStore
 from .generated.contracts import GUARDRAIL_LIMITS as LIMITS
-from .schemas import InvestigationReport, SummaryCorrection
+from .schemas import Assessment, InvestigationReport
 
 # Limits are defined once, in contracts/guardrails.json, and generated for the API as well.
 MAX_LLM_CONFIDENCE: float = LIMITS["maxConfidence"]["llm"]
@@ -47,56 +47,37 @@ NO_FAULT_HYPOTHESIS_CAP: float = LIMITS["noFaultHypothesisCap"]
 #: Highest confidence any hypothesis may carry when the outcome is DEGRADED: anomalies are
 #: present but the cause is not established, so no hypothesis may reach "likely".
 UNESTABLISHED_CAUSE_CAP: float = LIMITS["unestablishedCauseCap"]
-# How a summary states an outcome, and the wording used when it has to be made consistent.
-# Defined once in contracts/guardrails.json and applied the same way by the API.
-_SUMMARY = LIMITS["summaryConsistency"]
-_STATEMENTS = [re.compile(p, re.IGNORECASE) for p in _SUMMARY["statementPatterns"]]
-SUMMARY_MAX_LENGTH = 6000
+# What the reader is told first, and where the engine's own words go. Defined once in
+# contracts/guardrails.json and built the same way by the API.
+_SUMMARY = LIMITS["reportSummary"]
+NARRATIVE_MAX_LENGTH: int = _SUMMARY["narrativeMaxLength"]
 
 
-def stated_outcomes(text: str) -> list[str]:
-    """The outcomes a text states as its conclusion: "the outcome is DEGRADED", "I rate the
-    outcome HEALTHY", "so this is an INCIDENT". A service's recorded health ("recorded as
-    HEALTHY") and negations ("not an INCIDENT", "DEGRADED rather than HEALTHY") are not
-    statements of the outcome. Paraphrases ("the service looks fine") are not recognised."""
-    found = [m.group(1).upper() for p in _STATEMENTS for m in p.finditer(text or "")]
-    return list(dict.fromkeys(found))
+def verified_summary(assessment: Assessment) -> str:
+    """The summary of a model or mock report: the computed outcome and the assessment's own
+    rationale, with the evidence it rests on. Built from the assessment and nothing else, so no
+    model-written word can reach it and no narrative can change it. It says what the evidence
+    shows about the outcome; it does not say the cause is known."""
+    rationale = assessment.rationale.rstrip(". ") + (f" ({', '.join(assessment.supporting_refs)})" if assessment.supporting_refs else "") + "."
+    return _SUMMARY["verified"].format(outcome=assessment.outcome, rationale=rationale)
 
 
-def _cited(refs: list[str]) -> str:
-    return f" ({', '.join(refs)})" if refs else ""
+def present_summary(report: InvestigationReport) -> None:
+    """Separates what is verified from what the model wrote.
 
-
-def reconcile_summary(report: InvestigationReport, claimed: str | None) -> str | None:
-    """Makes the summary agree with the computed outcome. Returns a note when it changes it.
-
-    The model writes its summary before the outcome is computed. If the summary states another
-    outcome, or is empty, it is rewritten from the assessment. If only the model's own outcome
-    differed and the summary states none, a sentence giving the computed outcome is put in
-    front. Either way the original is kept in `summary_correction`, and the new text says it was
-    written by OPSILUME, not by the model. Agreeing with the outcome does not make a summary
-    correct; it only stops it from contradicting the assessment shown beside it."""
-    verdict = report.assessment
-    if verdict is None:
-        return None
-    outcome, original = verdict.outcome, report.summary or ""
-    conflicting = [o for o in stated_outcomes(original) if o != outcome]
-    if conflicting or not original.strip():
-        stated = conflicting[0] if conflicting else None
-        rationale = verdict.rationale.rstrip(". ") + _cited(verdict.supporting_refs) + "."
-        text = (_SUMMARY["replaced"] if conflicting else _SUMMARY["replacedEmpty"]).format(stated=stated, outcome=outcome, rationale=rationale)
-        if report.hypotheses:
-            top = report.hypotheses[0]
-            text += _SUMMARY["leadingHypothesis"].format(title=top.title, status=top.status, refs=_cited(top.evidence_refs))
-        # An empty summary stated nothing: the model's own outcome field is not what it "stated".
-        report.summary_correction = SummaryCorrection(kind="replaced", stated_outcome=stated, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
-        report.summary = text[:SUMMARY_MAX_LENGTH]
-        return _SUMMARY["note"].format(action="was rewritten from the computed assessment", stated=stated or "nothing", outcome=outcome)
-    if claimed and claimed != outcome:
-        report.summary_correction = SummaryCorrection(kind="prefixed", stated_outcome=claimed, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
-        report.summary = (_SUMMARY["prefixed"].format(stated=claimed, outcome=outcome) + original)[:SUMMARY_MAX_LENGTH]
-        return _SUMMARY["note"].format(action="now begins with the computed outcome", stated=claimed, outcome=outcome)
-    return None
+    For a model or mock report the model's summary becomes the `narrative`, kept as written
+    (apart from the guardrails that apply to all report text) and shown only as unverified, and
+    the summary is rebuilt from the assessment. A rule-based report keeps its own summary: it is
+    not a model's narrative. Idempotent: the narrative is taken once, and the summary is a
+    function of the assessment alone."""
+    if report.analysis_mode == "heuristic":
+        report.summary_source = "rule_based"
+        return
+    if report.narrative is None:
+        report.narrative = (report.summary or "")[:NARRATIVE_MAX_LENGTH]
+    if report.assessment is not None:
+        report.summary = verified_summary(report.assessment)
+        report.summary_source = "assessment"
 
 
 assert UNESTABLISHED_CAUSE_CAP < LIMITS["likelyMinimumConfidence"], "contracts/guardrails.json: unestablishedCauseCap must be below likelyMinimumConfidence"
@@ -158,7 +139,7 @@ def _sanitise(report: InvestigationReport) -> bool:
                 setattr(obj, name, cleaned)
                 changed = True
 
-    fix(report, "summary", "assumptions", "uncertainties", "next_steps")
+    fix(report, "summary", "narrative", "assumptions", "uncertainties", "next_steps")
     for h in report.hypotheses:
         fix(h, "title", "description", "facts", "assumptions", "gaps", "contradictions")
     for item in [*report.facts, *report.observations]:
@@ -308,15 +289,14 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
         notes.append(f"Overall confidence reduced from {report.confidence:.2f} to {ceiling:.2f} to match the strongest hypothesis.")
         report.confidence = ceiling
 
-    # After the outcome and the hypotheses are final, and before the summary's wording and figures
-    # are checked: the text that is checked is the text that is shown.
-    note = reconcile_summary(report, claimed)
-    if note:
-        notes.append(note)
-
-    if _OVERCLAIM.search(report.summary):
-        report.summary = _OVERCLAIM.sub("leading hypothesis", report.summary) + " This is a hypothesis; the root cause has not been confirmed."
-        notes.append("Rephrased wording in the summary that presented the cause as confirmed.")
+    # After the outcome is final, and before the text is checked: the text that is checked is the
+    # text that is shown, and the model's words stay under every rule that applied to them.
+    present_summary(report)
+    written = "narrative" if report.narrative is not None else "summary"
+    text = getattr(report, written) or ""
+    if _OVERCLAIM.search(text):
+        setattr(report, written, _OVERCLAIM.sub("leading hypothesis", text) + " This is a hypothesis; the root cause has not been confirmed.")
+        notes.append(f"Rephrased wording in the {written} that presented the cause as confirmed.")
     if not report.uncertainties:
         report.uncertainties.append("The analysis is based only on the records available in OpsPilot for the examined time window.")
         notes.append("Added a missing statement of uncertainty.")

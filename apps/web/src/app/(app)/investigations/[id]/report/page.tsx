@@ -126,9 +126,7 @@ export default function InvestigationReportPage() {
               <p><OutcomeBadge outcome={outcome} /> <span className="ml-1">{OUTCOME_MEANS[outcome]}</span></p>
             )}
             {assessment?.rationale && <p>{assessment.rationale} <Refs refs={assessment.supportingRefs} known={known} /></p>}
-            {report.summaryCorrection && report.summaryCorrection.kind !== 'unverified' && (
-              <p className="text-[13px] text-ink-2">{report.summaryCorrection.statedOutcome ? `The model's own summary concluded ${report.summaryCorrection.statedOutcome}.` : 'The model returned no summary.'} This conclusion is the computed assessment of the evidence.</p>
-            )}
+            {report.summarySource === 'unverified' && <p>{report.summary}</p>}
             <dl className="grid grid-cols-[minmax(150px,auto)_1fr] gap-x-4 gap-y-1.5 text-[14px]">
               {data.plan?.services?.length ? <><dt className="text-ink-2">Services examined</dt><dd>{data.plan.services.join(', ')}</dd></> : null}
               {data.plan?.windowFrom && data.plan.windowTo ? <><dt className="text-ink-2">Period examined</dt><dd>{dateTime(data.plan.windowFrom)} to {dateTime(data.plan.windowTo)}</dd></> : null}
@@ -136,6 +134,13 @@ export default function InvestigationReportPage() {
               {report.integrity && report.integrity.checked > 0 && <><dt className="text-ink-2">Figures checked</dt><dd>{report.integrity.supported} of {report.integrity.checked} numbers, times and identifiers in this report match the evidence they cite.</dd></>}
             </dl>
           </Section>
+
+          {report.narrative != null && (
+            <Section id="narrative" title={report.analysisMode === 'mock' ? 'Unverified mock narrative' : 'Unverified model narrative'} kind={<Kind tone="unknown">Not verified</Kind>}>
+              <p className="text-ink-2">{report.analysisMode === 'mock' ? 'Scripted by the mock provider: not an analysis.' : `What ${data.model ?? 'the language model'} wrote as its summary.`} It has not been verified and may contradict the conclusion above, which is the computed assessment.</p>
+              {report.narrative.trim() ? <p className="whitespace-pre-wrap">{report.narrative}</p> : <p className="text-ink-2">The model returned no narrative.</p>}
+            </Section>
+          )}
 
           <Section id="cause" title="Most probable cause" kind={<Kind tone="hypothesis">Hypothesis</Kind>}>
             {leading ? (

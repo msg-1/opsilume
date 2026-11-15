@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { AlertTriangle, CheckCircle2, CircleHelp, HelpCircle, Info } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { OutcomeBadge } from '@/components/badges';
-import type { Assessment, Integrity, SummaryCorrection, Verification } from '@/lib/types';
+import type { Assessment, Integrity, Report, Verification } from '@/lib/types';
 
 const STATUS_WORD: Record<string, string> = {
   exact: 'matches the evidence',
@@ -42,27 +42,32 @@ export function VerificationMark({ verification }: { verification?: Verification
 
 /** The verdict on whether there is a fault at all, with what it rests on and what was not examined. */
 /**
- * Says, next to the summary, that OPSILUME changed it and why, and keeps the model's own words
- * one click away. The summary must never be read as the model's when the service wrote it.
+ * Who wrote the summary, said in words, so that a summary is never read as more than it is. A
+ * summary built from the assessment says so; an older model summary says it was never checked.
  */
-export function SummaryCorrectionNote({ correction }: { correction: SummaryCorrection }) {
-  const said =
-    correction.kind === 'replaced'
-      ? correction.statedOutcome
-        ? `OPSILUME wrote this summary from the computed assessment. The model's summary stated ${correction.statedOutcome}, which the evidence does not support (assessed ${correction.verifiedOutcome}).`
-        : 'OPSILUME wrote this summary from the computed assessment, because the model returned no summary.'
+export function summaryOrigin(report: Pick<Report, 'summarySource' | 'analysisMode'>, model?: string | null): string {
+  if (report.summarySource === 'assessment') return 'Built by OPSILUME from the computed assessment, not written by the model. ';
+  if (report.summarySource === 'unverified') return 'The outcome is not verified: this report carries no assessment of the evidence. ';
+  if (report.analysisMode === 'heuristic') return 'Produced by rule-based correlation, not a language model. ';
+  if (report.analysisMode === 'mock') return 'Produced by a scripted mock, not a language model, and not checked against the assessment. ';
+  return `Written by ${model ?? 'a language model'} before summaries were built from the assessment, and not checked against it. `;
+}
 
-      : correction.kind === 'prefixed'
-        ? `The first sentences were added by OPSILUME: the model concluded ${correction.statedOutcome}, and the computed assessment is ${correction.verifiedOutcome}.`
-        : 'This report carries no assessment of the evidence, so any outcome its summary states is not verified.';
+/**
+ * What a model (or the scripted mock) wrote as its summary, kept for anyone who wants to read it,
+ * and labelled so that it is never taken for the assessment or for a verified explanation.
+ */
+export function UnverifiedNarrative({ narrative, mode, model, children }: { narrative: string; mode: Report['analysisMode']; model?: string | null; children: ReactNode }) {
+  const title = mode === 'mock' ? 'Unverified mock narrative' : 'Unverified model narrative';
   return (
-    <div role="note" aria-label="Summary correction" className="mt-3 max-w-4xl rounded-lg border border-line bg-warn-soft p-3 text-[13px] text-warn-ink">
-      <p>{said}</p>
-      <details className="mt-1.5">
-        <summary className="cursor-pointer font-medium">Show the model&apos;s original summary</summary>
-        <p className="mt-1 whitespace-pre-wrap text-ink-2">{correction.originalSummary}</p>
-      </details>
-    </div>
+    <section aria-label={title} className="mt-4 rounded-lg border border-dashed border-line-strong p-3">
+      <h3 className="text-[12px] font-semibold tracking-wide text-ink-2 uppercase">{title}</h3>
+      <p className="mt-1 text-[12px] text-ink-2">
+        {mode === 'mock' ? 'Scripted by the mock provider: not an analysis. ' : `Written by ${model ?? 'a language model'}. `}
+        Not verified: it may contradict the assessment above, which is what the outcome rests on. Figures in it are checked like the rest of the report.
+      </p>
+      {narrative.trim() ? <p className="mt-2 max-w-4xl text-[14px] leading-relaxed whitespace-pre-wrap text-ink">{children}</p> : <p className="mt-2 text-[13px] text-ink-2">The model returned no narrative.</p>}
+    </section>
   );
 }
 

@@ -1630,61 +1630,26 @@
                     }
                   ]
                 },
-                "summaryCorrection": {
+                "summarySource": {
                   "anyOf": [
                     {
-                      "type": "object",
-                      "properties": {
-                        "kind": {
-                          "type": "string",
-                          "enum": [
-                            "replaced",
-                            "prefixed",
-                            "unverified"
-                          ]
-                        },
-                        "statedOutcome": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "HEALTHY",
-                                "DEGRADED",
-                                "INCIDENT",
-                                "UNDETERMINED"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "verifiedOutcome": {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "HEALTHY",
-                                "DEGRADED",
-                                "INCIDENT",
-                                "UNDETERMINED"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        "originalSummary": {
-                          "type": "string",
-                          "maxLength": 6000
-                        }
-                      },
-                      "required": [
-                        "kind",
-                        "originalSummary"
-                      ],
-                      "additionalProperties": false
+                      "type": "string",
+                      "enum": [
+                        "assessment",
+                        "unverified",
+                        "rule_based"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "narrative": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 6000
                     },
                     {
                       "type": "null"
@@ -2882,61 +2847,26 @@
             }
           ]
         },
-        "summaryCorrection": {
+        "summarySource": {
           "anyOf": [
             {
-              "type": "object",
-              "properties": {
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "replaced",
-                    "prefixed",
-                    "unverified"
-                  ]
-                },
-                "statedOutcome": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "HEALTHY",
-                        "DEGRADED",
-                        "INCIDENT",
-                        "UNDETERMINED"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "verifiedOutcome": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "enum": [
-                        "HEALTHY",
-                        "DEGRADED",
-                        "INCIDENT",
-                        "UNDETERMINED"
-                      ]
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
-                },
-                "originalSummary": {
-                  "type": "string",
-                  "maxLength": 6000
-                }
-              },
-              "required": [
-                "kind",
-                "originalSummary"
-              ],
-              "additionalProperties": false
+              "type": "string",
+              "enum": [
+                "assessment",
+                "unverified",
+                "rule_based"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "narrative": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 6000
             },
             {
               "type": "null"

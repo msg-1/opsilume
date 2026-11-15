@@ -41,7 +41,7 @@ export type {
 
 /** Whether the evidence shows a fault at all. */
 export type Outcome = Assessment['outcome'];
-/** How the summary was made to agree with the computed outcome, and the model's original. */
-export type SummaryCorrection = NonNullable<Report['summaryCorrection']>;
+/** Where a report's summary comes from (assessment, unverified, rule_based); absent on older reports. */
+export type SummarySource = NonNullable<Report['summarySource']>;
 /** One figure in a statement, and whether the cited evidence holds it. */
 export type ClaimCheck = Verification['checks'][number];

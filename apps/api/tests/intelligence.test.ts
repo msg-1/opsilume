@@ -238,21 +238,27 @@ describe('investigations', () => {
     expect(guardrail).toContain('moved to next steps');
   });
 
-  it('stores and returns a summary that agrees with the assessed outcome, with the original kept', async () => {
+  it('stores the summary built from the assessment everywhere it is shown, and the model text only as its narrative', async () => {
     const org = await createOrg();
     const service = await createService(org.owner, 'Checkout');
     const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing', serviceIds: [service.id] })).body;
-    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
-    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: report({ outcome: 'HEALTHY', summary: original }) }];
+    const narrative = 'Checkout looks fine and has fully recovered; nothing needs attention.';
+    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: report({ outcome: 'HEALTHY', summary: narrative }) }];
     const started = await org.owner.post('/api/v1/investigations').send({ question: 'Why is checkout failing?', incidentId: incident.id });
     const inv = (await org.owner.get(`/api/v1/investigations/${started.body.id}`)).body;
-    expect(inv).toMatchObject({ status: 'COMPLETED', outcome: 'INCIDENT' });
-    // The stored summary (shown in lists, on the incident and on remediation pages) is the corrected one.
-    expect(inv.summary.startsWith('Summary written by OPSILUME from the computed assessment')).toBe(true);
-    expect(inv.report.summary).toBe(inv.summary);
-    expect(inv.report.summaryCorrection).toEqual({ kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original });
+    const verified = 'Assessed outcome: INCIDENT. A failure is evident and an explanation is supported (E1).';
+    expect(inv).toMatchObject({ status: 'COMPLETED', outcome: 'INCIDENT', summary: verified });
+    expect(inv.report).toMatchObject({ summary: verified, summarySource: 'assessment', narrative });
+    // Every other place that shows the summary shows the verified one, and never the narrative.
     const listed = (await org.owner.get('/api/v1/investigations')).body.data.find((i: { id: string }) => i.id === started.body.id);
-    expect(listed.summary).toBe(inv.summary);
+    expect(listed.summary).toBe(verified);
+    const onIncident = (await org.owner.get(`/api/v1/incidents/${incident.id}`)).body;
+    expect(onIncident.investigations.find((i: { id: string }) => i.id === started.body.id).summary).toBe(verified);
+    const event = onIncident.timeline.find((t: { type: string; message: string }) => t.type === 'investigation' && t.message.startsWith('AI investigation completed'));
+    expect(event.message).toBe(`AI investigation completed: ${verified}`);
+    const action = (await org.owner.get(`/api/v1/remediations/${inv.remediations[0].id}`)).body;
+    expect(action.investigation.summary).toBe(verified);
+    for (const shown of [JSON.stringify(listed), JSON.stringify(onIncident), JSON.stringify(action)]) expect(shown).not.toContain(narrative);
   });
 
   it('stores no outcome, and offers no production change, for a report that claims an incident without an assessment', async () => {

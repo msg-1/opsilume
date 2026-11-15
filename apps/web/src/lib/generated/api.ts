@@ -299,12 +299,8 @@ export interface InvestigationDetail {
       }[];
       missingTelemetry: string[];
     }) | null;
-    summaryCorrection?: ({
-      kind: 'replaced' | 'prefixed' | 'unverified';
-      statedOutcome?: ('HEALTHY' | 'DEGRADED' | 'INCIDENT' | 'UNDETERMINED') | null;
-      verifiedOutcome?: ('HEALTHY' | 'DEGRADED' | 'INCIDENT' | 'UNDETERMINED') | null;
-      originalSummary: string;
-    }) | null;
+    summarySource?: ('assessment' | 'unverified' | 'rule_based') | null;
+    narrative?: string | null;
     observations: {
       statement: string;
       evidenceRefs: string[];
@@ -496,12 +492,8 @@ export interface Report {
     }[];
     missingTelemetry: string[];
   }) | null;
-  summaryCorrection?: ({
-    kind: 'replaced' | 'prefixed' | 'unverified';
-    statedOutcome?: ('HEALTHY' | 'DEGRADED' | 'INCIDENT' | 'UNDETERMINED') | null;
-    verifiedOutcome?: ('HEALTHY' | 'DEGRADED' | 'INCIDENT' | 'UNDETERMINED') | null;
-    originalSummary: string;
-  }) | null;
+  summarySource?: ('assessment' | 'unverified' | 'rule_based') | null;
+  narrative?: string | null;
   observations: {
     statement: string;
     evidenceRefs: string[];
