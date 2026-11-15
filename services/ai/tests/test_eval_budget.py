@@ -14,13 +14,22 @@ from pathlib import Path
 import anthropic
 import httpx2
 import pytest
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from app.config import EVAL_MAX_PROMPT_TOKENS, Settings
 from app.evals import run as evals
 from app.evals.ledger import Ledger, LedgerError
 from app.evals.scenarios import SCENARIOS
-from app.llm import AnthropicProvider, LLMError, Resolution, Usage, call_cost_bound, price_for, prompt_token_bound
+from app.llm import (
+    AnthropicProvider,
+    LLMError,
+    Resolution,
+    Usage,
+    build_provider,
+    call_cost_bound,
+    price_for,
+    prompt_token_bound,
+)
 from app.mock_provider import MockProvider
 from app.tools import TOOLS
 
@@ -60,11 +69,11 @@ async def test_the_ceiling_is_cumulative_over_all_scenarios_and_a_scenario_that_
     finally:
         evals.build_provider = original
     reserve = evals.worst_case_call_usd(HAIKU, Settings(_env_file=None))
-    # Each start needs 1.25 x the last cost plus one worst-case call: 0.025 + 0.01525 = 0.04025.
+    # Each start needs 1.25 x the last cost plus one worst-case call: 0.025 + 0.01625 = 0.04125.
     # After three scenarios 0.04 is left, so the fourth is not started and no provider is built.
     assert [r.cost_usd for r in results] == [0.02, 0.02, 0.02]
     assert len(built) == 3 and skipped == [s.name for s in SCENARIOS[3:]]
-    assert ledger.committed() == pytest.approx(0.06) and ledger.remaining() >= 0.025 + reserve - 0.001
+    assert ledger.committed() == pytest.approx(0.06) and ledger.remaining() < 0.025 + reserve  # why the fourth did not start
     # Each scenario was given exactly what was left, so the total can never pass the ceiling.
     assert built == pytest.approx([0.10, 0.08, 0.06])
     saved = json.loads((tmp_path / "ledger.json").read_text())
@@ -97,6 +106,49 @@ async def test_a_call_whose_upper_bound_does_not_fit_is_refused_before_anything_
     with pytest.raises(LLMError, match="was not sent"):
         await provider.invoke([HumanMessage("hello")], [])
     assert api.requests == [] and provider.usage.calls == 0
+
+
+async def test_output_is_counted_again_only_where_it_is_sent_back():
+    api = FakeAnthropic([message([tool_use("t1", "list_deployments", {})], "tool_use", usage=FULL)])
+    provider = strict(api, 0.50)
+    await provider.invoke([HumanMessage("go")], TOOLS)
+    fresh = provider._base([HumanMessage("write the report")])
+    loop = provider._base([HumanMessage("go"), AIMessage(content="", tool_calls=[{"id": "t1", "name": "list_deployments", "args": {}, "type": "tool_call"}]), ToolMessage("[]", tool_call_id="t1")])
+    provider.reserve(fresh)
+    without = provider._reserved_prompt
+    provider.reserve(loop)
+    # The tool loop's 8,000 output tokens can be billed again only in a request that replays them.
+    assert without == prompt_token_bound(fresh) and provider._reserved_prompt == prompt_token_bound(loop) + 8_000
+
+
+async def test_a_bill_larger_than_its_bound_stops_the_scenario_and_the_run(tmp_path):
+    api = FakeAnthropic([message([text("hi")], usage={"input_tokens": 500_000, "output_tokens": 10})])
+    provider = strict(api, 0.50)
+    with pytest.raises(LLMError, match="Spending accounting failed") as tripped:
+        await provider.invoke([HumanMessage("hi")], [])
+    assert tripped.value.fatal and provider.bound_exceeded and "500,000 prompt tokens" in provider.bound_exceeded
+
+    ledger = Ledger.open(tmp_path / "ledger.json", 1.00, HAIKU)
+
+    def overrunning(resolution, settings):
+        mock = MockProvider(settings)
+        mock.usage.cost_usd = 0.01
+        mock.bound_exceeded = "a response used more than was reserved"
+        return mock
+
+    original, evals.build_provider = evals.build_provider, overrunning
+    try:
+        results, skipped = await evals.run_all(Resolution("anthropic", HAIKU, True, ""), Settings(_env_file=None), 1.00, log=lambda *_: None, ledger=ledger)
+    finally:
+        evals.build_provider = original
+    assert len(results) == 1 and skipped == [s.name for s in SCENARIOS[1:]]
+
+
+def test_the_provider_the_runner_builds_really_does_not_retry():
+    settings = evals.live_settings(Settings(_env_file=None, anthropic_api_key=FAKE_KEY, ai_provider="anthropic"), HAIKU, 0.50)
+    provider = build_provider(Resolution("anthropic", HAIKU, True, ""), settings)
+    assert isinstance(provider, AnthropicProvider) and provider._client.max_retries == 0
+    assert settings.ai_strict_spending and settings.ai_expected_model == HAIKU and settings.ai_max_prompt_tokens == EVAL_MAX_PROMPT_TOKENS
 
 
 def test_the_prompt_bound_is_never_below_the_bytes_sent_and_counts_replayed_thinking():
@@ -139,8 +191,8 @@ async def test_an_evaluation_never_sends_a_prompt_that_could_reach_the_higher_pr
     assert EVAL_MAX_PROMPT_TOKENS < 100_000
     api = FakeAnthropic([message([text("never")])])
     provider = strict(api, 1.0)
-    with pytest.raises(LLMError, match="over the limit of 90,000") as refused:
-        await provider.invoke([HumanMessage("x" * 95_000)], [])
+    with pytest.raises(LLMError, match="over the limit of 98,000") as refused:
+        await provider.invoke([HumanMessage("x" * 97_000)], [])
     assert refused.value.kind == "budget" and api.requests == []
 
 
@@ -282,7 +334,9 @@ def test_a_paid_run_is_refused_without_a_ledger_or_with_price_overrides(monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
     monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
     code, _, err = run_main(monkeypatch, capsys, "--max-cost", "1.00")
-    assert code == 2 and "--ledger FILE is required" in err
+    assert code == 2 and "--ledger FILE is required" in err and "--model must name the approved model" in err
+    code, _, err = run_main(monkeypatch, capsys, "--max-cost", "1.00", "--ledger", "x.json", "--model", "claude-sonnet-5-5")
+    assert code == 2 and "--model must name the approved model exactly (configured: claude-haiku-5-5)" in err
     monkeypatch.setenv("AI_PRICE_INPUT_PER_MTOK", "0.0")
     monkeypatch.setenv("AI_PRICE_OUTPUT_PER_MTOK", "0.0")
     code, _, err = run_main(monkeypatch, capsys, "--max-cost", "1.00", "--ledger", "x.json")
@@ -295,4 +349,4 @@ def test_the_estimate_calls_nothing_and_never_shows_the_key(monkeypatch, capsys)
     monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
     code, out, _ = run_main(monkeypatch, capsys, "--estimate")
     assert code == 0 and "No model was called." in out and FAKE_KEY not in out
-    assert "claude-haiku-5-5" in out and "SDK retries 0" in out and "$0.01525" in out and "15 model calls each, 210 in all" in out
+    assert "claude-haiku-5-5" in out and "SDK retries 0" in out and "$0.01625" in out and "15 model calls each, 210 in all" in out

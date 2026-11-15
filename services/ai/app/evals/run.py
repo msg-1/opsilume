@@ -125,6 +125,8 @@ class Result:
     #: Elapsed time of the whole scenario, tools and guardrails included (seconds is model time)
     wall_seconds: float = 0.0
     served_model: str | None = None
+    #: Set when a bill contradicted the bound reserved for it. The run stops.
+    bound_exceeded: str | None = None
 
     @property
     def passed(self) -> bool:
@@ -206,6 +208,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         unknown_cost_usd=round(usage.unknown_cost_usd, 6) if usage else 0.0,
         wall_seconds=round(time.perf_counter() - began, 1),
         served_model=provider.served_model if provider else None,
+        bound_exceeded=getattr(provider, "bound_exceeded", None),
     )
     if save_to is not None:
         save_to.mkdir(parents=True, exist_ok=True)
@@ -268,15 +271,22 @@ async def run_all(resolution: Resolution | None, settings: Settings, max_cost: f
         result = await evaluate(scenario, provider, scenario_settings, save_to)
         results.append(result)
         spent += result.cost_usd
+        overrun = False
         if entry is not None:
             assert ledger is not None
             ledger.settle(entry, result.cost_usd, passed=result.passed, unknown_usd=result.unknown_cost_usd, calls=result.llm_calls)
+            overrun = bool(entry.get("overrun"))
         log(
             f"  {scenario.name}: {'pass' if result.passed else 'FAIL'} · {result.mode} · {result.served_model or result.model or 'rule-based'} · {result.llm_calls} requests"
             + (f" ({result.unknown_calls} of unknown outcome, charged ${result.unknown_cost_usd:.4f})" if result.unknown_calls else "")
             + f" · in {result.input_tokens:,} / out {result.output_tokens:,} / cache read {result.cache_read_tokens:,} / cache write {result.cache_write_tokens:,} tokens · "
             f"model {result.seconds}s, total {result.wall_seconds}s · ${result.cost_usd:.4f} · cumulative ${(ledger.committed() if ledger else spent):.4f}"
         )
+        if result.bound_exceeded or overrun:
+            # The ceiling is only as good as the bounds behind it. When one fails, nothing more runs.
+            skipped.extend(s.name for s in scenarios[index + 1 :])
+            log(f"  STOPPED: the spending accounting failed in {scenario.name}: {result.bound_exceeded or 'it cost more than its reservation'}. No further scenario was started.")
+            break
     return results, skipped
 
 
@@ -328,6 +338,7 @@ def main() -> None:
     parser.add_argument("--estimate", action="store_true", help="Print the worst-case cost of the run and exit without calling a model")
     parser.add_argument("--rescore", type=Path, default=None, metavar="DIR", help="Score the reports saved in DIR again with the current scorer and guardrails. Calls no model")
     parser.add_argument("--ledger", type=Path, default=None, metavar="FILE", help="Spending ledger shared by every invocation of one approved budget. Required for a paid run")
+    parser.add_argument("--model", default=None, metavar="ID", help="For a paid run: the exact model that was approved. The run is refused unless ANTHROPIC_MODEL is exactly this")
     parser.add_argument("--repeat", action="store_true", help="Run the --only scenarios a second time; each must have failed once in the ledger and not been repeated")
     args = parser.parse_args()
     if args.rescore:
@@ -374,6 +385,8 @@ def main() -> None:
             problems.append(f"no price is known for {resolution.model}")
         if settings.ai_price_input_per_mtok is not None or settings.ai_price_output_per_mtok is not None:
             problems.append("price overrides (AI_PRICE_*) are not accepted for a paid run")
+        if args.model is None or args.model != resolution.model:
+            problems.append(f"--model must name the approved model exactly (configured: {resolution.model})")
         if args.max_cost is None:
             problems.append("--max-cost <USD> is required")
         if args.ledger is None:

@@ -103,7 +103,7 @@ HAIKU_LONG_PROMPT_THRESHOLD = 100_000
 REQUEST_OVERHEAD_TOKENS = 2_000
 # Largest prompt, as bounded before sending, that one call of a paid evaluation may have. Below
 # the long-prompt threshold, so the higher prices cannot apply to any evaluation call.
-EVAL_MAX_PROMPT_TOKENS = 90_000
+EVAL_MAX_PROMPT_TOKENS = 98_000
 HAIKU_LONG_PROMPT_PRICING = (0.50, 2.50, 0.05, 0.625)
 
 
