@@ -647,7 +647,7 @@ describe('viewing execution outcomes', () => {
     expect(dialog).toHaveTextContent('OPSILUME is not connected to your infrastructure.');
     await userEvent.type(within(dialog).getByLabelText('Notes (optional)'), 'kubectl rollout undo deploy/checkout');
     await userEvent.click(within(dialog).getByRole('button', { name: 'I have carried this out' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/execute', body: { confirmManual: true, notes: 'kubectl rollout undo deploy/checkout' } }]));
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/execute', body: { confirmManual: true, notes: 'kubectl rollout undo deploy/checkout', expectedHash: 'hash-of-what-the-approver-sees' } }]));
   });
 
   it('a viewer sees the outcome but can neither retry nor execute', async () => {

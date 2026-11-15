@@ -28,7 +28,8 @@ export const remediationInput = z.object({
 export const decisionBody = z.object({ comment: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional(), acknowledgeUnverifiedSource: z.boolean().optional() });
 export const requestApprovalBody = z.object({ acknowledgeUnverifiedSource: z.boolean().optional() });
 export const rejectionBody = decisionBody.extend({ comment: z.string().trim().min(3, 'Give a reason for rejecting').max(2000) });
-export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional() });
+// expectedHash: the fingerprint the person executing was shown (currentHash). A request from an older view is refused.
+export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
 export const retryBody = z.object({ confirmNotApplied: z.boolean().optional() });
 /**
  * An edit changes only the fields it names. The risk is declared without a default on purpose:

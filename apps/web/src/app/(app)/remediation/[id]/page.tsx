@@ -68,7 +68,7 @@ export default function RemediationDetailPage() {
   const Acknowledge = () => (
     <label className="mt-3 flex items-start gap-2 text-sm">
       <input type="checkbox" className="mt-1" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
-      <span>I have reviewed this action myself. The AI investigation behind it does not support a production change, and my decision does not rely on it.</span>
+      <span>I have reviewed this action myself. The investigation behind it does not support a production change, and my decision does not rely on it.</span>
     </label>
   );
   const readOnly = a.effect === 'read_only';
@@ -117,7 +117,7 @@ export default function RemediationDetailPage() {
       {unverifiedSource && ['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && (
         <div className="mb-4">
           <Notice tone="warn">
-            <strong>Needs a fresh human review.</strong> This production change was proposed by an AI investigation that no longer supports it: {a.sourceReview.reasons.join('; ')}. Approvals given before this was known do not count. It can go ahead only on the review of the people who submit and approve it.
+            <strong>Needs a fresh human review.</strong> {a.proposedByType === 'ai_agent' ? 'This production change was proposed by an AI investigation that does not support it' : 'The investigation this production change is linked to does not support it'}: {a.sourceReview.reasons.join('; ')}. Approvals given before this was known do not count. It can go ahead only on the review of the people who submit and approve it.
             {a.status === 'PROPOSED' && session.can('remediation:propose') && <Acknowledge />}
           </Notice>
         </div>
@@ -213,7 +213,7 @@ export default function RemediationDetailPage() {
         open={dialog === 'execute'}
         onClose={() => setDialog(null)}
         title={readOnly ? 'Record this diagnostic as done' : manual ? 'Confirm manual execution' : 'Execute approved action'}
-        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'execute'} onClick={() => void act('execute', manual || readOnly ? { confirmManual: true, ...(comment.trim() ? { notes: comment } : {}) } : {}, 'execute')}>{manual ? 'I have carried this out' : 'Dispatch now'}</Button></>}
+        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'execute'} onClick={() => void act('execute', { ...(manual || readOnly ? { confirmManual: true, ...(comment.trim() ? { notes: comment } : {}) } : {}), ...(!readOnly && a.currentHash ? { expectedHash: a.currentHash } : {}) }, 'execute')}>{manual ? 'I have carried this out' : 'Dispatch now'}</Button></>}
       >
         <FormError error={actionError} />
         {manual || readOnly ? (

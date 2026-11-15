@@ -4,7 +4,6 @@ import { decrypt, hmacSha256Hex } from '../../lib/crypto';
 import { AppError } from '../../lib/errors';
 import { UnsafeDestinationError, safeRequest } from '../../lib/netguard';
 import { getSettings } from '../organization';
-import { contentHash } from './content';
 
 /**
  * Carrying out an action. OPSILUME changes nothing itself: a read-only diagnostic is recorded
@@ -31,7 +30,7 @@ export interface ExecutionResult {
  *  - manually by the operator, who then attests in OpsPilot that it was done.
  * In both cases the effect is recorded on the service timeline.
  */
-export async function execute(action: RemediationAction, operator: { userId: string; label: string }, approvers: { approverId: string; approvedAt: Date }[], manualNotes?: string): Promise<ExecutionResult> {
+export async function execute(action: RemediationAction, operator: { userId: string; label: string }, approvers: { approverId: string; approvedAt: Date }[], manualNotes?: string, fingerprint = ''): Promise<ExecutionResult> {
   if (action.effect === 'read_only') {
     // Diagnostics are carried out by a person and never dispatched: nothing here can change a system.
     return { mode: 'diagnostic', success: true, outcome: 'applied', summary: `Read-only diagnostic carried out and recorded by ${operator.label}. Nothing was changed.`, detail: manualNotes ? { findings: manualNotes } : undefined };
@@ -52,7 +51,8 @@ export async function execute(action: RemediationAction, operator: { userId: str
     serviceId: action.serviceId,
     incidentId: action.incidentId,
     parameters: action.parameters,
-    contentHash: contentHash(action),
+    // The approval fingerprint the approvers gave their approvals for (content.ts).
+    contentHash: fingerprint,
     approvals: approvers,
     approvedAt: new Date().toISOString(),
     executedBy: operator.label,

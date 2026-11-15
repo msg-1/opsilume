@@ -1,5 +1,6 @@
 import type { Prisma } from '@prisma/client';
 import { env } from '../../config/env';
+import { conflict } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { type Content, contentHash } from './content';
 
@@ -43,9 +44,22 @@ export async function submitForApproval(actionId: string, requestedById: string,
   return updated.count > 0;
 }
 
+/**
+ * Locks an action's row for the rest of the transaction. Everything that adds approvals or
+ * supersedes them takes this lock first, so an approval cannot be recorded for content that an
+ * edit is replacing at the same moment, and an edit cannot miss an approval being recorded.
+ */
+export async function lockAction(tx: Prisma.TransactionClient, actionId: string) {
+  const rows = await tx.$queryRaw<{ status: string; contentHash: string | null }[]>`SELECT status, "contentHash" FROM "RemediationAction" WHERE id = ${actionId} FOR UPDATE`;
+  return rows[0] ?? null;
+}
+
 /** Records an approval for exactly this hash; the action becomes APPROVED once enough count, and only while its content is still that hash. */
 export function recordApproval(action: { id: string; requiredApprovals: number }, approverId: string, hash: string, comment?: string) {
   return prisma.$transaction(async (tx) => {
+    // Under the lock: still awaiting approval, still bound to the hash the approver was shown.
+    const row = await lockAction(tx, action.id);
+    if (!row || row.status !== 'PENDING_APPROVAL' || row.contentHash !== hash) throw conflict('This action changed while you were approving it. Reload it and review what you are approving.');
     await tx.approval.create({ data: { actionId: action.id, approverId, decision: 'approved', comment, contentHash: hash } });
     // Distinct approvers: two concurrent decisions by one person count once.
     const granted = (await tx.approval.findMany({ where: { actionId: action.id, decision: 'approved', supersededAt: null, contentHash: hash, createdAt: { gte: approvalCutoff() } }, select: { approverId: true }, distinct: ['approverId'] })).length;
@@ -76,7 +90,11 @@ export const supersedeApprovals = (actionId: string, db: Prisma.TransactionClien
 
 /** The action is not what was approved: its approvals stop counting and it starts again from PROPOSED. */
 export function invalidateApproval(actionId: string) {
-  return prisma.$transaction([supersedeApprovals(actionId), prisma.remediationAction.updateMany({ where: { id: actionId, status: 'APPROVED' }, data: { status: 'PROPOSED', contentHash: null } })]);
+  return prisma.$transaction(async (tx) => {
+    await lockAction(tx, actionId);
+    await supersedeApprovals(actionId, tx);
+    await tx.remediationAction.updateMany({ where: { id: actionId, status: 'APPROVED' }, data: { status: 'PROPOSED', contentHash: null } });
+  });
 }
 
 /**

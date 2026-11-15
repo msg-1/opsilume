@@ -25,7 +25,7 @@ export async function effectOf(organizationId: string, a: { type: string; title:
   return actionEffect(a.type, a.title, a.description, steps);
 }
 
-const RISK_ORDER: RiskLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
+export const RISK_ORDER: RiskLevel[] = ['LOW', 'MEDIUM', 'HIGH'];
 
 /**
  * The proposer (a person or the AI) suggests a risk level, and that level decides how many

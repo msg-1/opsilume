@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { env } from '../src/config/env';
-import { contentHash } from '../src/modules/remediation';
+import { approvalHash, legacyApprovalHash } from '../src/modules/remediation/content';
 import { createOrg, createService, prisma } from './helpers';
 
 // Remediation actions stored by earlier versions, held to the current rules when they are
@@ -35,7 +35,7 @@ async function sourceInvestigation(org: Org, assessment: unknown, recorded = ['E
   });
 }
 
-type ActionOptions = { investigationId?: string | null; status?: 'PROPOSED' | 'PENDING_APPROVAL' | 'APPROVED'; type?: string; risk?: 'LOW' | 'MEDIUM' | 'HIGH'; rationale?: string; approvers?: { userId: string; at?: Date }[]; requestedById?: string; required?: number };
+type ActionOptions = { fingerprint?: 'current' | 'v1'; proposedBy?: string; investigationId?: string | null; status?: 'PROPOSED' | 'PENDING_APPROVAL' | 'APPROVED'; type?: string; risk?: 'LOW' | 'MEDIUM' | 'HIGH'; rationale?: string; approvers?: { userId: string; at?: Date }[]; requestedById?: string; required?: number };
 
 /** An AI-proposed production change as an older version stored it, possibly submitted and approved already. */
 async function olderAction(org: Org, o: ActionOptions) {
@@ -50,14 +50,16 @@ async function olderAction(org: Org, o: ActionOptions) {
       rationale: o.rationale ?? 'Errors began after v2 was deployed.\nEvidence: E1, E2',
       risk: o.risk ?? 'MEDIUM',
       serviceId: service.id,
-      proposedByType: 'ai_agent',
+      proposedByType: o.proposedBy ? 'user' : 'ai_agent',
+      proposedById: o.proposedBy ?? null,
       effect: 'state_changing',
       status: o.status ?? 'PROPOSED',
       requiredApprovals: o.required ?? 1,
       ...(o.status && o.status !== 'PROPOSED' ? { requestedById: o.requestedById ?? org.ownerId, requestedAt: new Date() } : {}),
     },
   });
-  const hash = contentHash(created);
+  // Approved under the current fingerprint while the source looked sound (no webhook: carried out by hand), or under v1.
+  const hash = o.fingerprint === 'v1' ? legacyApprovalHash(created, false) : approvalHash(created, { unverifiedSource: false, executionTarget: 'manual' });
   if (o.status && o.status !== 'PROPOSED') await prisma.remediationAction.update({ where: { id: created.id }, data: { contentHash: hash } });
   for (const a of o.approvers ?? []) await prisma.approval.create({ data: { actionId: created.id, approverId: a.userId, decision: 'approved', contentHash: hash, createdAt: a.at ?? new Date() } });
   return created;
@@ -73,7 +75,7 @@ describe('older AI proposals and the investigation behind them', () => {
     const action = await olderAction(org, { investigationId: inv.id });
     const shown = (await org.owner.get(path(action.id)).expect(200)).body;
     expect(shown.sourceReview).toEqual({ required: true, verified: true, reasons: [] });
-    expect(shown.currentHash).toBe(contentHash(action));
+    expect(shown.currentHash).toBe(approvalHash(action, { unverifiedSource: false, executionTarget: 'manual' }));
     await org.owner.post(`${path(action.id)}/request-approval`).send({}).expect(200);
     await approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: shown.currentHash }).expect(200);
     const done = (await org.owner.post(`${path(action.id)}/execute`).send({ confirmManual: true }).expect(200)).body;
@@ -119,7 +121,7 @@ describe('older AI proposals and the investigation behind them', () => {
     expect((await org.owner.post(`${path(action.id)}/request-approval`).send({})).status).toBe(409);
     await org.owner.post(`${path(action.id)}/request-approval`).send({ acknowledgeUnverifiedSource: true }).expect(200);
     const pending = (await org.owner.get(path(action.id))).body;
-    expect(pending.currentHash).not.toBe(contentHash(action));
+    expect(pending.currentHash).toBe(approvalHash(action, { unverifiedSource: true, executionTarget: 'manual' }));
     // So does each approval; the earlier approver may decide again.
     expect((await approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: pending.currentHash })).status).toBe(409);
     await approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: pending.currentHash, acknowledgeUnverifiedSource: true }).expect(200);
@@ -147,7 +149,7 @@ describe('older AI proposals and the investigation behind them', () => {
   it('a proposal whose investigation was deleted needs a fresh review', async () => {
     const org = await createOrg();
     const action = await olderAction(org, { investigationId: null });
-    expect((await org.owner.get(path(action.id))).body.sourceReview).toEqual({ required: true, verified: false, reasons: ['the investigation that proposed it no longer exists'] });
+    expect((await org.owner.get(path(action.id))).body.sourceReview).toEqual({ required: true, verified: false, reasons: ['the investigation behind it no longer exists'] });
   });
 
   it('only the last line of the rationale is read as the evidence the proposal cites', async () => {
@@ -344,5 +346,154 @@ describe('hypothesis confidence of older reports', () => {
     const content = (await org.owner.get(`/api/v1/knowledge/documents/${doc.id}`)).body.content as string;
     expect(content).toContain('overall confidence 45% (recorded at the time as 80%, above what the current rules allow)');
     expect(content).toContain('(45%, possible; recorded at the time as 80%, likely)');
+  });
+});
+
+describe('the approval fingerprint', () => {
+  /** An action approved by one admin and ready to execute by hand, linked to an investigation that supports it. */
+  async function ready(org: Org, extra: ActionOptions = {}) {
+    const approver = await org.member('ADMIN');
+    const inv = await sourceInvestigation(org, incident());
+    const action = await olderAction(org, { investigationId: inv.id, status: 'APPROVED', approvers: [{ userId: approver.userId }], ...extra });
+    return { approver, inv, action, base: path(action.id) };
+  }
+
+  it.each([
+    ['the rationale', { rationale: 'Errors began after v2 was deployed, and v3 too.\nEvidence: E1, E2' }],
+    ['the cited evidence', { rationale: 'Errors began after v2 was deployed.\nEvidence: E1' }],
+    ['the parameters', { parameters: { toVersion: 'v0' } }],
+    ['the description', { description: 'Redeploy checkout v0 instead.' }],
+  ])('an edit of %s supersedes the approvals', async (_label, patch) => {
+    const org = await createOrg();
+    const { action, base } = await ready(org);
+    const edited = (await org.owner.patch(base).send(patch).expect(200)).body;
+    expect(edited).toMatchObject({ status: 'PROPOSED', approvalsGranted: 0 });
+    expect(edited.approvals[0].supersededAt).not.toBeNull();
+    expect((await org.owner.post(`${base}/execute`).send({ confirmManual: true })).status).toBe(409);
+    expect((await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).executedAt).toBeNull();
+  });
+
+  it('a change of target service supersedes the approvals', async () => {
+    const org = await createOrg();
+    const { base } = await ready(org);
+    const other = await createService(org.owner, 'Payments');
+    expect((await org.owner.patch(base).send({ serviceId: other.id }).expect(200)).body).toMatchObject({ status: 'PROPOSED', approvalsGranted: 0 });
+  });
+
+  it.each([
+    ['source investigation', async (id: string, org: Org) => ({ investigationId: (await sourceInvestigation(org, incident())).id })],
+    ['incident', async (_id: string, org: Org) => ({ incidentId: (await org.owner.post('/api/v1/incidents').send({ title: 'Another incident' })).body.id as string })],
+  ])('a change of %s made underneath the API is refused at execution', async (_label, change) => {
+    const org = await createOrg();
+    const { action, base } = await ready(org);
+    await prisma.remediationAction.update({ where: { id: action.id }, data: await change(action.id, org) });
+    const run = await org.owner.post(`${base}/execute`).send({ confirmManual: true });
+    expect(run.status).toBe(409);
+    expect(run.body.error.message).toContain('changed after it was approved or submitted');
+    expect(await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).toMatchObject({ status: 'PROPOSED', executedAt: null });
+    expect((await auditOf(action.id)).at(-1)).toMatchObject({ action: 'remediation.approval_invalid', meta: { stage: 'execute' } });
+  });
+
+  it('the same content submitted twice keeps the approvals', async () => {
+    const org = await createOrg();
+    const { action, base } = await ready(org);
+    const same = { title: action.title, description: action.description, rationale: action.rationale, parameters: action.parameters ?? undefined, risk: action.risk };
+    expect((await org.owner.patch(base).send(same).expect(200)).body).toMatchObject({ status: 'APPROVED', approvalsGranted: 1 });
+    expect((await org.owner.patch(base).send(same).expect(200)).body).toMatchObject({ status: 'APPROVED', approvalsGranted: 1 });
+    expect((await org.owner.post(`${base}/execute`).send({ confirmManual: true }).expect(200)).body.status).toBe('EXECUTED');
+  });
+
+  it('an execution request made from an older view is refused, and nothing is executed', async () => {
+    const org = await createOrg();
+    const { action, base } = await ready(org);
+    const stale = await org.owner.post(`${base}/execute`).send({ confirmManual: true, expectedHash: 'f'.repeat(64) });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.message).toContain('Nothing was executed');
+    expect(await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).toMatchObject({ status: 'APPROVED', attempts: 0 });
+    const current = (await org.owner.get(base)).body.currentHash;
+    expect((await org.owner.post(`${base}/execute`).send({ confirmManual: true, expectedHash: current }).expect(200)).body.status).toBe('EXECUTED');
+  });
+
+  it('an approval given under the earlier fingerprint is asked for again, with its own message', async () => {
+    const org = await createOrg();
+    const { action, base } = await ready(org, { fingerprint: 'v1' });
+    const run = await org.owner.post(`${base}/execute`).send({ confirmManual: true });
+    expect(run.status).toBe(409);
+    expect(run.body.error.message).toContain('approved under an earlier fingerprint');
+    expect(await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).toMatchObject({ status: 'PROPOSED', executedAt: null });
+    expect((await auditOf(action.id)).map((a) => a.action)).toEqual(['remediation.approval_fingerprint_outdated']);
+  });
+
+  it('an approval and an edit at the same moment never leave an approval counting for content it was not given for', async () => {
+    const org = await createOrg();
+    for (let round = 0; round < 6; round++) {
+      const approver = await org.member('ADMIN');
+      const inv = await sourceInvestigation(org, incident());
+      const action = await olderAction(org, { investigationId: inv.id, status: 'PENDING_APPROVAL' });
+      const { currentHash } = (await org.owner.get(path(action.id))).body;
+      await Promise.all([
+        approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: currentHash }),
+        org.owner.patch(path(action.id)).send({ rationale: `Edited in round ${round}.\nEvidence: E1, E2` }),
+      ]);
+      const after = await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id }, include: { approvals: true } });
+      // Every approval still in force is bound to the fingerprint the action is submitted under now.
+      for (const a of after.approvals.filter((x) => !x.supersededAt)) expect(a.contentHash).toBe(after.contentHash);
+      // Reverting the edit and submitting again: an approval given for the old content does not come back.
+      if (after.status === 'PROPOSED') {
+        await org.owner.patch(path(action.id)).send({ rationale: action.rationale }).expect(200);
+        await org.owner.post(`${path(action.id)}/request-approval`).send({}).expect(200);
+        expect((await org.owner.get(path(action.id))).body.approvalsGranted).toBe(0);
+      }
+    }
+  });
+});
+
+describe('human proposals linked to an investigation', () => {
+  const body = (investigationId?: string) => ({ type: 'config_change', title: 'Raise the checkout pool size', description: 'Set DB_POOL_MAX=40 for checkout.', risk: 'MEDIUM', ...(investigationId ? { investigationId } : {}) });
+
+  it('are checked like AI proposals: an investigation that shows no incident needs an acknowledged review', async () => {
+    const org = await createOrg();
+    const approver = await org.member('ADMIN');
+    const inv = await sourceInvestigation(org, { ...incident(), outcome: 'DEGRADED' });
+    const created = (await org.owner.post('/api/v1/remediations').send(body(inv.id)).expect(201)).body;
+    expect(created).toMatchObject({ proposedByType: 'user', sourceReview: { required: true, verified: false, reasons: ['its verified outcome is DEGRADED, not an incident'] } });
+    expect((await auditOf(created.id))[0]).toMatchObject({ action: 'remediation.propose', meta: { sourceRequired: true, sourceVerified: false } });
+    const refused = await org.owner.post(`${path(created.id)}/request-approval`).send({});
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.message).toContain('The investigation this action is linked to does not support a production change');
+    await org.owner.post(`${path(created.id)}/request-approval`).send({ acknowledgeUnverifiedSource: true }).expect(200);
+    const { currentHash } = (await org.owner.get(path(created.id))).body;
+    expect((await approver.agent.post(`${path(created.id)}/approve`).send({ expectedHash: currentHash })).status).toBe(409);
+    await approver.agent.post(`${path(created.id)}/approve`).send({ expectedHash: currentHash, acknowledgeUnverifiedSource: true }).expect(200);
+    const done = (await org.owner.post(`${path(created.id)}/execute`).send({ confirmManual: true }).expect(200)).body;
+    expect(done).toMatchObject({ status: 'EXECUTED', proposedByType: 'user' });
+    expect((await auditOf(created.id)).find((a) => a.action === 'remediation.execute_start')!.meta).toMatchObject({ sourceRequired: true, sourceVerified: false, approvedOnAcknowledgedReview: true });
+  });
+
+  it('go through as before when the investigation shows a verified incident', async () => {
+    const org = await createOrg();
+    const inv = await sourceInvestigation(org, incident());
+    const created = (await org.owner.post('/api/v1/remediations').send(body(inv.id)).expect(201)).body;
+    expect(created.sourceReview).toEqual({ required: true, verified: true, reasons: [] });
+    await org.owner.post(`${path(created.id)}/request-approval`).send({}).expect(200);
+  });
+
+  it('that are not linked to an investigation keep the existing policy', async () => {
+    const org = await createOrg();
+    const created = (await org.owner.post('/api/v1/remediations').send(body()).expect(201)).body;
+    expect(created.sourceReview).toEqual({ required: false, verified: true, reasons: [] });
+    expect((await auditOf(created.id))[0]!.meta).toMatchObject({ sourceRequired: false, sourceVerified: true });
+    await org.owner.post(`${path(created.id)}/request-approval`).send({}).expect(200);
+  });
+
+  it('an approved human proposal whose investigation no longer supports it is sent back for review', async () => {
+    const org = await createOrg();
+    const approver = await org.member('ADMIN');
+    const inv = await sourceInvestigation(org, { ...incident(), outcome: 'HEALTHY' });
+    const action = await olderAction(org, { investigationId: inv.id, status: 'APPROVED', proposedBy: org.ownerId, approvers: [{ userId: approver.userId }] });
+    const run = await org.owner.post(`${path(action.id)}/execute`).send({ confirmManual: true });
+    expect(run.status).toBe(409);
+    expect(run.body.error.message).toContain('The investigation this action is linked to does not support a production change');
+    expect(await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).toMatchObject({ status: 'PROPOSED', proposedByType: 'user' });
   });
 });

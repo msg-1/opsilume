@@ -2,7 +2,8 @@ import type { Prisma } from '@prisma/client';
 import { notFound } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { countsFor, isExpired, validApprovals } from './approvals';
-import { approvalHash, contentHash } from './content';
+import { approvalHash, contentHash, executionTarget } from './content';
+import { getSettings } from '../organization';
 import { sourceChecks } from './source';
 import { type LegacyRead, legacyViews } from '../investigations/legacy';
 
@@ -40,11 +41,13 @@ export async function presentMany(rows: Detailed[]) {
   const views = new Map<string, LegacyRead>();
   for (const [organizationId, ids] of byOrganization) for (const [id, view] of await legacyViews(organizationId, ids)) views.set(id, view);
   const sources = await sourceChecks(rows);
+  const targets = new Map<string, string>();
+  for (const organizationId of new Set(rows.map((r) => r.organizationId))) targets.set(organizationId, executionTarget(await getSettings(organizationId)));
   const now = new Date();
   return rows.map((r) => {
     const source = sources.get(r.id)!;
     // What approvals are bound to now (content.ts): an approver is shown this and sends it back.
-    const hash = approvalHash(r, source.required && !source.verified);
+    const hash = approvalHash(r, { unverifiedSource: source.required && !source.verified, executionTarget: targets.get(r.organizationId)! });
     // Past the approval stage (executing, executed, rejected, cancelled), approvals are shown as
     // they counted then: for the hash that was approved, with no expiry since. A failed action can
     // be retried, and is checked again, so it is shown under the current rules.
