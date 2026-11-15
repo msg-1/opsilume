@@ -275,8 +275,11 @@ def test_a_repeat_spends_from_the_same_ledger_and_cannot_reset_or_repeat_twice(t
     c = again.reserve("healthy_clean", 0.50, "run-2")
     again.settle(c, 0.05, passed=False)
     assert c["attempt"] == 2 and again.committed() == pytest.approx(0.12)
-    with pytest.raises(LedgerError, match="already been repeated once"):
+    with pytest.raises(LedgerError, match="1 already used"):  # the one repeat of the whole ledger is spent
         Ledger.open(path, 1.00, HAIKU).check_allowed(["healthy_clean"], repeat=True)
+    roomy = Ledger(path, 1.00, HAIKU, again.entries, max_repeats=5)  # even with room, never a third attempt
+    with pytest.raises(LedgerError, match="already been repeated once"):
+        roomy.check_allowed(["healthy_clean"], repeat=True)
 
 
 def test_a_reservation_that_was_never_closed_stays_charged_and_blocks_a_repeat(tmp_path):
@@ -334,7 +337,7 @@ def test_a_paid_run_is_refused_without_a_ledger_or_with_price_overrides(monkeypa
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
     monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
     code, _, err = run_main(monkeypatch, capsys, "--max-cost", "1.00")
-    assert code == 2 and "--ledger FILE is required" in err and "--model must name the approved model" in err
+    assert code == 2 and "--ledger FILE is required" in err and "--model must name the approved model" in err and "--key-env NAME is required" in err
     code, _, err = run_main(monkeypatch, capsys, "--max-cost", "1.00", "--ledger", "x.json", "--model", "claude-sonnet-5-5")
     assert code == 2 and "--model must name the approved model exactly (configured: claude-haiku-5-5)" in err
     monkeypatch.setenv("AI_PRICE_INPUT_PER_MTOK", "0.0")
@@ -350,3 +353,29 @@ def test_the_estimate_calls_nothing_and_never_shows_the_key(monkeypatch, capsys)
     code, out, _ = run_main(monkeypatch, capsys, "--estimate")
     assert code == 0 and "No model was called." in out and FAKE_KEY not in out
     assert "claude-haiku-5-5" in out and "SDK retries 0" in out and "$0.01625" in out and "15 model calls each, 210 in all" in out
+
+
+def test_only_one_repeat_is_allowed_across_all_scenarios(tmp_path):
+    ledger = Ledger.open(tmp_path / "ledger.json", 0.87, HAIKU)
+    for name in ("healthy_clean", "healthy_no_signal"):
+        ledger.settle(ledger.reserve(name, 0.10, "run-1"), 0.02, passed=False)
+    with pytest.raises(LedgerError, match="1 repeat\\(s\\) across all scenarios; 0 already used and 2 asked for"):
+        ledger.check_allowed(["healthy_clean", "healthy_no_signal"], repeat=True)
+    ledger.check_allowed(["healthy_clean"], repeat=True)
+    ledger.settle(ledger.reserve("healthy_clean", 0.10, "run-2"), 0.02, passed=False)
+    reopened = Ledger.open(tmp_path / "ledger.json", 0.87, HAIKU)
+    assert reopened.max_repeats == 1 and reopened.repeats_used() == 1
+    with pytest.raises(LedgerError, match="1 already used"):
+        reopened.check_allowed(["healthy_no_signal"], repeat=True)
+
+
+def test_the_key_is_read_only_from_the_named_variable(monkeypatch, capsys):
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)  # present, but not the one named
+    monkeypatch.delenv("OPSILUME_TEST_KEY", raising=False)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
+    code, _, err = run_main(monkeypatch, capsys, "--model", HAIKU, "--max-cost", "0.87", "--ledger", "x.json", "--key-env", "OPSILUME_TEST_KEY")
+    assert code == 2 and "no key is set in OPSILUME_TEST_KEY" in err and FAKE_KEY not in err and not Path("x.json").exists()
+    monkeypatch.setenv("OPSILUME_TEST_KEY", FAKE_KEY)
+    code, out, _ = run_main(monkeypatch, capsys, "--estimate", "--key-env", "OPSILUME_TEST_KEY")
+    assert code == 0 and "OPSILUME_TEST_KEY is set" in out and FAKE_KEY not in out
