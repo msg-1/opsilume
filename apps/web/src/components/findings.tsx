@@ -41,6 +41,36 @@ export function VerificationMark({ verification }: { verification?: Verification
 }
 
 /** The verdict on whether there is a fault at all, with what it rests on and what was not examined. */
+/** How the summary was made to agree with the computed outcome (InvestigationReport.summaryCorrection). */
+export interface SummaryCorrectionInfo {
+  kind: 'replaced' | 'prefixed' | 'unverified';
+  statedOutcome?: string | null;
+  verifiedOutcome?: string | null;
+  originalSummary: string;
+}
+
+/**
+ * Says, next to the summary, that OPSILUME changed it and why, and keeps the model's own words
+ * one click away. The summary must never be read as the model's when the service wrote it.
+ */
+export function SummaryCorrectionNote({ correction }: { correction: SummaryCorrectionInfo }) {
+  const said =
+    correction.kind === 'replaced'
+      ? `OPSILUME wrote this summary from the computed assessment. The model's summary stated ${correction.statedOutcome ?? 'a different outcome'}, which the evidence does not support (assessed ${correction.verifiedOutcome}).`
+      : correction.kind === 'prefixed'
+        ? `The first sentences were added by OPSILUME: the model concluded ${correction.statedOutcome}, and the computed assessment is ${correction.verifiedOutcome}.`
+        : 'This report carries no assessment of the evidence, so any outcome its summary states is not verified.';
+  return (
+    <div role="note" aria-label="Summary correction" className="mt-3 max-w-4xl rounded-lg border border-line bg-warn-soft p-3 text-[13px] text-warn-ink">
+      <p>{said}</p>
+      <details className="mt-1.5">
+        <summary className="cursor-pointer font-medium">Show the model&apos;s original summary</summary>
+        <p className="mt-1 whitespace-pre-wrap text-ink-2">{correction.originalSummary}</p>
+      </details>
+    </div>
+  );
+}
+
 export function AssessmentCard({ assessment, renderRefs }: { assessment: Assessment; renderRefs: (refs: string[]) => ReactNode }) {
   const pct = Math.round(assessment.confidence * 100);
   const material = assessment.signals.filter((s) => s.level !== 'weak');

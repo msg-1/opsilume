@@ -803,6 +803,95 @@
         ],
         "maxConfidence": 0.45
       }
+    },
+    {
+      "name": "a summary that states an outcome the assessment contradicts is rewritten from the assessment, and the original is kept",
+      "evidence": [
+        {
+          "ref": "E1",
+          "kind": "deployment",
+          "title": "Deployment of orders v1.5.0 (succeeded)",
+          "summary": "Deployment of orders v1.5.0 (succeeded)",
+          "sourceType": "deployment",
+          "sourceId": "d-new",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:27:00Z",
+          "data": {
+            "version": "v1.5.0",
+            "status": "SUCCEEDED",
+            "isRollback": false
+          }
+        },
+        {
+          "ref": "E2",
+          "kind": "log_pattern",
+          "title": "300\u00d7 ERROR in orders (new pattern)",
+          "summary": "300\u00d7 ERROR in orders (new pattern)",
+          "sourceType": "log_pattern",
+          "sourceId": "fp:orders",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:30:00Z",
+          "data": {
+            "level": "ERROR",
+            "count": 300,
+            "kind": "new",
+            "firstSeen": "2026-06-01T11:30:00Z"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Nothing is materially wrong with orders, so the outcome is HEALTHY.",
+        "confidence": 0.8,
+        "analysisMode": "llm",
+        "outcome": "HEALTHY",
+        "assessment": {
+          "outcome": "INCIDENT",
+          "confidence": 0.9,
+          "rationale": "A failure is evident and an explanation is supported",
+          "supportingRefs": [
+            "E2"
+          ],
+          "signals": [],
+          "missingTelemetry": []
+        },
+        "observations": [],
+        "timeline": [],
+        "facts": [],
+        "assumptions": [],
+        "uncertainties": [
+          "The diff was not reviewed."
+        ],
+        "hypotheses": [
+          {
+            "title": "v1.5.0 broke orders",
+            "description": "Errors began after the deployment.",
+            "confidence": 0.8,
+            "status": "likely",
+            "evidenceRefs": [
+              "E1",
+              "E2"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "assumptions": [],
+            "gaps": []
+          }
+        ],
+        "nextSteps": [
+          "Review the diff"
+        ],
+        "recommendedActions": []
+      },
+      "expect": {
+        "actions": [],
+        "summaryStartsWith": "Summary written by OPSILUME from the computed assessment, because the model's summary stated an outcome the evidence does not support (HEALTHY). Assessed outcome: INCIDENT.",
+        "summaryCorrection": {
+          "kind": "replaced",
+          "statedOutcome": "HEALTHY",
+          "verifiedOutcome": "INCIDENT",
+          "originalSummary": "Nothing is materially wrong with orders, so the outcome is HEALTHY."
+        }
+      }
     }
   ]
 }

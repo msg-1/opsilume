@@ -5,6 +5,55 @@ import type { InvestigationReport } from './schema';
 
 export type StepInput = Extract<InvestigationEvent, { type: 'step' }>['step'];
 
+const SUMMARY = LIMITS.summaryConsistency;
+const SUMMARY_MAX_LENGTH = 6000;
+const STATEMENTS = SUMMARY.statementPatterns.map((p) => new RegExp(p, 'gi'));
+const fill = (template: string, values: Record<string, string>) => template.replace(/\{(\w+)\}/g, (_m, key: string) => values[key] ?? '');
+const cited = (refs: string[]) => (refs.length ? ` (${refs.join(', ')})` : '');
+
+/**
+ * The outcomes a text states as its conclusion ("the outcome is DEGRADED", "so this is an
+ * INCIDENT"). A service's recorded health and negations are not statements of the outcome.
+ * The same patterns as the AI service (contracts/guardrails.json).
+ */
+export function statedOutcomes(text: string): string[] {
+  const found = STATEMENTS.flatMap((re) => [...(text ?? '').matchAll(re)].map((m) => m[1]!.toUpperCase()));
+  return [...new Set(found)];
+}
+
+/** Makes the summary agree with the assessed outcome, as services/ai/app/guardrails.py does. */
+function reconcileSummary(result: InvestigationReport, claimed: string | null): string | null {
+  const assessment = result.assessment ?? null;
+  const original = result.summary ?? '';
+  const stated = statedOutcomes(original);
+  if (!assessment) {
+    // Nothing is verified, so nothing is rewritten into an outcome: the summary is marked.
+    if (result.summaryCorrection || (!stated.length && !claimed)) return null;
+    result.summaryCorrection = { kind: 'unverified', statedOutcome: (stated[0] ?? claimed ?? null) as never, verifiedOutcome: null, originalSummary: original.slice(0, SUMMARY_MAX_LENGTH) };
+    result.summary = (SUMMARY.unverified + original).slice(0, SUMMARY_MAX_LENGTH);
+    return SUMMARY.unverifiedNote;
+  }
+  const outcome = assessment.outcome;
+  const conflicting = stated.filter((o) => o !== outcome);
+  if (conflicting.length || !original.trim()) {
+    const statedOutcome = conflicting[0] ?? null;
+    const rationale = assessment.rationale.replace(/[. ]+$/, '') + cited(assessment.supportingRefs) + '.';
+    let text = fill(conflicting.length ? SUMMARY.replaced : SUMMARY.replacedEmpty, { stated: statedOutcome ?? '', outcome, rationale });
+    const top = result.hypotheses[0];
+    if (top) text += fill(SUMMARY.leadingHypothesis, { title: top.title, status: top.status, refs: cited(top.evidenceRefs) });
+    // A summary already corrected upstream keeps the model's original text, not the corrected one.
+    result.summaryCorrection = { kind: 'replaced', statedOutcome: (statedOutcome ?? claimed) as never, verifiedOutcome: outcome, originalSummary: (result.summaryCorrection?.originalSummary ?? original).slice(0, SUMMARY_MAX_LENGTH) };
+    result.summary = text.slice(0, SUMMARY_MAX_LENGTH);
+    return fill(SUMMARY.note, { action: 'was rewritten from the computed assessment', stated: statedOutcome ?? 'nothing', outcome });
+  }
+  if (claimed && claimed !== outcome && !result.summaryCorrection) {
+    result.summaryCorrection = { kind: 'prefixed', statedOutcome: claimed as never, verifiedOutcome: outcome, originalSummary: original.slice(0, SUMMARY_MAX_LENGTH) };
+    result.summary = (fill(SUMMARY.prefixed, { stated: claimed, outcome }) + original).slice(0, SUMMARY_MAX_LENGTH);
+    return fill(SUMMARY.note, { action: 'now begins with the computed outcome', stated: claimed, outcome });
+  }
+  return null;
+}
+
 /** Added to the uncertainties of a report that arrived without an assessment of the evidence. */
 const UNVERIFIED = 'This report arrived without an assessment of the evidence, so its outcome is not verified.';
 
@@ -17,6 +66,9 @@ const UNVERIFIED = 'This report arrived without an assessment of the evidence, s
  *  - when the outcome is DEGRADED (the cause is not established), or there is no verified outcome,
  *    no hypothesis is rated "likely" and each is capped at the unestablished-cause cap;
  *  - overall confidence cannot exceed the best-supported hypothesis;
+ *  - the summary may not state an outcome other than the assessed one: it is rewritten from the
+ *    assessment, or the assessed outcome is put in front of it, and the original is kept; without
+ *    an assessment it is marked as not verified;
  *  - what each action would do is decided here from its type and text;
  *  - a production change resting on a hypothesis rated unlikely is withdrawn;
  *  - a production change is withdrawn unless the verified outcome is an incident;
@@ -83,6 +135,9 @@ export async function applyGuardrails(
     recommendedActions: report.recommendedActions.map((a) => ({ ...a, evidenceRefs: clean(a.evidenceRefs, `action "${a.title}"`) })),
   };
   result.assumptions = report.assumptions;
+  // The outcome the report's author stated, as received; compared with the assessed one.
+  const summaryNote = reconcileSummary(result, report.outcome ?? null);
+  if (summaryNote) notes.push(summaryNote);
 
   // The same rules as services/ai/app/guardrails.py, applied again here.
   // What each action does is decided from its type and text, never taken from the sender.

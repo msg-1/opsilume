@@ -123,6 +123,55 @@ A service's health in the catalogue is its state now. An investigation of someth
 
 Tests: `apps/api/tests/historical-health.test.ts` (the tool API and the incident context, against a database), `services/ai/tests/test_historical_health.py` (a dependency that was down then, one that is down only today, missing history, a healthy past window, and a caller that gives no window).
 
+## 4b. The summary agrees with the outcome
+
+**The defect.** Found by the Milestone 10 audit. In two healthy-state scenarios of the first live evaluation (`healthy_no_signal`, `healthy_misleading_signals`), the report a user saw showed two things that contradict each other:
+- a computed outcome of HEALTHY;
+- a model summary saying "I rate the outcome DEGRADED rather than HEALTHY" and "so the outcome is DEGRADED".
+
+**The cause.** The model writes its summary in the report step, before the outcome is computed. The guardrails then compute the outcome (section 1) and correct the structured fields: outcome, hypothesis statuses, confidence. They never touched the summary. The API stored whatever summary it received, and the investigation page, the investigation list, the incident page and the remediation page show it. The printable report was not affected: it shows the assessment's rationale, not the summary.
+
+**The correction.** `reconcile_summary` in `services/ai/app/guardrails.py` runs after the outcome and the hypotheses are final. It runs before the overclaim rewrite and the figure checker, so the text that is checked is the text that is shown. The API applies the same rules again (`apps/api/src/modules/investigations/guardrails.ts`). The patterns and the wording live in `contracts/guardrails.json` (`summaryConsistency`).
+
+| Case | What happens |
+|---|---|
+| The summary states an outcome the assessment contradicts ("the outcome is DEGRADED", "so this is an INCIDENT"), or it is empty | Rewritten from the assessment: the computed outcome, its rationale with the evidence it rests on, and the leading hypothesis, called a hypothesis, not a confirmed cause. The text begins "Summary written by OPSILUME", so it is never read as the model's |
+| The model's own outcome differed but its summary states none | The model's summary is kept, after a sentence giving the computed outcome, which says it was added by OPSILUME |
+| The report carries no assessment (API only; the AI service always computes one) | Nothing is rewritten into an outcome. The summary is marked as not verified |
+| The summary agrees | Left exactly as written |
+
+In every case:
+- **The original is kept** in `summaryCorrection.originalSummary`, stored with the report, behind "Show the model's original summary" on the investigation page.
+- **The model's findings are untouched:** hypotheses, contradictions, facts and uncertainties.
+- **Nothing that changes production becomes available,** because the offered actions still follow the computed outcome.
+
+**Recognising a statement of the outcome.** The patterns cover "the outcome is X", "I rate the outcome X", "so this is X" and "I would classify it as X". A service's recorded health ("recorded as HEALTHY") and negations ("not an INCIDENT", "DEGRADED rather than HEALTHY") do not count.
+
+**Tests.**
+- **Per combination:** every combination of computed and stated outcome in `services/ai/tests/test_summary_consistency.py`, including the live reports, copied unedited into `tests/fixtures/live_summary_contradictions.json`.
+- **Edge cases:** empty and over-long summaries, control characters, repeated runs, and a model that fails or returns unusable output (the rule-based report that replaces it agrees).
+- **API:** the API pass, including a report without an assessment and a second pass, in `apps/api/tests/contract.test.ts`. Storage and retrieval in `intelligence.test.ts`. A shared case in `contracts/fixtures/guardrail-cases.json`.
+- **Web:** the note on the investigation page and the printable report in `apps/web/src/test/journeys.test.tsx`.
+
+**In the evaluation.** A `summary` criterion fails a final summary that states an outcome other than the computed one. Each scenario is also scored on the report as the model wrote it, held against the computed outcome. A pass that needed a guardrail correction is recorded (`guardrailAssisted`, `unaidedFailures`), and `--rescore` prints all three views.
+
+Rescoring the saved first live run (no model call, files unchanged):
+
+| View | Result |
+|---|---|
+| As shown at the time, scored with the new criterion | 11 of 14 |
+| With the current guardrails | 14 of 14 |
+| As the model wrote it | 9 of 14 |
+
+The 9 of 14 means four passes needed a guardrail, not two as first reported: `tool_failures_degrade_gracefully` also rated a cause `likely` below 0.5, which the existing rule corrected. The result recorded at the time, 13 of 14 under the criteria then in force, is unchanged. No rule-based scenario needed a correction.
+
+**Limits.**
+- **Paraphrases are not recognised.** "Checkout looks fine" does not state an outcome in a recognisable way. Recognition covers explicit statements only.
+- **Agreement is not correctness.** A summary can agree with the outcome and still be wrong about the cause.
+- **Rewritten summaries are formulaic.** They are built from the assessment, not written for the reader.
+- **Stored reports are unchanged.** Reports stored before this change are not rewritten.
+- **The model is not told the computed outcome before it writes.** The outcome depends on the hypotheses, which come in the same answer as the summary. The prompt is therefore unchanged, and the correction is enforced afterwards.
+
 ## 5. Figures and identifiers
 
 `services/ai/app/claims.py`. A citation that resolves is not enough: "error rate rose to 14% (E3)" has to be compared with what E3 says.

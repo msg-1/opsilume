@@ -28,6 +28,13 @@ What is compared, and why:
                  established cause or without evidence, no rollback without an implicated deployment, none aimed at a distractor, and a
                  rollback names the implicated deployment and the last version that worked.
   deployment     Where the deployment context is needed, the tool was called for that service.
+  summary        The final summary states no outcome other than the computed one. This is
+                 consistency, not correctness: a summary can agree with the outcome and still be
+                 wrong about the cause.
+
+Each scenario is also scored on the report as the model wrote it, before any guardrail, against
+the computed outcome (`unaided`, app/evals/run.py). A pass that depends on a guardrail
+correction is recorded as such.
 """
 
 from __future__ import annotations
@@ -39,12 +46,13 @@ from typing import Any
 
 from ..effects import action_effect
 from ..evidence import EvidenceStore
-from ..schemas import HypothesisOut, InvestigationReport
+from ..guardrails import stated_outcomes
+from ..schemas import Assessment, HypothesisOut, InvestigationReport
 from .scenarios import Cause, Expectation, Scenario
 
 # Kept for callers that import it; what an action does is decided by its text, see changes_production().
 DIAGNOSTIC_ACTIONS = {"manual", "run_runbook"}
-CRITERIA = ["outcome", "root_cause", "service", "citations", "no_invention", "contradictions", "missing", "calibration", "diagnostics", "remediation", "deployment"]
+CRITERIA = ["outcome", "root_cause", "service", "citations", "no_invention", "contradictions", "missing", "calibration", "diagnostics", "remediation", "deployment", "summary"]
 
 # Ways of saying that nothing is wrong. Used only for scenarios whose answer is "healthy", to
 # tell a statement of health from a claim of a fault.
@@ -208,8 +216,14 @@ def invented(report: InvestigationReport, seen: str) -> list[str]:
     return out
 
 
-def score(scenario: Scenario, report: InvestigationReport, raw: InvestigationReport, store: EvidenceStore, guardrail_notes: list[str], tool_calls: list[dict[str, Any]], seen: str) -> dict[str, Score]:
-    """`report` is what the product would show; `raw` is the report before the guardrails touched it."""
+def score(scenario: Scenario, report: InvestigationReport, raw: InvestigationReport, store: EvidenceStore, guardrail_notes: list[str], tool_calls: list[dict[str, Any]], seen: str, verified_outcome: str | None = None, assessment: Assessment | None = None) -> dict[str, Score]:
+    """`report` is what the product would show; `raw` is the report before the guardrails touched it.
+
+    `verified_outcome` is the computed outcome to hold the summary against. It defaults to the
+    report's own assessment; pass it when scoring a report that has none (the model's report as
+    written), so that the summary is compared with what was computed, not with the model's claim.
+    `assessment` supplies the computed assessment's missing telemetry in that case; the outcome
+    criterion still judges the report's own outcome."""
     exp = scenario.expect
     top = report.hypotheses[0] if report.hypotheses else None
     likely = [h for h in report.hypotheses if h.status == "likely"]
@@ -278,8 +292,11 @@ def score(scenario: Scenario, report: InvestigationReport, raw: InvestigationRep
 
     # ── missing evidence ──
     limits = normalise(" ".join(raw.uncertainties + [g for h in raw.hypotheses for g in h.gaps + h.assumptions] + [raw.summary]))
-    if report.assessment:
-        limits += " " + normalise(report.assessment.rationale + " " + " ".join(report.assessment.missing_telemetry))
+    # What the computed assessment says was missing counts for every engine: it is added by the
+    # service, not a correction of what the engine wrote.
+    context = assessment or report.assessment
+    if context:
+        limits += " " + normalise(context.rationale + " " + " ".join(context.missing_telemetry))
     if exp.must_acknowledge:
         s["missing"] = _pass("The report says which evidence it could not obtain.") if has_terms(limits, exp.must_acknowledge) else _fail("Data sources failed, and the report does not say that this evidence is missing.")
     elif exp.healthy:
@@ -316,4 +333,17 @@ def score(scenario: Scenario, report: InvestigationReport, raw: InvestigationRep
         s["deployment"] = _pass(f"get_deployment_context was called for {exp.needs_deployment_context}.") if mine else _fail(f"get_deployment_context was never called for {exp.needs_deployment_context}, so the rollback target could not be known.")
     else:
         s["deployment"] = _na(f"Not required here ({len(context_calls)} call(s) made).")
+    # ── the summary agrees with the computed outcome ──
+    verified = verified_outcome or (report.assessment.outcome if report.assessment else None)
+    conflicting = [o for o in stated_outcomes(report.summary) if verified and o != verified]
+    correction = report.summary_correction
+    if verified is None:
+        s["summary"] = _na("There is no computed outcome to hold the summary against.")
+    elif conflicting:
+        s["summary"] = _fail(f"The summary states {', '.join(conflicting)}; the computed outcome is {verified}.")
+    elif correction:
+        s["summary"] = _pass(f"The summary agrees with {verified} only because OPSILUME {'rewrote it' if correction.kind == 'replaced' else 'put the computed outcome in front of it'}; the model's summary stated {correction.stated_outcome}.")
+    else:
+        s["summary"] = _pass(f"The summary states no outcome other than {verified}.")
+
     return s

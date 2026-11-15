@@ -255,6 +255,23 @@ describe('viewing an investigation report', () => {
     expect(screen.queryByRole('button', { name: /approve|execute/i })).not.toBeInTheDocument();
   });
 
+  it('says when OPSILUME rewrote a summary that contradicted the computed outcome, and keeps the original one click away', async () => {
+    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
+    const corrected = structuredClone(investigation);
+    corrected.report!.summary = 'Summary written by OPSILUME from the computed assessment, because the model\'s summary stated an outcome the evidence does not support (HEALTHY). Assessed outcome: INCIDENT. A new error pattern appeared.';
+    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original };
+    fakeApi({ 'GET /investigations/inv-1': corrected });
+    show(<InvestigationPage />, session('ENGINEER'));
+
+    expect(await screen.findByText(/Summary written by OPSILUME from the computed assessment/)).toBeInTheDocument();
+    const note = screen.getByRole('note', { name: 'Summary correction' });
+    expect(note).toHaveTextContent("OPSILUME wrote this summary from the computed assessment. The model's summary stated HEALTHY, which the evidence does not support (assessed INCIDENT).");
+    // The model's words are kept, behind a labelled toggle, not presented as the summary.
+    expect(within(note).getByText("Show the model's original summary")).toBeInTheDocument();
+    expect(within(note).getByText(original)).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Assessment' })).toHaveTextContent('Incident');
+  });
+
   it('marks a figure the evidence does not support where it is read, and counts it in the evidence check', async () => {
     fakeApi({ 'GET /investigations/inv-1': investigation });
     show(<InvestigationPage />, session('ENGINEER'));
@@ -612,6 +629,17 @@ describe('the report to share', () => {
   const actions = { data: [{ ...remediation, id: 'act-1', title: 'Roll back checkout to v2.3.1', risk: 'MEDIUM', effect: 'state_changing', status: 'PENDING_APPROVAL', requiredApprovals: 1, approvalsGranted: 0 }], meta: { page: 1, pageSize: 50, total: 1, totalPages: 1 }, statusCounts: {}, executionMode: 'manual' };
   beforeEach(() => {
     nav.params = { id: 'inv-1' };
+  });
+
+  it('prints the computed conclusion, not a summary the model got wrong', async () => {
+    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
+    const corrected = structuredClone(investigation);
+    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original };
+    fakeApi({ 'GET /investigations/inv-1': corrected, 'GET /remediations': actions });
+    show(<InvestigationReportPage />, session('VIEWER'));
+    const conclusion = await screen.findByRole('region', { name: 'Conclusion' });
+    expect(conclusion).toHaveTextContent("The model's own summary concluded HEALTHY. This conclusion is the computed assessment of the evidence.");
+    expect(screen.queryByText(original)).not.toBeInTheDocument();
   });
 
   it('reads as a document: conclusion, probable cause, facts, changes, limits, next steps, in words a reader outside the team can follow', async () => {

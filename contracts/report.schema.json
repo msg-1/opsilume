@@ -548,6 +548,70 @@
       "title": "Signal",
       "type": "object"
     },
+    "SummaryCorrection": {
+      "description": "Set when the summary had to be made consistent with the computed outcome (guardrails.py).\n\nreplaced: the summary stated an outcome the assessment contradicts, or was empty, and was\nrewritten from the assessment. prefixed: the model concluded a different outcome but its\nsummary states none; a sentence giving the computed outcome was put in front of it.\nunverified: the report carries no assessment (set by the API only); nothing is verified.\nThe original text is kept, so nothing the model wrote is lost.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "replaced",
+            "prefixed",
+            "unverified"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "statedOutcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "HEALTHY",
+                "DEGRADED",
+                "INCIDENT",
+                "UNDETERMINED"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The outcome the model's summary, or its own outcome field, stated",
+          "title": "Statedoutcome"
+        },
+        "verifiedOutcome": {
+          "anyOf": [
+            {
+              "enum": [
+                "HEALTHY",
+                "DEGRADED",
+                "INCIDENT",
+                "UNDETERMINED"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The computed outcome; None when there is no assessment",
+          "title": "Verifiedoutcome"
+        },
+        "originalSummary": {
+          "description": "The summary as written before the correction",
+          "maxLength": 6000,
+          "title": "Originalsummary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "originalSummary"
+      ],
+      "title": "SummaryCorrection",
+      "type": "object"
+    },
     "TimelineEntry": {
       "properties": {
         "timestamp": {
@@ -653,6 +717,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Assessment"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "summaryCorrection": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SummaryCorrection"
         },
         {
           "type": "null"

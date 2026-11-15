@@ -238,6 +238,23 @@ describe('investigations', () => {
     expect(guardrail).toContain('moved to next steps');
   });
 
+  it('stores and returns a summary that agrees with the assessed outcome, with the original kept', async () => {
+    const org = await createOrg();
+    const service = await createService(org.owner, 'Checkout');
+    const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing', serviceIds: [service.id] })).body;
+    const original = 'Nothing is materially wrong with checkout, so the outcome is HEALTHY.';
+    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: report({ outcome: 'HEALTHY', summary: original }) }];
+    const started = await org.owner.post('/api/v1/investigations').send({ question: 'Why is checkout failing?', incidentId: incident.id });
+    const inv = (await org.owner.get(`/api/v1/investigations/${started.body.id}`)).body;
+    expect(inv).toMatchObject({ status: 'COMPLETED', outcome: 'INCIDENT' });
+    // The stored summary (shown in lists, on the incident and on remediation pages) is the corrected one.
+    expect(inv.summary.startsWith('Summary written by OPSILUME from the computed assessment')).toBe(true);
+    expect(inv.report.summary).toBe(inv.summary);
+    expect(inv.report.summaryCorrection).toEqual({ kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: original });
+    const listed = (await org.owner.get('/api/v1/investigations')).body.data.find((i: { id: string }) => i.id === started.body.id);
+    expect(listed.summary).toBe(inv.summary);
+  });
+
   it('stores no outcome, and offers no production change, for a report that claims an incident without an assessment', async () => {
     const org = await createOrg();
     const service = await createService(org.owner, 'Checkout');

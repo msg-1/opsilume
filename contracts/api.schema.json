@@ -1630,6 +1630,67 @@
                     }
                   ]
                 },
+                "summaryCorrection": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "replaced",
+                            "prefixed",
+                            "unverified"
+                          ]
+                        },
+                        "statedOutcome": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "HEALTHY",
+                                "DEGRADED",
+                                "INCIDENT",
+                                "UNDETERMINED"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "verifiedOutcome": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "HEALTHY",
+                                "DEGRADED",
+                                "INCIDENT",
+                                "UNDETERMINED"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "originalSummary": {
+                          "type": "string",
+                          "maxLength": 6000
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "originalSummary"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "observations": {
                   "default": [],
                   "type": "array",
@@ -2813,6 +2874,67 @@
                 "supportingRefs",
                 "signals",
                 "missingTelemetry"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summaryCorrection": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "replaced",
+                    "prefixed",
+                    "unverified"
+                  ]
+                },
+                "statedOutcome": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "HEALTHY",
+                        "DEGRADED",
+                        "INCIDENT",
+                        "UNDETERMINED"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "verifiedOutcome": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "HEALTHY",
+                        "DEGRADED",
+                        "INCIDENT",
+                        "UNDETERMINED"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "originalSummary": {
+                  "type": "string",
+                  "maxLength": 6000
+                }
+              },
+              "required": [
+                "kind",
+                "originalSummary"
               ],
               "additionalProperties": false
             },

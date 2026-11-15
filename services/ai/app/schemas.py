@@ -19,10 +19,11 @@ from .generated.contracts import (
     RemediationType,
     RiskLevel,
     SignalLevel,
+    SummaryCorrectionKind,
     VerificationStatus,
 )
 
-__all__ = ["ActionEffect", "AnalysisMode", "ClaimKind", "ClaimStatus", "HypothesisStatus", "Outcome", "RemediationType", "RiskLevel", "SignalLevel", "VerificationStatus"]
+__all__ = ["ActionEffect", "AnalysisMode", "ClaimKind", "ClaimStatus", "HypothesisStatus", "Outcome", "RemediationType", "RiskLevel", "SignalLevel", "SummaryCorrectionKind", "VerificationStatus"]
 
 
 class CamelModel(BaseModel):
@@ -236,6 +237,21 @@ class Integrity(CamelModel):
     flagged: list[FlaggedClaim] = Field(default_factory=list)
 
 
+class SummaryCorrection(CamelModel):
+    """Set when the summary had to be made consistent with the computed outcome (guardrails.py).
+
+    replaced: the summary stated an outcome the assessment contradicts, or was empty, and was
+    rewritten from the assessment. prefixed: the model concluded a different outcome but its
+    summary states none; a sentence giving the computed outcome was put in front of it.
+    unverified: the report carries no assessment (set by the API only); nothing is verified.
+    The original text is kept, so nothing the model wrote is lost."""
+
+    kind: SummaryCorrectionKind
+    stated_outcome: Outcome | None = Field(default=None, description="The outcome the model's summary, or its own outcome field, stated")
+    verified_outcome: Outcome | None = Field(default=None, description="The computed outcome; None when there is no assessment")
+    original_summary: str = Field(max_length=6000, description="The summary as written before the correction")
+
+
 class InvestigationReport(CamelModel):
     summary: str = Field(description="3-6 sentences: what happened, the leading explanation, and how sure we are")
     confidence: float = Field(ge=0, le=1, description="Overall confidence in the leading hypothesis")
@@ -244,6 +260,8 @@ class InvestigationReport(CamelModel):
     #: What the engine concluded before the evidence check; the assessment is authoritative
     outcome: Outcome | None = None
     assessment: Assessment | None = None
+    #: Set when the summary was rewritten or prefixed so that it agrees with the computed outcome.
+    summary_correction: SummaryCorrection | None = None
     #: Things worth knowing that are not evidence of a fault (an old deployment, routine warnings)
     observations: list[Fact] = Field(default_factory=list)
     integrity: Integrity | None = None

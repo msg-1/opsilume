@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { ConfidenceMeter, EffectBadge, EngineBadge, InvestigationStatusBadge, RemediationStatusBadge, RiskBadge, SeverityBadge } from '@/components/badges';
-import { AssessmentCard, IntegritySummary, VerificationMark } from '@/components/findings';
+import { AssessmentCard, IntegritySummary, SummaryCorrectionNote, VerificationMark } from '@/components/findings';
 import { Button, Card, EmptyState, ErrorState, FormError, Mono, Notice, PageHeader, Spinner, Tabs, LinkButton } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
 import { clock, dateTime, timeAgo, titleCase } from '@/lib/format';
@@ -266,6 +266,7 @@ export default function InvestigationPage() {
             {data.hypotheses.length > 0 && <ConfidenceMeter value={report.confidence} />}
           </div>
           <p className="mt-2 max-w-4xl text-[15px] leading-relaxed text-ink"><WithRefs text={report.summary} evidence={evidence} onSelect={select} /></p>
+          {report.summaryCorrection && <SummaryCorrectionNote correction={report.summaryCorrection} />}
           <p className="mt-3 flex items-start gap-1.5 text-[12px] text-ink-2">
             <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />
             {report.analysisMode === 'heuristic' ? 'Produced by rule-based correlation, not a language model. ' : report.analysisMode === 'mock' ? 'Produced by a scripted mock, not a language model. ' : `Written by ${data.model ?? 'a language model'} from the evidence below. `}

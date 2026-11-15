@@ -118,6 +118,8 @@ describe('shared contracts', () => {
       maxConfidence?: number;
       facts?: string[];
       assumptionsContain?: string[];
+      summaryStartsWith?: string;
+      summaryCorrection?: Record<string, unknown>;
     };
   }
   const { cases } = readContract('fixtures/guardrail-cases.json') as { cases: GuardrailCase[] };
@@ -146,6 +148,63 @@ describe('shared contracts', () => {
     if (e.maxConfidence !== undefined) expect(result.confidence).toBeLessThanOrEqual(e.maxConfidence);
     if (e.facts) expect(result.facts.map((f) => f.statement)).toEqual(e.facts);
     for (const text of e.assumptionsContain ?? []) expect(result.assumptions).toContain(text);
+    if (e.summaryStartsWith) expect(result.summary.startsWith(e.summaryStartsWith), result.summary).toBe(true);
+    if (e.summaryCorrection) expect(result.summaryCorrection).toEqual(e.summaryCorrection);
+  });
+
+  // The summary at the API boundary, beyond the shared case.
+  describe('summary consistency', () => {
+    const base = cases.find((c) => c.name.startsWith('a summary that states an outcome'))!;
+    const knownRefs = new Set(base.evidence.map((e) => e.ref));
+    const guard = async (change: (r: Record<string, unknown>) => void) => {
+      const report = structuredClone(base.report) as Record<string, unknown>;
+      change(report);
+      const steps: { detail?: string | null }[] = [];
+      const result = await applyGuardrails(reportSchema.parse(report), knownRefs, async (s) => steps.push(s));
+      return { result, notes: steps.map((s) => s.detail).join('\n') };
+    };
+
+    it('marks a summary without an assessment as not verified, and writes no outcome into it', async () => {
+      const { result, notes } = await guard((r) => { delete r.assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down, so the outcome is INCIDENT.'; });
+      expect(result.outcome).toBeNull();
+      expect(result.summary.startsWith('Not verified: this report carries no assessment of the evidence')).toBe(true);
+      expect(result.summary).not.toContain('Assessed outcome');
+      expect(result.summaryCorrection).toMatchObject({ kind: 'unverified', statedOutcome: 'INCIDENT', verifiedOutcome: null, originalSummary: 'Checkout is down, so the outcome is INCIDENT.' });
+      expect(notes).toContain('The summary is marked as not verified');
+    });
+
+    it('puts the assessed outcome in front of a summary that states none, when the author concluded another', async () => {
+      const { result } = await guard((r) => { r.summary = 'Errors began after v1.5.0 (E1, E2).'; r.outcome = 'DEGRADED'; });
+      expect(result.summary).toBe('Assessed outcome: INCIDENT. Added by OPSILUME: the model concluded DEGRADED, but the evidence supports INCIDENT. The model\'s summary follows. Errors began after v1.5.0 (E1, E2).');
+      expect(result.summaryCorrection).toMatchObject({ kind: 'prefixed', statedOutcome: 'DEGRADED', verifiedOutcome: 'INCIDENT' });
+    });
+
+    it('leaves a consistent summary, and one the AI service already corrected, exactly as they are', async () => {
+      const consistent = await guard((r) => { r.summary = 'Errors began after v1.5.0, so this is an INCIDENT.'; r.outcome = 'INCIDENT'; });
+      expect(consistent.result.summary).toBe('Errors began after v1.5.0, so this is an INCIDENT.');
+      expect(consistent.result.summaryCorrection ?? null).toBeNull();
+      const corrected = { kind: 'replaced', statedOutcome: 'HEALTHY', verifiedOutcome: 'INCIDENT', originalSummary: 'the outcome is HEALTHY' };
+      const upstream = await guard((r) => { r.summary = 'Summary written by OPSILUME from the computed assessment. Assessed outcome: INCIDENT. A failure is evident.'; r.outcome = 'INCIDENT'; r.summaryCorrection = corrected; });
+      expect(upstream.result.summary).toBe('Summary written by OPSILUME from the computed assessment. Assessed outcome: INCIDENT. A failure is evident.');
+      expect(upstream.result.summaryCorrection).toEqual(corrected);
+    });
+
+    it('changes nothing when applied a second time', async () => {
+      for (const change of [(r: Record<string, unknown>) => void r, (r: Record<string, unknown>) => { delete r.assessment; }, (r: Record<string, unknown>) => { r.summary = 'Errors rose.'; r.outcome = 'DEGRADED'; }]) {
+        const { result: once } = await guard(change);
+        const twice = await applyGuardrails(reportSchema.parse(structuredClone(once)), knownRefs, async () => undefined);
+        expect(twice.summary).toBe(once.summary);
+        expect(twice.summaryCorrection).toEqual(once.summaryCorrection);
+      }
+    });
+
+    it('recognises the same statements of an outcome as the AI service', async () => {
+      const { statedOutcomes } = await import('../src/modules/investigations/guardrails');
+      expect(statedOutcomes('I rate the outcome DEGRADED rather than HEALTHY.')).toEqual(['DEGRADED']);
+      expect(statedOutcomes('so this is an incident')).toEqual(['INCIDENT']);
+      expect(statedOutcomes('inventory-api is recorded as HEALTHY with no alert firing.')).toEqual([]);
+      expect(statedOutcomes('The outcome is not HEALTHY, and this is not an INCIDENT.')).toEqual([]);
+    });
   });
 
   // The outcome rules at the API boundary, beyond the shared case. Only the assessment counts as a

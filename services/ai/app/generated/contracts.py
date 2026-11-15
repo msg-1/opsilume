@@ -32,6 +32,9 @@ CLAIM_KINDS: tuple[str, ...] = ("number", "timestamp", "version", "commit", "pul
 VerificationStatus = Literal["verified", "partly", "unsupported", "no_claims"]
 VERIFICATION_STATUSES: tuple[str, ...] = ("verified", "partly", "unsupported", "no_claims")
 
+SummaryCorrectionKind = Literal["replaced", "prefixed", "unverified"]
+SUMMARY_CORRECTION_KINDS: tuple[str, ...] = ("replaced", "prefixed", "unverified")
+
 GUARDRAIL_LIMITS: dict[str, Any] = {
     "maxConfidence": {
         "llm": 0.9,
@@ -45,6 +48,20 @@ GUARDRAIL_LIMITS: dict[str, Any] = {
     "unestablishedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the outcome is DEGRADED, so the cause is not established.",
     "unverifiedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the report carries no assessment of the evidence, so no cause is verified.",
     "unverifiedOutcomeNote": "The report states the outcome {claimed}, but it carries no assessment of the evidence, so that outcome is not verified and is not recorded.",
+    "summaryConsistency": {
+        "statementPatterns": [
+            "\\boutcome\\s*(?:is|was|would be|of|as|:)?\\s*(?:rated\\s+|assessed\\s+as\\s+)?(HEALTHY|DEGRADED|INCIDENT|UNDETERMINED)\\b",
+            "\\b(?:so|thus|therefore|hence)\\s+(?:this|it)\\s+is\\s+(?:an?\\s+)?(HEALTHY|DEGRADED|INCIDENT|UNDETERMINED)\\b",
+            "\\b(?:classif(?:y|ies|ied)|rate[ds]?|assess(?:es|ed)?)\\s+(?:this|it|the service|the outcome)\\s+as\\s+(?:an?\\s+)?(HEALTHY|DEGRADED|INCIDENT|UNDETERMINED)\\b"
+        ],
+        "replaced": "Summary written by OPSILUME from the computed assessment, because the model's summary stated an outcome the evidence does not support ({stated}). Assessed outcome: {outcome}. {rationale}",
+        "replacedEmpty": "Summary written by OPSILUME from the computed assessment, because the model returned no summary. Assessed outcome: {outcome}. {rationale}",
+        "leadingHypothesis": " Leading hypothesis, not a confirmed cause: \"{title}\" ({status}){refs}.",
+        "prefixed": "Assessed outcome: {outcome}. Added by OPSILUME: the model concluded {stated}, but the evidence supports {outcome}. The model's summary follows. ",
+        "unverified": "Not verified: this report carries no assessment of the evidence, so any outcome its summary states is its author's claim. ",
+        "unverifiedNote": "The summary is marked as not verified: the report carries no assessment of the evidence.",
+        "note": "The summary {action}: it stated {stated}, and the computed assessment is {outcome}. The model's original summary is kept with the report."
+    },
     "maxRecommendedActions": 4,
     "outcomeAllowingProductionChanges": "INCIDENT",
     "withdrawalReasons": {

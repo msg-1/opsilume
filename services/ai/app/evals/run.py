@@ -46,7 +46,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -130,6 +130,13 @@ class Result:
     bound_exceeded: str | None = None
     #: Why the model stopped being used in this scenario, if it did (our own wording)
     model_stopped: str | None = None
+    #: Criteria the report as the model wrote it fails, against the computed outcome (`unaided`)
+    unaided_failures: list[str] = field(default_factory=list)
+
+    @property
+    def guardrail_assisted(self) -> bool:
+        """It passes, but only because a guardrail corrected what the model wrote."""
+        return self.passed and bool(self.unaided_failures)
 
     @property
     def fell_back(self) -> bool:
@@ -153,7 +160,7 @@ class Result:
         return engine + [f"{name}: {s.why}" for name, s in self.scores.items() if not s.ok]
 
     def wire(self) -> dict[str, Any]:
-        return {**asdict(self), "passed": self.passed, "fellBack": self.fell_back}
+        return {**asdict(self), "passed": self.passed, "fellBack": self.fell_back, "guardrailAssisted": self.guardrail_assisted}
 
 
 async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: Settings | None = None, save_to: Path | None = None) -> Result:
@@ -196,6 +203,9 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
     # Everything the investigator was shown: the briefing's own values and every tool result.
     seen = json.dumps([scenario.question, t(0), t(120), [st.get("output") for st in steps if st.get("type") == "tool_call"]], default=str)
     scores = score(scenario, report, raw[0] if raw else report, ctx.store, notes, calls, seen)
+    # The same criteria on the report as the model wrote it, held against the computed outcome.
+    written = raw[0] if raw else report
+    unaided = score(scenario, written, written, ctx.store, notes, calls, seen, verified_outcome=report.assessment.outcome if report.assessment else None, assessment=report.assessment)
 
     top = report.hypotheses[0] if report.hypotheses else None
     usage = provider.usage if provider else None
@@ -226,6 +236,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         served_model=provider.served_model if provider else None,
         bound_exceeded=getattr(provider, "bound_exceeded", None),
         model_stopped=ctx.llm_stopped or None,
+        unaided_failures=[name for name, sc in unaided.items() if not sc.ok],
     )
     if save_to is not None:
         save_to.mkdir(parents=True, exist_ok=True)
@@ -235,6 +246,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
             "report": report.wire(),
             "reportBeforeGuardrails": (raw[0] if raw else report).wire(),
             "guardrailNotes": notes,
+            "unaidedScores": {name: {"verdict": sc.verdict, "why": sc.why} for name, sc in unaided.items()},
             "toolCalls": calls,
             "knownTimes": enforce_args.get("known_times") or [],
             "scope": enforce_args.get("scope") or [],
@@ -316,6 +328,12 @@ async def run_all(resolution: Resolution | None, settings: Settings, max_cost: f
 
 
 def rescore(directory: Path) -> list[tuple[str, dict[str, Score], dict[str, Score]]]:
+    """Scores saved reports again without calling a model: as shown at the time, and with today's
+    guardrails. See rescore_detail for the scores of the model's own report as well."""
+    return [(name, shown, again) for name, shown, again, _unaided in rescore_detail(directory)]
+
+
+def rescore_detail(directory: Path) -> list[tuple[str, dict[str, Score], dict[str, Score], dict[str, Score]]]:
     """Scores the reports saved by an earlier run again, without calling any model.
 
     Returns, per scenario: the scores of the report as it was shown at the time, and the scores of
@@ -349,7 +367,8 @@ def rescore(directory: Path) -> list[tuple[str, dict[str, Score], dict[str, Scor
         as_shown = score(scenario, shown, raw, store, record["guardrailNotes"], record["toolCalls"], seen)
         again = raw.model_copy(deep=True)
         notes = guardrails.enforce(again, store, scope=record.get("scope") or [], tool_failures=record.get("toolFailures") or [], known_times=record.get("knownTimes") or [t(0), t(120)])
-        out.append((scenario.name, as_shown, score(scenario, again, raw, store, notes, record["toolCalls"], seen)))
+        unaided = score(scenario, raw, raw, store, notes, record["toolCalls"], seen, verified_outcome=again.assessment.outcome if again.assessment else None, assessment=again.assessment)
+        out.append((scenario.name, as_shown, score(scenario, again, raw, store, notes, record["toolCalls"], seen), unaided))
     return out
 
 
@@ -368,14 +387,16 @@ def main() -> None:
     parser.add_argument("--repeat", action="store_true", help="Run the --only scenarios a second time; each must have failed once in the ledger and not been repeated")
     args = parser.parse_args()
     if args.rescore:
-        rows = rescore(args.rescore)
-        for name, shown, again in rows:
-            for label, scores in (("as shown at the time", shown), ("with current guardrails", again)):
+        detail = rescore_detail(args.rescore)
+        rows = [(name, shown, again) for name, shown, again, _u in detail]
+        for name, shown, again, unaided in detail:
+            for label, scores in (("as shown at the time", shown), ("with current guardrails", again), ("as the model wrote it", unaided)):
                 failed = [f"{k}: {v.why}" for k, v in scores.items() if not v.ok]
                 print(f"{name:34} {label:24} {'pass' if not failed else 'FAIL'}")
                 for f in failed:
                     print(f"{'':34} FAIL {f}")
-        print(f"\n{sum(all(v.ok for v in a.values()) for _n, a, _b in rows)}/{len(rows)} pass as shown · {sum(all(v.ok for v in b.values()) for _n, _a, b in rows)}/{len(rows)} pass with current guardrails")
+        print(f"\n{sum(all(v.ok for v in a.values()) for _n, a, _b in rows)}/{len(rows)} pass as shown · {sum(all(v.ok for v in b.values()) for _n, _a, b in rows)}/{len(rows)} pass with current guardrails"
+              f" · {sum(all(v.ok for v in u.values()) for *_x, u in detail)}/{len(rows)} pass as the model wrote them")
         sys.exit(0)
     # Never the repository's .env: a paid run uses only what is set in this process's environment.
     settings = Settings(_env_file=None)
@@ -472,7 +493,7 @@ def main() -> None:
     if args.json:
         print(json.dumps(summary, indent=2))
     else:
-        short = {"outcome": "state", "root_cause": "cause", "service": "svc", "citations": "cite", "no_invention": "real", "contradictions": "contra", "missing": "gaps", "calibration": "calib", "diagnostics": "diag", "remediation": "safe", "deployment": "deploy"}
+        short = {"summary": "sum", "outcome": "state", "root_cause": "cause", "service": "svc", "citations": "cite", "no_invention": "real", "contradictions": "contra", "missing": "gaps", "calibration": "calib", "diagnostics": "diag", "remediation": "safe", "deployment": "deploy"}
         mark = {"pass": "pass", "fail": "FAIL", "n/a": "-"}
         print(f"\nEngine: {engine}\n")
         print(f"{'scenario':34} " + " ".join(f"{short[c]:6}" for c in CRITERIA) + " conf  tools  top hypothesis")
@@ -480,6 +501,8 @@ def main() -> None:
             print(f"{r.scenario:34} " + " ".join(f"{mark[r.scores[c].verdict]:6}" for c in CRITERIA) + f" {r.confidence:<5.2f} {r.tool_calls:<5}  {r.top_hypothesis[:60]}")
             for failure in r.failures:
                 print(f"{'':34} FAIL {failure}")
+            if r.guardrail_assisted:
+                print(f"{'':34} ASSISTED: passes only after guardrail corrections; as written it fails {', '.join(r.unaided_failures)}")
         print()
         for c in CRITERIA:
             n = by_criterion[c]

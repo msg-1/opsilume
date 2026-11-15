@@ -14,7 +14,7 @@ from . import claims
 from .effects import action_effect
 from .evidence import EvidenceStore
 from .generated.contracts import GUARDRAIL_LIMITS as LIMITS
-from .schemas import InvestigationReport
+from .schemas import InvestigationReport, SummaryCorrection
 
 # Limits are defined once, in contracts/guardrails.json, and generated for the API as well.
 MAX_LLM_CONFIDENCE: float = LIMITS["maxConfidence"]["llm"]
@@ -47,6 +47,57 @@ NO_FAULT_HYPOTHESIS_CAP: float = LIMITS["noFaultHypothesisCap"]
 #: Highest confidence any hypothesis may carry when the outcome is DEGRADED: anomalies are
 #: present but the cause is not established, so no hypothesis may reach "likely".
 UNESTABLISHED_CAUSE_CAP: float = LIMITS["unestablishedCauseCap"]
+# How a summary states an outcome, and the wording used when it has to be made consistent.
+# Defined once in contracts/guardrails.json and applied the same way by the API.
+_SUMMARY = LIMITS["summaryConsistency"]
+_STATEMENTS = [re.compile(p, re.IGNORECASE) for p in _SUMMARY["statementPatterns"]]
+SUMMARY_MAX_LENGTH = 6000
+
+
+def stated_outcomes(text: str) -> list[str]:
+    """The outcomes a text states as its conclusion: "the outcome is DEGRADED", "I rate the
+    outcome HEALTHY", "so this is an INCIDENT". A service's recorded health ("recorded as
+    HEALTHY") and negations ("not an INCIDENT", "DEGRADED rather than HEALTHY") are not
+    statements of the outcome. Paraphrases ("the service looks fine") are not recognised."""
+    found = [m.group(1).upper() for p in _STATEMENTS for m in p.finditer(text or "")]
+    return list(dict.fromkeys(found))
+
+
+def _cited(refs: list[str]) -> str:
+    return f" ({', '.join(refs)})" if refs else ""
+
+
+def reconcile_summary(report: InvestigationReport, claimed: str | None) -> str | None:
+    """Makes the summary agree with the computed outcome. Returns a note when it changes it.
+
+    The model writes its summary before the outcome is computed. If the summary states another
+    outcome, or is empty, it is rewritten from the assessment. If only the model's own outcome
+    differed and the summary states none, a sentence giving the computed outcome is put in
+    front. Either way the original is kept in `summary_correction`, and the new text says it was
+    written by OPSILUME, not by the model. Agreeing with the outcome does not make a summary
+    correct; it only stops it from contradicting the assessment shown beside it."""
+    verdict = report.assessment
+    if verdict is None:
+        return None
+    outcome, original = verdict.outcome, report.summary or ""
+    conflicting = [o for o in stated_outcomes(original) if o != outcome]
+    if conflicting or not original.strip():
+        stated = conflicting[0] if conflicting else None
+        rationale = verdict.rationale.rstrip(". ") + _cited(verdict.supporting_refs) + "."
+        text = (_SUMMARY["replaced"] if conflicting else _SUMMARY["replacedEmpty"]).format(stated=stated, outcome=outcome, rationale=rationale)
+        if report.hypotheses:
+            top = report.hypotheses[0]
+            text += _SUMMARY["leadingHypothesis"].format(title=top.title, status=top.status, refs=_cited(top.evidence_refs))
+        report.summary_correction = SummaryCorrection(kind="replaced", stated_outcome=stated or claimed, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
+        report.summary = text[:SUMMARY_MAX_LENGTH]
+        return _SUMMARY["note"].format(action="was rewritten from the computed assessment", stated=stated or "nothing", outcome=outcome)
+    if claimed and claimed != outcome:
+        report.summary_correction = SummaryCorrection(kind="prefixed", stated_outcome=claimed, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
+        report.summary = (_SUMMARY["prefixed"].format(stated=claimed, outcome=outcome) + original)[:SUMMARY_MAX_LENGTH]
+        return _SUMMARY["note"].format(action="now begins with the computed outcome", stated=claimed, outcome=outcome)
+    return None
+
+
 assert UNESTABLISHED_CAUSE_CAP < LIMITS["likelyMinimumConfidence"], "contracts/guardrails.json: unestablishedCauseCap must be below likelyMinimumConfidence"
 
 
@@ -255,6 +306,12 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
     if report.confidence > ceiling:
         notes.append(f"Overall confidence reduced from {report.confidence:.2f} to {ceiling:.2f} to match the strongest hypothesis.")
         report.confidence = ceiling
+
+    # After the outcome and the hypotheses are final, and before the summary's wording and figures
+    # are checked: the text that is checked is the text that is shown.
+    note = reconcile_summary(report, claimed)
+    if note:
+        notes.append(note)
 
     if _OVERCLAIM.search(report.summary):
         report.summary = _OVERCLAIM.sub("leading hypothesis", report.summary) + " This is a hypothesis; the root cause has not been confirmed."
