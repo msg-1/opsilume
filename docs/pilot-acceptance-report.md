@@ -147,7 +147,7 @@ Detail: [ai-validation.md](ai-validation.md).
 | The proposer cannot understate risk; an unclear action is treated as state-changing; both services agree on what each kind of action does | Automated | `safety.test.ts`, `hardening.test.ts`, shared fixtures |
 | An action the evidence does not support is withdrawn, not relabelled | Automated | Evaluations (`remediation` criterion), `test_rules.py` |
 | One dispatch when execution is requested twice at once | Automated | `safety.test.ts` |
-| A timeout or server error from the receiver is recorded as unknown and not retried until a person confirms nothing was applied | Automated | `safety.test.ts` |
+| A timeout or server error from the receiver is recorded as unknown and not retried until a person records that nothing was applied | Automated | `safety.test.ts`: "record an unknown outcome on timeout and are not retried until a person records that nothing was applied"; also `reconciliation.test.ts` (added after this report, PR #33) |
 | Every approval and execution is in the audit log, without secrets | Automated | `safety.test.ts`, `auth.test.ts` |
 | What the customer's receiver does with an action | Not tested. Limitation | OPSILUME sends a signed request and records the answer. It cannot verify the change, and it cannot undo it |
 | Behaviour of a model when proposing actions on the current code | Not tested | Section 6. The guardrails apply whatever proposes |

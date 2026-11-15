@@ -7,7 +7,10 @@ rule-based engine let it count as support.
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from app import guardrails, rules
+from app.claims import Checker
 from app.evidence import EARLIER_AI_OUTPUT, EvidenceStore, is_earlier_ai_output
 from app.generated.contracts import GUARDRAIL_LIMITS, KNOWLEDGE_PROVENANCES
 from app.rules import Case
@@ -56,11 +59,12 @@ def test_a_missing_or_unrecognised_provenance_is_treated_conservatively():
     assert store.items[0].title.endswith("(origin unknown, not evidence)")
 
 
-def test_the_guardrails_count_it_as_no_support():
+@pytest.mark.parametrize("provenance", ["earlier_ai_output", "contains_earlier_ai_output", "unknown", None])
+def test_the_guardrails_count_it_as_no_support(provenance):
     store = EvidenceStore()
     store.items = [
         EvidenceItem(ref="E1", kind="log_pattern", title="300× ERROR in orders (new pattern)", summary="s", source_type="log_pattern", source_id="fp", service="orders", occurred_at="2026-06-01T11:30:00Z", data={"level": "ERROR", "count": 300, "kind": "new", "baselineCount": 0}),
-        EvidenceItem(ref="E2", kind="document", title="Postmortem › AI findings", summary="s", source_type="knowledge_chunk", source_id="c1", data={"provenance": "earlier_ai_output"}),
+        EvidenceItem(ref="E2", kind="document", title="Postmortem › AI findings", summary="s", source_type="knowledge_chunk", source_id="c1", data={"provenance": provenance} if provenance else {}),
     ]
     report = InvestigationReport(
         summary="s", confidence=0.8, analysis_mode="llm", uncertainties=["u"], next_steps=["n"],
@@ -95,8 +99,9 @@ def _case(provenance: str | None) -> Case:
     return Case.build(store, scope=["orders"], window=(NOW - timedelta(hours=2), NOW))
 
 
-def test_only_documents_people_wrote_corroborate_a_mechanism_or_suggest_a_procedure():
-    plain, earlier = _case("document"), _case("earlier_ai_output")
+@pytest.mark.parametrize("untrusted", ["earlier_ai_output", "unknown", None])
+def test_only_documents_people_wrote_corroborate_a_mechanism_or_suggest_a_procedure(untrusted):
+    plain, earlier = _case("document"), _case(untrusted)
     for case in (plain, earlier):
         rules.rule_recent_change(case)
     plain_h, earlier_h = plain.hypotheses[0], earlier.hypotheses[0]
@@ -122,3 +127,27 @@ def test_earlier_ai_output_cannot_make_an_outcome_an_incident():
     guardrails.enforce(report, store, scope=["orders"], tool_failures=[])
     assert report.assessment.outcome == "DEGRADED"
     assert report.hypotheses[0].status != "likely"
+
+
+# ── Figures ──
+
+
+@pytest.mark.parametrize("provenance, verified", [
+    ("earlier_ai_output", False),
+    ("contains_earlier_ai_output", False),
+    ("unknown", False),
+    (None, False),  # missing
+    ("from-the-future", False),  # not a recognised value
+    ("document", True),
+])
+def test_only_trusted_documents_can_make_a_figure_exact(provenance, verified):
+    store = EvidenceStore()
+    data = {"docType": "postmortem", "content": "Checkout p95 latency reached 3890 ms during the outage."}
+    if provenance is not None:
+        data["provenance"] = provenance
+    store.items = [EvidenceItem(ref="E1", kind="document", title="Postmortem › Findings", summary="Checkout p95 latency reached 3890 ms during the outage.", source_type="knowledge_chunk", source_id="c1", data=data)]
+    checks = Checker(store).check("Checkout p95 latency reached 3890 ms.", ["E1"])
+    figure = next(c for c in checks if "3890" in c.text)
+    assert (figure.status == "exact") is verified, figure
+    if not verified:
+        assert figure.evidence_ref is None

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { InvestigationEvent } from '../src/integrations/aiService';
 
@@ -126,7 +128,17 @@ describe('earlier AI output in the knowledge base', () => {
     await prisma.incidentEvent.deleteMany({ where: { type: 'investigation', metadata: { path: ['investigationId'], equals: inv.id } } });
     const findings = holding(await of(org, doc.id), 'Analysis by anthropic');
     expect(findings.length).toBeGreaterThan(0);
+    // Nothing it says can be traced to a record any more. The template's own line above the findings
+    // still marks them as what an AI investigation reported; either way they are not evidence.
     for (const r of findings) {
+      expect(r).toMatchObject({ provenance: 'earlier_ai_output', provenanceBasis: 'heading' });
+      expect(r.content.startsWith('[Earlier AI output, not evidence. Written by an AI investigation before OPSILUME checked summaries against the evidence')).toBe(true);
+    }
+    // Without that line, the same text is of unknown origin.
+    const bare = await draftedEarlier(org, `# Postmortem\n\n## Notes\n${MODEL_TEXT}`);
+    await prisma.investigation.delete({ where: { id: bare.inv.id } });
+    await prisma.incidentEvent.deleteMany({ where: { type: 'investigation', metadata: { path: ['investigationId'], equals: bare.inv.id } } });
+    for (const r of holding(await of(org, bare.doc.id), MODEL_TEXT)) {
       expect(r).toMatchObject({ provenance: 'unknown', provenanceBasis: 'unmatched' });
       expect(r.content.startsWith('[Origin unknown, not evidence.')).toBe(true);
     }
@@ -143,10 +155,78 @@ describe('earlier AI output in the knowledge base', () => {
     expect(mixed!.content).not.toContain(`[earlier AI output, unverified] ${RESOLUTION}`);
   });
 
-  it('a postmortem OPSILUME did not draft (no generator record, as the seed writes them) is a plain document', async () => {
+  it('a drafted postmortem whose audit entry was never written is still treated as drafted, through its incident link', async () => {
     const org = await createOrg();
     const { doc } = await draftedEarlier(org, historicalPostmortem(), MODEL_TEXT, { audited: false });
+    expect(await prisma.auditLog.count({ where: { action: 'postmortem.create', resourceId: doc.id } })).toBe(0);
+    const results = await of(org, doc.id);
+    for (const r of results) expect(r.provenanceBasis).not.toBe('not_generated');
+    for (const r of holding(results, 'Analysis by anthropic')) expect(['earlier_ai_output', 'contains_earlier_ai_output']).toContain(r.provenance);
+    expect(results.find((r) => r.content === RESOLUTION)).toMatchObject({ provenance: 'document', provenanceBasis: 'incident_record' });
+  });
+
+  it('a postmortem with neither an incident link nor an audit entry is a document people wrote', async () => {
+    const org = await createOrg();
+    const doc = (await org.owner.post('/api/v1/knowledge/documents').send({ title: 'Postmortem: written by the team', type: 'postmortem', content: historicalPostmortem() }).expect(201)).body;
     for (const r of await of(org, doc.id)) expect(r).toMatchObject({ provenance: 'document', provenanceBasis: 'not_generated' });
+  });
+
+  it('the seeded demo postmortem: linked to its incident, so treated as drafted; its prose matches no record word for word, so none of it is evidence', async () => {
+    // The seed's own text and its incident's root cause and resolution, read from prisma/seed.ts.
+    const seed = readFileSync(join(__dirname, '../prisma/seed.ts'), 'utf8');
+    const title = 'Postmortem: Checkout latency from database pool saturation during flash sale';
+    const start = seed.indexOf('content: `', seed.indexOf(`title: '${title}'`)) + 'content: `'.length;
+    let end = start;
+    while (seed[end] !== '`' || seed[end - 1] === '\\') end++;
+    const content = seed.slice(start, end).replace(/\\`/g, '`');
+    const fields = /title: 'Checkout latency from database pool saturation during flash sale'.*?rootCause: '([^']*)', resolution: '([^']*)'/.exec(seed)!;
+    expect(content).toContain('## Root cause');
+
+    const org = await createOrg();
+    const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout latency from database pool saturation during flash sale' })).body;
+    await prisma.incident.update({ where: { id: incident.id }, data: { rootCause: fields[1], resolution: fields[2] } });
+    // As the seed writes it: linked directly, with no audit entry.
+    const doc = (await org.owner.post('/api/v1/knowledge/documents').send({ title, type: 'postmortem', content }).expect(201)).body;
+    await prisma.knowledgeDocument.update({ where: { id: doc.id }, data: { incidentId: incident.id } });
+
+    const results = await of(org, doc.id, 'checkout pool flash sale latency DB_POOL_MAX');
+    expect(results.length).toBeGreaterThan(0);
+    for (const r of results) {
+      expect(r.provenance).not.toBe('document');
+      expect(['unknown']).toContain(r.provenance);
+    }
+  });
+
+  it('human text with paraphrased AI text, with AI text shorter than the matching window, or with text from a deleted investigation is not a document', async () => {
+    const org = await createOrg();
+    const cases = [
+      ['paraphrased', `${RESOLUTION}\nThe tool reckoned the pool had run dry, without a doubt.`, 'unknown'],
+      ['short AI text', `${RESOLUTION}\nexhausted, certainly.`, 'contains_earlier_ai_output'],
+      ['short unmatched text', `${RESOLUTION}\nIt was the pool.`, 'unknown'],
+    ] as const;
+    for (const [label, section, expected] of cases) {
+      const { doc } = await draftedEarlier(org, `# Postmortem\n\n## Resolution\n${section}`);
+      const [r] = holding(await of(org, doc.id), RESOLUTION);
+      expect(r?.provenance, label).toBe(expected);
+    }
+    // A deleted investigation: its text, next to the resolution, can no longer be traced, so the chunk is not trusted.
+    const { doc, inv } = await draftedEarlier(org, `# Postmortem\n\n## Resolution\n${RESOLUTION}\n${MODEL_TEXT}`);
+    await prisma.investigation.delete({ where: { id: inv.id } });
+    await prisma.incidentEvent.deleteMany({ where: { type: 'investigation', metadata: { path: ['investigationId'], equals: inv.id } } });
+    expect(holding(await of(org, doc.id), RESOLUTION)[0]).toMatchObject({ provenance: 'unknown', provenanceBasis: 'unmatched' });
+  });
+
+  it('a chunk entirely from what people recorded stays a document, and a chunk of template lines only is not evidence', async () => {
+    const org = await createOrg();
+    const { doc } = await draftedEarlier(org, `# Postmortem\n\n## Resolution\n${RESOLUTION}\n\n## Lessons learned\n_What went well, what went poorly, where we got lucky._\n\n## Follow-up actions\n_Owner, action, due date._`);
+    const results = await of(org, doc.id, 'DB_POOL_MAX rolled deployment lessons learned follow-up owner action due date went well');
+    expect(results.find((r) => r.content === RESOLUTION)).toMatchObject({ provenance: 'document', provenanceBasis: 'incident_record' });
+    const template = results.filter((r) => r.section?.includes('Lessons learned') || r.section?.includes('Follow-up'));
+    expect(template.length).toBeGreaterThan(0);
+    for (const r of template) {
+      expect(r).toMatchObject({ provenance: 'unknown', provenanceBasis: 'template_only' });
+      expect(r.content.startsWith('[Template text from a postmortem OPSILUME drafted')).toBe(true);
+    }
   });
 
   it('a postmortem drafted now carries the verified summary, and is labelled as AI output that was checked', async () => {

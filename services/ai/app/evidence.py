@@ -27,8 +27,9 @@ def provenance_of(hit: dict[str, Any]) -> str:
 
 
 def is_earlier_ai_output(item: EvidenceItem) -> bool:
-    """Knowledge text that cannot support a cause, a fact or a production change."""
-    return item.kind == "document" and (item.data or {}).get("provenance", "document") != "document"
+    """Knowledge text that cannot support a cause, a fact, a figure or a production change: anything
+    whose provenance is not explicitly "document", a missing one included."""
+    return item.kind == "document" and (item.data or {}).get("provenance") != "document"
 
 NOTABLE_METRIC_CHANGE = 25.0  # percent
 

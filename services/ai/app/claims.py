@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from itertools import permutations
 from typing import Any
 
-from .evidence import EvidenceStore
+from .evidence import EvidenceStore, is_earlier_ai_output
 from .schemas import ClaimCheck, EvidenceItem, Fact, FlaggedClaim, Integrity, InvestigationReport, Verification
 
 # unit → (dimension, factor to the dimension's base unit)
@@ -287,9 +287,13 @@ class Checker:
     def __init__(self, store: EvidenceStore, known_times: list[str] | None = None):
         #: Moments the investigation itself defines (its window and its "now"): stating them is not invention
         self.known_times = _timestamps_in(" ".join(known_times or []))
-        self.items = {e.ref: e for e in store.items}
-        self.values = {e.ref: evidence_values(e) for e in store.items}
-        self.text = {e.ref: f"{e.title} {e.summary} {_dump(e.data)} {e.occurred_at or ''} {e.source_id or ''}" for e in store.items}
+        # A figure is established only by evidence that can support anything: knowledge text whose
+        # provenance is not explicitly "document" (earlier AI output, unknown, missing, unrecognised)
+        # is left out, so a number copied from an earlier AI postmortem is never "exact".
+        trusted = [e for e in store.items if not is_earlier_ai_output(e)]
+        self.items = {e.ref: e for e in trusted}
+        self.values = {e.ref: evidence_values(e) for e in trusted}
+        self.text = {e.ref: f"{e.title} {e.summary} {_dump(e.data)} {e.occurred_at or ''} {e.source_id or ''}" for e in trusted}
         self.times = {ref: _timestamps_in(t) for ref, t in self.text.items()}
 
     def _find(self, needle: str, refs: list[str]) -> tuple[str | None, bool]:

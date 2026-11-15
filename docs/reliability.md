@@ -300,40 +300,53 @@ Limits:
 - **Where the shown values are used:** the list, the incident page, the dashboard and a postmortem drafted now. The analytics averages use the stored values.
 
 **Earlier AI output in the knowledge base.** A postmortem drafted by OPSILUME copies text from records that are still stored:
-- what the incident's AI investigations reported: their summaries, narratives and hypotheses, and the "AI investigation completed" timeline entries;
-- what people recorded on the incident: description, impact, root cause, resolution and the other timeline entries.
+- what the incident's AI investigations reported: their summaries, narratives and hypotheses, the "AI investigation completed" timeline entries, and the actions the AI proposed;
+- what people recorded on the incident: title, description, impact, root cause, resolution, the other timeline entries, and the actions people proposed.
 
-Before summaries were built from the assessment, an investigation's summary was a model's own narrative. Postmortems can be edited, so the agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance from structured records, not from formatting:
-- **Whether OPSILUME drafted the document:** the `postmortem.create` audit entry written when it was drafted. That is the only way a postmortem is linked to an incident through the API, and audit entries are never edited.
-- **Where each piece of text came from:** passages of the retrieved chunk are matched against the stored source records themselves. Text is compared after normalising whitespace and case, in overlapping windows of 48 characters, so a passage split across two chunks is found in each part long enough to hold a window. Renaming, removing or reordering headings, and where a chunk starts, do not change the answer. The heading is one more signal, never the only one.
+Before summaries were built from the assessment, an investigation's summary was a model's own narrative. Postmortems can be edited, so the agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance from stored records, not from formatting.
 
-| Chunk of a drafted postmortem | `provenance` | `provenanceBasis` | Given to the agent as |
+**Whether OPSILUME drafted the document.** A postmortem counts as drafted when either of these holds:
+- it is linked to an incident, which through the API only the generator does;
+- there is a `postmortem.create` audit entry for it.
+
+Either is enough. Audit writes are best-effort (a failed write is logged, not retried), so the incident link keeps a drafted postmortem from reading as written by people when its audit entry is missing. The seeded demo postmortem is linked to its incident, so it is treated as drafted.
+
+**Where each piece of text came from.** The chunk is split into the pieces the template assembled: a line; a timeline entry's message; a hypothesis or action line's parts. Each piece is attributed:
+- **template:** headings, the summary fields, placeholders;
+- **AI:** contained in what an investigation reported, or sharing a 48-character window with it. The template's "Analysis by … These are hypotheses" line and "AI investigation completed" lines are AI markers;
+- **people:** contained in what was recorded on the incident;
+- **unmatched:** anything else.
+
+Text is compared after normalising whitespace, case and Markdown emphasis. Pieces with fewer than four letters or digits say nothing and are skipped. Text found in both an AI record and a people record counts as AI. Renaming, removing or reordering headings, and where a chunk starts, do not change the answer; a piece cut at a chunk edge is still contained in the record it came from.
+
+| Pieces in the chunk | `provenance` | `provenanceBasis` | Given to the agent as |
 |---|---|---|---|
-| Matches only what people recorded on the incident | `document` | `incident_record` | As written: usable operational knowledge, such as the resolution steps |
-| Matches what an AI investigation reported, and nothing people recorded | `earlier_ai_output` | `source_match` (or `heading`) | Labelled "[Earlier AI output, not evidence …]", as historical and unverified when it is a model's text rather than the verified summary; the incident's current verified assessment attached separately |
-| Matches both | `contains_earlier_ai_output` | `source_match` (or `heading`) | Each AI paragraph labelled "[earlier AI output, unverified]" where it stands; the rest as written |
-| Matches no stored source (edited or paraphrased text, a template line, sources no longer stored) | `unknown` | `unmatched` | Labelled "[Origin unknown, not evidence …]" |
+| Every substantive piece is something people recorded | `document` | `incident_record` | As written: usable operational knowledge, such as the resolution steps |
+| Some AI pieces, no people pieces | `earlier_ai_output` | `source_match` (or `heading` when only the template's markers identify it) | Labelled "[Earlier AI output, not evidence …]", as historical and unverified when it contains a model's own summary or narrative; the incident's current verified assessment attached separately |
+| AI pieces and people pieces | `contains_earlier_ai_output` | as above | Each AI line labelled "[earlier AI output, unverified]" where it stands |
+| No AI piece, and at least one unmatched piece, even beside people's text | `unknown` | `unmatched` | Labelled "[Origin unknown, not evidence …]" |
+| Template lines only | `unknown` | `template_only` | Labelled as template text, not evidence |
 
-Any document OPSILUME did not draft (runbooks, guides, postmortems people wrote, the seeded demo postmortem) is `document` (`not_generated`).
+A document is `document` only when every substantive piece of it is attributed to what people recorded. A partial match never makes a chunk trusted. Any document OPSILUME did not draft (runbooks, guides, postmortems people wrote without an incident link) is `document` (`not_generated`).
 
-**Only `document` can support anything.** This is an allowlist in both services:
-- earlier AI output, text of unknown origin, and a missing or unrecognised provenance may be read and cited, never as support;
-- a postmortem result that carries no provenance at all is `unknown` in the AI service.
+**What can support a report.** Only knowledge text whose provenance is explicitly `document`. This is an allowlist in both services: earlier AI output, unknown origin, and a missing or unrecognised provenance may be read and cited, never as support. A postmortem result that carries no provenance is `unknown` in the AI service.
 
 In both guardrail passes:
 - a hypothesis citing only such text is capped at `unsupportedHypothesisCap` and is not likely;
 - a "fact" resting only on it becomes an assumption;
 - a production change resting only on it is withdrawn (`withdrawalReasons.earlierAiOutput`, a shared guardrail case).
 
-It can never make an outcome INCIDENT, because the assessment counts only evidence that can be a cause, and a knowledge document is not one. The rule-based engine does not let it corroborate a mechanism or suggest a "documented procedure", and the system prompt says it is not evidence. Neither the stored document nor any database row is changed.
+The figure checker (`services/ai/app/claims.py`) uses only evidence that can support anything. A number or timestamp that appears only in such text is never "exact": it is reported as appearing in no collected evidence. It can never make an outcome INCIDENT, because the assessment counts only evidence that can be a cause, and a knowledge document is not one. The rule-based engine does not let it corroborate a mechanism or suggest a "documented procedure", and the system prompt says it is not evidence. Neither the stored document nor any database row is changed.
 
 Limits:
-- **Matching recognises copied text, not meaning.** Model text that a person rewrote in their own words matches nothing, and is then `unknown`: not evidence, but not identified as AI output either. Text copied into a new document by hand loses the generator record, and reads as written by people.
-- **Chunk edges.** A fragment shorter than 48 characters left at a chunk boundary is not matched by itself. The chunk is still classified by the rest of its text, and is `unknown` if nothing else matches.
-- **"Historical" is approximate.** It means the chunk contains a model's own text, or does not contain the verified summary.
+- **The API trusts the AI service's label at its boundary.** The API computes provenance when the agent searches. When the report comes back, its guardrail pass reads the provenance on each evidence item as the AI service recorded it, and does not recompute it or compare it with what the search returned. Anything other than `document` is treated as not evidence there.
+- **Audit entries can be missing.** Audit writes are best-effort. The incident link is the second signal; a drafted postmortem that lost both would read as written by people. Through the API that cannot happen: the link is set when it is drafted and cannot be removed, and incidents cannot be deleted.
+- **Matching recognises copied text, not meaning.** Model text that a person rewrote in their own words matches nothing, and is then `unknown`: not evidence, but not identified as AI output either. Text copied by hand into a new, unlinked document reads as written by people.
+- **Conservative by construction.** Text people wrote in a drafted postmortem that is not in an incident record (added later, or reworded) makes its chunk `unknown`. This includes the seeded demo postmortem's prose. Such text is still readable; it just supports nothing.
+- **"Historical" is approximate.** It means the chunk contains a model's own summary or narrative, or was identified only by the template's markers.
 - **Only the agent's search is labelled.** People see documents as written.
-- **No new column.** A stored per-chunk provenance field would need a migration and a backfill; none was added. The audit entry and the source records are the structured provenance.
-- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced does not depend on the model reading the label: the allowlist in both guardrail passes and the rule-based exclusion.
+- **No new column.** A stored per-chunk provenance field would need a migration and a backfill; none was added. The incident link, the audit entry and the source records are the structured provenance.
+- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced does not depend on the model reading the label: the allowlist in both guardrail passes, the figure checker and the rule-based exclusion.
 
 **Copies made before.**
 
@@ -342,7 +355,7 @@ Limits:
 | Investigation detail, list, incident page and its completion entry, remediation actions, dashboard | Yes | Derived from the stored report at each read (section 4b and above) |
 | Postmortem drafted from now on | Yes | Built from the same view |
 | Postmortem drafted before, as shown to people | No | A document people may have edited and shared. It is not rewritten. |
-| Postmortem drafted before, as given to the investigation agent | Labelled when read, not rewritten | Classified from the generator's audit entry and the stored source records ("Earlier AI output in the knowledge base") |
+| Postmortem drafted before, as given to the investigation agent | Labelled when read, not rewritten | Classified from the incident link, the generator's audit entry and the stored source records ("Earlier AI output in the knowledge base") |
 | In-app notification already delivered | No | A delivered message is not rewritten. Its body may quote an older model summary |
 | Audit log | No | A record of what happened at the time |
 
@@ -381,7 +394,12 @@ Other files:
   - with model text split across chunks;
   - with their sources deleted (then `unknown`);
   - with findings and a resolution in one chunk;
-  - without a generator record (as the seed writes them).
+  - with a lost audit entry but an incident link;
+  - the seeded demo postmortem itself, read from `prisma/seed.ts` (no chunk is `document`);
+  - people's text mixed with paraphrased AI text, with AI text shorter than the matching window, with short unmatched text, or with text from a deleted investigation (never `document`);
+  - a chunk entirely from people's records (`document`), and template lines only (`unknown`, `template_only`);
+  - an unlinked postmortem without an audit entry (`document`).
+- `services/ai/tests/test_knowledge_provenance.py` also checks that a figure appearing only in earlier AI output, unknown, missing or unrecognised provenance is never "exact", while one in a trusted document is. It also checks that unknown and missing provenance support no hypothesis, fact, corroboration or production change.
 
   It also runs a report through the API whose hypotheses, facts and production change rest only on earlier AI output, text of unknown origin, or text with no provenance.
 - `reconciliation.test.ts` also walks reconcile, retry and execute, with each current rule refusing in turn (changed content, a risk below the floor, an expired approval, a source that no longer supports it), and concurrent retries and executions resulting in exactly one webhook call.

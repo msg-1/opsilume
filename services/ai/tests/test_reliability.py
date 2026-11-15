@@ -204,7 +204,8 @@ def test_action_effect_follows_what_the_action_does_not_what_it_is_called():
 def test_guardrails_label_each_action_and_treat_a_runbook_flush_as_a_production_change():
     store = EvidenceStore()
     store.add("log_pattern", "300× ERROR in svc (new pattern)", "boom", source_type="log_pattern", source_id="fp", service="svc", occurred_at=t(20), data={"level": "ERROR", "count": 300, "kind": "new"})
-    store.add("document", "Runbook: cache", "Flush or roll back.", source_type="knowledge_chunk", source_id="k1")
+    # As the knowledge extractor records a runbook: written by people (evidence.py, provenance_of).
+    store.add("document", "Runbook: cache", "Flush or roll back.", source_type="knowledge_chunk", source_id="k1", data={"provenance": "document"})
     store.add("service_event", "Flag enabled", "x", source_type="service_event", source_id="e1", service="svc")
     store.add("deployment", "Deployment of svc v2 (succeeded)", "x", source_type="deployment", source_id="d1", service="svc", occurred_at=t(30), data={"version": "v2", "status": "SUCCEEDED"})
     report = InvestigationReport(
