@@ -23,7 +23,7 @@ npm run contracts:check    # the same, then fail if anything changed (what CI do
 | File | Run by | What it pins down |
 |---|---|---|
 | `fixtures/action-effects.json` | `services/ai/tests/test_reliability.py`, `apps/api/tests/safety.test.ts` | 25 actions and the effect each must be given |
-| `fixtures/guardrail-cases.json` | `services/ai/tests/test_contracts.py`, `apps/api/tests/contract.test.ts` | Guardrail behaviour both implementations must show: invented citations removed, an unsupported hypothesis capped, a change resting on an unlikely hypothesis withdrawn, a rollback judged by the deployment it rolls back, a high-risk alternative moved to next steps, no production change without an incident |
+| `fixtures/guardrail-cases.json` | `services/ai/tests/test_contracts.py`, `apps/api/tests/contract.test.ts` | Guardrail behaviour both implementations must show: invented citations removed, an unsupported hypothesis capped, a change resting on an unlikely hypothesis withdrawn, a rollback judged by the deployment it rolls back, a high-risk alternative moved to next steps, no production change without an incident, no hypothesis rated likely when the outcome is DEGRADED |
 | `fixtures/span-scrubbing.json` | `services/ai/tests/test_tracing.py`, `apps/api/tests/tracing.test.ts` | What may leave a process inside a span: credentials, personal identifiers, query strings and statements are dropped or masked, the same way in both services |
 | `fixtures/report.contract.json` | written by `services/ai/tests/test_agent.py`, read by `apps/api/tests/contract.test.ts` | A complete report as the AI service really emits it; the API must accept it and keep every field |
 
@@ -31,7 +31,7 @@ npm run contracts:check    # the same, then fail if anything changed (what CI do
 
 The API applies its guardrails to whatever the AI service returns, independently. That second pass is deliberate (a report might arrive that was never checked) and stays. What is shared is the definition: the limits and wording come from `guardrails.json`, the effect rules from `action-effects.json`, and the behaviour is pinned by the same cases on both sides.
 
-Rules only the AI service applies, because only it holds the full evidence while the report is written: the outcome assessment, rollback-target validation against deployment evidence, and the checking of figures. The API re-applies: citation resolution, the cap on unsupported hypotheses, the overall confidence ceiling, action effects, and the three withdrawal rules.
+Rules only the AI service applies, because only it holds the full evidence while the report is written: the outcome assessment, rollback-target validation against deployment evidence, and the checking of figures. The API re-applies: citation resolution, the cap on unsupported hypotheses, the unestablished-cause cap under a DEGRADED outcome (using the assessment's outcome, or the report's when no assessment came), the overall confidence ceiling, action effects, and the three withdrawal rules.
 
 ## Changing a contract
 

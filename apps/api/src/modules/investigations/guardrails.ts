@@ -9,6 +9,8 @@ export type StepInput = Extract<InvestigationEvent, { type: 'step' }>['step'];
  * Server-side guardrails, applied regardless of what the model produced:
  *  - every evidence reference must point at evidence that was actually collected;
  *  - a hypothesis with no supporting evidence cannot be rated "likely" and its confidence is capped;
+ *  - when the outcome is DEGRADED (the cause is not established) no hypothesis is rated "likely",
+ *    and each is capped at the unestablished-cause cap;
  *  - overall confidence cannot exceed the best-supported hypothesis;
  *  - what each action would do is decided here from its type and text;
  *  - a production change resting on a hypothesis rated unlikely is withdrawn;
@@ -31,12 +33,20 @@ export async function applyGuardrails(
     if (kept.length !== list.length) notes.push(`Removed ${list.length - kept.length} reference(s) to non-existent evidence from ${where}.`);
     return kept;
   };
+  // The outcome as the AI service assessed it, or as the report states it when no assessment came.
+  const outcome = report.assessment?.outcome ?? report.outcome;
   const hypotheses = report.hypotheses.map((h) => {
     const evidence = clean(h.evidenceRefs, `hypothesis "${h.title}"`);
     let { confidence, status } = h;
     if (!evidence.length) {
       if (confidence > LIMITS.unsupportedHypothesisCap || status === 'likely') notes.push(`Hypothesis "${h.title}" has no supporting evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.`);
       confidence = Math.min(confidence, LIMITS.unsupportedHypothesisCap);
+      if (status === 'likely') status = 'possible';
+    }
+    // DEGRADED means the cause is not established; "likely" would claim that it is.
+    if (outcome === 'DEGRADED' && (confidence > LIMITS.unestablishedCauseCap || status === 'likely')) {
+      notes.push(LIMITS.unestablishedCauseNote.replace('{title}', h.title.slice(0, 60)).replace('{cap}', String(LIMITS.unestablishedCauseCap)));
+      confidence = Math.min(confidence, LIMITS.unestablishedCauseCap);
       if (status === 'likely') status = 'possible';
     }
     return { ...h, evidenceRefs: evidence, contradictingEvidenceRefs: clean(h.contradictingEvidenceRefs, `the evidence against "${h.title}"`), confidence, status };
@@ -90,7 +100,6 @@ export async function applyGuardrails(
     return false;
   });
   // 1b. Without an incident and an established cause, nothing justifies changing production.
-  const outcome = result.assessment?.outcome ?? result.outcome;
   if (outcome && outcome !== LIMITS.outcomeAllowingProductionChanges) {
     result.recommendedActions = result.recommendedActions.filter((a) => {
       if (a.effect !== 'state_changing') return true;

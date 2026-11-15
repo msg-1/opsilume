@@ -41,6 +41,8 @@ GUARDRAIL_LIMITS: dict[str, Any] = {
     "unsupportedHypothesisCap": 0.3,
     "noFaultHypothesisCap": 0.2,
     "likelyMinimumConfidence": 0.5,
+    "unestablishedCauseCap": 0.45,
+    "unestablishedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the outcome is DEGRADED, so the cause is not established.",
     "maxRecommendedActions": 4,
     "outcomeAllowingProductionChanges": "INCIDENT",
     "withdrawalReasons": {

@@ -85,6 +85,13 @@ describe('shared contracts', () => {
     expect(generated.ACTION_EFFECT_RULES).toEqual(readContract('action-effects.json'));
   });
 
+  it('the unestablished-cause cap is shared and sits strictly below the likely threshold', async () => {
+    const { GUARDRAIL_LIMITS } = await import('../src/generated/contracts');
+    const json = readContract('guardrails.json') as { unestablishedCauseCap: number; likelyMinimumConfidence: number };
+    expect(GUARDRAIL_LIMITS.unestablishedCauseCap).toBe(json.unestablishedCauseCap);
+    expect(GUARDRAIL_LIMITS.unestablishedCauseCap).toBeLessThan(GUARDRAIL_LIMITS.likelyMinimumConfidence);
+  });
+
   it("the API's report schema describes the same report as the AI service's", () => {
     const theirs = describeSchema(readContract('report.schema.json'));
     const ours = describeSchema(z.toJSONSchema(reportSchema, { io: 'input' }) as Json);
@@ -139,6 +146,36 @@ describe('shared contracts', () => {
     if (e.maxConfidence !== undefined) expect(result.confidence).toBeLessThanOrEqual(e.maxConfidence);
     if (e.facts) expect(result.facts.map((f) => f.statement)).toEqual(e.facts);
     for (const text of e.assumptionsContain ?? []) expect(result.assumptions).toContain(text);
+  });
+
+  // The DEGRADED rule at the API boundary, beyond the shared case: it does not depend on the AI
+  // service having applied it, and it leaves an incident alone.
+  const degraded = cases.find((c) => c.name.startsWith('under DEGRADED'))!;
+  const variant = (change: (r: Record<string, unknown>) => void) => {
+    const report = structuredClone(degraded.report) as Record<string, unknown>;
+    change(report);
+    return reportSchema.parse(report);
+  };
+  const known = new Set(degraded.evidence.map((e) => e.ref));
+
+  it('caps a DEGRADED report that arrives with only its outcome, no assessment, and says why', async () => {
+    const steps: { detail?: string | null }[] = [];
+    const result = await applyGuardrails(variant((r) => delete r.assessment), known, async (s) => steps.push(s));
+    expect(result.hypotheses.map((h) => [h.status, h.confidence])).toEqual([['possible', 0.45], ['possible', 0.3]]);
+    expect(result.confidence).toBe(0.45);
+    expect(steps.map((s) => s.detail).join('\n')).toContain('the outcome is DEGRADED, so the cause is not established');
+  });
+
+  it('uses the assessed outcome over the outcome the report claims', async () => {
+    const result = await applyGuardrails(variant((r) => (r.outcome = 'INCIDENT')), known, async () => undefined);
+    expect(result.hypotheses[0]).toMatchObject({ status: 'possible', confidence: 0.45 });
+  });
+
+  it('leaves a likely hypothesis alone when the outcome is an incident', async () => {
+    const incident = { outcome: 'INCIDENT', confidence: 0.9, rationale: 'r', supportingRefs: [], signals: [], missingTelemetry: [] };
+    const result = await applyGuardrails(variant((r) => { r.outcome = 'INCIDENT'; r.assessment = incident; }), known, async () => undefined);
+    expect(result.hypotheses[0]).toMatchObject({ status: 'likely', confidence: 0.5 });
+    expect(result.confidence).toBe(0.5);
   });
 });
 

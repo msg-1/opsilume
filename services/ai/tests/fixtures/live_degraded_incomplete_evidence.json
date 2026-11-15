@@ -1,0 +1,468 @@
+{
+ "$comment": "Model output saved by the first live evaluation of Milestone 10 (15 November 2026, claude-haiku-5-5, run 20261115T082338Z). Synthetic scenario data only. Copied, not edited: the report is exactly as the model wrote it, before any guardrail. It failed root_cause and calibration: a hypothesis rated likely at 0.50 under a DEGRADED outcome.",
+ "scenario": "degraded_incomplete_evidence",
+ "reportBeforeGuardrails": {
+  "summary": "search-api is measurably slower and erroring more than in the preceding two hours: p95 latency averaged 540ms against 395ms, and error rate averaged 0.4% against 0.3% (E1, E2). The only onset signal is a new error pattern, \"upstream timeout after <n>ms calling index-node\", seen six times between 11:25Z and 11:59Z with no baseline (E3, E6). The leading explanation is that index-node is slow or timing out, which is causing search-api's calls to it to exceed their 2000ms timeout, but this is unconfirmed because no index-node telemetry or traces were available for the window. Index-node is recorded as HEALTHY (E4), but that is a current-state catalogue reading, not evidence of its health during 10:00Z to 12:00Z. I am about 50% confident in the leading hypothesis, since timing and mechanism match but the index-node side is unobserved, so this is DEGRADED rather than INCIDENT.",
+  "confidence": 0.5,
+  "analysisMode": "llm",
+  "rootCauseConfirmed": false,
+  "outcome": "DEGRADED",
+  "assessment": null,
+  "observations": [
+   {
+    "statement": "Both search-api and index-node are recorded as HEALTHY with no alert firing, but this is the current catalogue state and does not show their health during the investigation window.",
+    "evidenceRefs": [
+     "E4",
+     "E5"
+    ],
+    "verification": null
+   }
+  ],
+  "integrity": null,
+  "timeline": [
+   {
+    "timestamp": "2026-06-01T10:00:00Z",
+    "description": "Start of the investigation window; the metric averages for search-api cover 10:00Z to 12:00Z.",
+    "evidenceRefs": [
+     "E1",
+     "E2"
+    ]
+   },
+   {
+    "timestamp": "2026-06-01T11:25:00Z",
+    "description": "First occurrence of the new search-api error pattern 'upstream timeout after <n>ms calling index-node'; baseline count was 0.",
+    "evidenceRefs": [
+     "E3"
+    ]
+   },
+   {
+    "timestamp": "2026-06-01T11:46:00Z",
+    "description": "search-api ERROR log reads 'upstream timeout after 2000ms calling index-node'.",
+    "evidenceRefs": [
+     "E6"
+    ]
+   },
+   {
+    "timestamp": "2026-06-01T11:59:00Z",
+    "description": "Last occurrence of the index-node timeout error pattern in the window.",
+    "evidenceRefs": [
+     "E3"
+    ]
+   }
+  ],
+  "facts": [
+   {
+    "statement": "search-api latency_p95_ms averaged 540ms (max 702ms) between 10:00Z and 12:00Z, versus 395ms in the preceding window.",
+    "evidenceRefs": [
+     "E1"
+    ],
+    "verification": null
+   },
+   {
+    "statement": "search-api error_rate averaged 0.4% (max 0.52%) between 10:00Z and 12:00Z, versus 0.3% in the preceding window.",
+    "evidenceRefs": [
+     "E2"
+    ],
+    "verification": null
+   },
+   {
+    "statement": "A new log pattern 'upstream timeout after <n>ms calling index-node' appeared in search-api six times, first seen at 11:25Z and last seen at 11:59Z, with a baseline count of 0.",
+    "evidenceRefs": [
+     "E3"
+    ],
+    "verification": null
+   },
+   {
+    "statement": "A search-api ERROR log at 11:46Z reads 'upstream timeout after 2000ms calling index-node'.",
+    "evidenceRefs": [
+     "E6"
+    ],
+    "verification": null
+   },
+   {
+    "statement": "The service catalogue records index-node as HEALTHY with no alert firing (current state, not a historical record).",
+    "evidenceRefs": [
+     "E4"
+    ],
+    "verification": null
+   },
+   {
+    "statement": "The service catalogue records search-api as HEALTHY with no alert firing (current state, not a historical record).",
+    "evidenceRefs": [
+     "E5"
+    ],
+    "verification": null
+   }
+  ],
+  "assumptions": [
+   "The 2000ms timeout in the error log is the configured search-api timeout for the index-node call.",
+   "The catalogue health entries (E4, E5) reflect the current state, not the state during 10:00Z to 12:00Z.",
+   "The window averages in E1 and E2 are representative of the whole window, so the onset within the window is unknown."
+  ],
+  "uncertainties": [
+   "No index-node latency, error rate, saturation or logs were available for the window, so index-node's own behaviour is unknown.",
+   "No distributed traces were available, so time spent in search-api versus the index-node call cannot be separated.",
+   "Request volume for search-api was not checked, so a traffic shift has not been ruled in or out.",
+   "Deployment, configuration and flag lookups for search-api and index-node from 06:00Z to 12:00Z returned nothing. These results are not in the evidence catalogue and are not cited.",
+   "No historical health record for index-node exists for the window.",
+   "The metric averages do not show when within the window the latency rise began; the timeout errors start at 11:25Z, which is after the window start.",
+   "A log histogram result for the window was inconsistent with the search-api errors, so it was not relied on."
+  ],
+  "hypotheses": [
+   {
+    "title": "index-node is slow or timing out, so search-api calls to it exceed the 2000ms timeout",
+    "description": "Mechanism: index-node slows or starts failing from about 11:25Z. search-api waits on its synchronous call, hits the 2000ms timeout, and the time and errors show up as higher p95 latency and error rate. The new timeout errors (E3, E6) match this mechanism and the latency and error rise (E1, E2). It is not confirmed because index-node has no telemetry in the window.",
+    "confidence": 0.5,
+    "status": "likely",
+    "evidenceRefs": [
+     "E1",
+     "E2",
+     "E3",
+     "E6"
+    ],
+    "contradictingEvidenceRefs": [
+     "E4"
+    ],
+    "contradictions": [
+     "The catalogue records index-node as HEALTHY (E4). This is a current-state reading and does not establish its health at 11:25Z, so it is weak counter-evidence rather than a real contradiction.",
+     "The latency rise is a window average, so it is not clear that it began at 11:25Z."
+    ],
+    "facts": [],
+    "assumptions": [
+     "The timeout errors are caused by index-node response time rather than network or client issues.",
+     "index-node is a synchronous dependency of search-api."
+    ],
+    "gaps": [
+     "index-node latency, error rate, saturation and logs for 10:00Z to 12:00Z, especially from 11:00Z.",
+     "Distributed traces or other timing data that split search-api time from index-node time.",
+     "A historical health record for index-node in the window."
+    ]
+   },
+   {
+    "title": "Traffic or load shift on search-api",
+    "description": "Mechanism: a rise in request volume or a change in query mix increases load on search-api or index-node, producing gradual latency growth and occasional timeouts without any deployment.",
+    "confidence": 0.2,
+    "status": "possible",
+    "evidenceRefs": [
+     "E1",
+     "E2"
+    ],
+    "contradictingEvidenceRefs": [],
+    "contradictions": [
+     "The timeout errors are specific to the index-node call, which a general traffic shift would not necessarily explain.",
+     "No traffic metric was retrieved, so this has not been checked directly."
+    ],
+    "facts": [],
+    "assumptions": [
+     "Request volume rose during the window, which has not been verified."
+    ],
+    "gaps": [
+     "search-api request volume for 10:00Z to 12:00Z against the preceding baseline.",
+     "index-node request volume and saturation over the same period."
+    ]
+   },
+   {
+    "title": "A search-api-side change not recorded as a deployment, configuration or flag event",
+    "description": "Mechanism: an unrecorded change inside search-api, such as a client library, connection pool or timeout setting, changes how it calls index-node and produces the timeouts.",
+    "confidence": 0.1,
+    "status": "unlikely",
+    "evidenceRefs": [
+     "E3"
+    ],
+    "contradictingEvidenceRefs": [],
+    "contradictions": [
+     "No recorded change exists to support this, and the error pattern is specific to index-node calls."
+    ],
+    "facts": [],
+    "assumptions": [
+     "Changes made outside the recorded deployment, configuration and flag systems exist."
+    ],
+    "gaps": [
+     "A change log for search-api outside the recorded systems.",
+     "search-api client configuration history for the window."
+    ]
+   }
+  ],
+  "nextSteps": [
+   "Pull index-node's own latency, error rate, saturation and logs for 10:00Z to 12:00Z, starting around 11:00Z, to see whether it slowed or saturated at about 11:25Z.",
+   "Connect a trace store or enable tracing on the search-api to index-node call, so the next investigation can see where time is lost.",
+   "Check search-api request volume against the baseline to rule a traffic shift in or out.",
+   "Confirm whether the 2000ms timeout toward index-node is the intended setting, since the timeout errors are the most specific signal available.",
+   "Check for any change outside the recorded deployment, configuration and flag systems that affects search-api's calls to index-node.",
+   "Look for index-node's historical health record for the window, not the current catalogue state."
+  ],
+  "recommendedActions": []
+ },
+ "evidence": [
+  {
+   "ref": "E1",
+   "kind": "metric",
+   "title": "p95 latency for search-api up 37%",
+   "summary": "latency_p95_ms averaged 540ms (max 702ms) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 395ms in the preceding window",
+   "sourceType": "metric",
+   "sourceId": "search-api:latency_p95_ms:2026-06-01T10:00:00Z",
+   "occurredAt": "2026-06-01T10:00:00Z",
+   "relevance": null,
+   "service": "search-api",
+   "data": {
+    "metric": "latency_p95_ms",
+    "unit": "ms",
+    "changePercent": 36.7,
+    "fromZero": false,
+    "avg": 540,
+    "max": 702.0,
+    "min": 324.0,
+    "baselineAvg": 395
+   }
+  },
+  {
+   "ref": "E2",
+   "kind": "metric",
+   "title": "Error rate for search-api up 33%",
+   "summary": "error_rate averaged 0.4% (max 0.52%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.3% in the preceding window",
+   "sourceType": "metric",
+   "sourceId": "search-api:error_rate:2026-06-01T10:00:00Z",
+   "occurredAt": "2026-06-01T10:00:00Z",
+   "relevance": null,
+   "service": "search-api",
+   "data": {
+    "metric": "error_rate",
+    "unit": "%",
+    "changePercent": 33.3,
+    "fromZero": false,
+    "avg": 0.4,
+    "max": 0.52,
+    "min": 0.24,
+    "baselineAvg": 0.3
+   }
+  },
+  {
+   "ref": "E3",
+   "kind": "log_pattern",
+   "title": "6× ERROR in search-api (new pattern)",
+   "summary": "\"upstream timeout after <n>ms calling index-node\" — first seen 2026-06-01T11:25:00Z, last seen 2026-06-01T11:59:00Z; baseline count 0",
+   "sourceType": "log_pattern",
+   "sourceId": "f61:svc_search-api",
+   "occurredAt": "2026-06-01T11:25:00Z",
+   "relevance": null,
+   "service": "search-api",
+   "data": {
+    "fingerprint": "f61",
+    "count": 6,
+    "level": "ERROR",
+    "firstSeen": "2026-06-01T11:25:00Z",
+    "lastSeen": "2026-06-01T11:59:00Z",
+    "kind": "new",
+    "ratio": null,
+    "baselineCount": 0,
+    "sample": "upstream timeout after <n>ms calling index-node",
+    "serviceId": "svc_search-api"
+   }
+  },
+  {
+   "ref": "E4",
+   "kind": "service_health",
+   "title": "index-node is recorded as HEALTHY",
+   "summary": "Health status of Index Node in the service catalogue. No alert is firing.",
+   "sourceType": "service_health",
+   "sourceId": "svc_index-node",
+   "occurredAt": null,
+   "relevance": null,
+   "service": "index-node",
+   "data": {
+    "health": "HEALTHY",
+    "firingAlerts": 0,
+    "asOf": "current"
+   }
+  },
+  {
+   "ref": "E5",
+   "kind": "service_health",
+   "title": "search-api is recorded as HEALTHY",
+   "summary": "Health status of Search Api in the service catalogue. No alert is firing.",
+   "sourceType": "service_health",
+   "sourceId": "svc_search-api",
+   "occurredAt": null,
+   "relevance": null,
+   "service": "search-api",
+   "data": {
+    "health": "HEALTHY",
+    "firingAlerts": 0,
+    "asOf": "current"
+   }
+  },
+  {
+   "ref": "E6",
+   "kind": "log",
+   "title": "ERROR log from search-api",
+   "summary": "upstream timeout after 2000ms calling index-node",
+   "sourceType": "log",
+   "sourceId": "l61",
+   "occurredAt": "2026-06-01T11:46:00Z",
+   "relevance": null,
+   "service": "search-api",
+   "data": {
+    "traceId": "abc123",
+    "attributes": null,
+    "fingerprint": "fp"
+   }
+  }
+ ],
+ "toolCalls": [
+  {
+   "tool": "list_services",
+   "input": {},
+   "ok": true
+  },
+  {
+   "tool": "get_metrics",
+   "input": {
+    "service": "search-api",
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z"
+   },
+   "ok": true
+  },
+  {
+   "tool": "get_metrics",
+   "input": {
+    "service": "index-node",
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z"
+   },
+   "ok": true
+  },
+  {
+   "tool": "list_deployments",
+   "input": {
+    "from_time": "2026-06-01T06:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z",
+    "services": [
+     "search-api",
+     "index-node"
+    ]
+   },
+   "ok": true
+  },
+  {
+   "tool": "list_service_events",
+   "input": {
+    "from_time": "2026-06-01T06:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z",
+    "services": [
+     "search-api",
+     "index-node"
+    ]
+   },
+   "ok": true
+  },
+  {
+   "tool": "find_log_anomalies",
+   "input": {
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z",
+    "services": [
+     "search-api",
+     "index-node"
+    ]
+   },
+   "ok": true
+  },
+  {
+   "tool": "get_traces",
+   "input": {
+    "service": "search-api",
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z"
+   },
+   "ok": true
+  },
+  {
+   "tool": "get_service",
+   "input": {
+    "service": "index-node",
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z"
+   },
+   "ok": true
+  },
+  {
+   "tool": "get_service",
+   "input": {
+    "service": "search-api",
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z"
+   },
+   "ok": true
+  },
+  {
+   "tool": "get_log_histogram",
+   "input": {
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z",
+    "services": [
+     "search-api",
+     "index-node"
+    ],
+    "levels": [
+     "WARN",
+     "ERROR"
+    ]
+   },
+   "ok": true
+  },
+  {
+   "tool": "search_logs",
+   "input": {
+    "from_time": "2026-06-01T10:00:00Z",
+    "to_time": "2026-06-01T12:00:00Z",
+    "services": [
+     "search-api",
+     "index-node"
+    ],
+    "limit": 40
+   },
+   "ok": true
+  },
+  {
+   "tool": "search_knowledge_base",
+   "input": {
+    "query": "search-api latency upstream timeout calling index-node",
+    "service": "search-api"
+   },
+   "ok": true
+  }
+ ],
+ "knownTimes": [
+  "2026-06-01T10:00:00Z",
+  "2026-06-01T12:00:00Z",
+  "2026-06-01T12:00:00Z"
+ ],
+ "scope": [
+  "search-api",
+  "index-node"
+ ],
+ "toolFailures": [],
+ "metricServices": [
+  "search-api"
+ ],
+ "healthGaps": [],
+ "liveResult": {
+  "confidence": 0.5,
+  "topStatus": "likely",
+  "guardrailNotes": [],
+  "scores": {
+   "outcome": "pass",
+   "root_cause": "fail",
+   "service": "n/a",
+   "citations": "pass",
+   "no_invention": "pass",
+   "contradictions": "n/a",
+   "missing": "pass",
+   "calibration": "fail",
+   "diagnostics": "pass",
+   "remediation": "pass",
+   "deployment": "n/a"
+  }
+ }
+}

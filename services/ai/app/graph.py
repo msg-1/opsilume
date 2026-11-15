@@ -61,6 +61,7 @@ REPORT_INSTRUCTIONS = """Write the investigation report as structured output.
 - summary: what happened, the leading explanation, and how confident you are, in 3-6 sentences for an on-call engineer.
 - facts: only things directly shown by evidence, each with evidenceRefs.
 - outcome: HEALTHY when the evidence shows no material fault; DEGRADED when there are anomalies or warnings but no established cause; INCIDENT when a failure is evident and a cause is supported; UNDETERMINED when no telemetry could be examined. The service checks this against the evidence.
+- When the assessment outcome is DEGRADED, anomalies are present but the cause is not established. Do not classify a root-cause hypothesis as likely. Any hypothesis must remain possible and within the configured unestablished-cause confidence cap ({unestablished_cap}).
 - observations: things worth knowing that are not evidence of a fault, each with evidence references. Empty if none.
 - Figures: quote numbers exactly as the evidence gives them, with their units. If you round, calculate or estimate a value, say so in words ("about", "roughly 30 times"). Give timestamps in UTC ending in Z. Every figure is compared with the evidence you cite.
 - hypotheses: 0 to 4, ranked. Give none when the outcome is HEALTHY. For each give the causal mechanism, confidence between 0 and 1, status (likely / possible / unlikely), evidenceRefs (evidence that supports it), contradictingEvidenceRefs and contradictions (evidence that argues against it, and what does not fit), the assumptions it rests on, and gaps (missing evidence that would confirm or refute it). Include a plausible alternative you ruled down, with the reason. If nothing contradicts a hypothesis, say what you checked rather than leaving it unexamined.
@@ -70,7 +71,7 @@ REPORT_INSTRUCTIONS = """Write the investigation report as structured output.
 - nextSteps: concrete checks for a human, most valuable first.
 - recommendedActions: 0 to 3 actions a human could approve. Use rollback_deployment only when a specific deployment is implicated: set deploymentId to the sourceId of that deployment's evidence item, toVersion to the version that was running before it (get_deployment_context gives both as rollbackTarget), and serviceSlug. Do not recommend a rollback you cannot give a target version for. For other action types leave deploymentId and toVersion as empty strings. Prefer the least risky action that would mitigate. Recommend a production change only for your leading hypothesis: do not propose one as a precaution against a cause you rate unlikely, and do not add a high-risk alternative when a lower-risk action would mitigate. Describe such options in nextSteps instead. Cite evidence for each.
 
-Use only evidence references from the catalogue below."""
+Use only evidence references from the catalogue below.""".replace("{unestablished_cap}", str(guardrails.UNESTABLISHED_CAUSE_CAP))
 
 
 @dataclass
