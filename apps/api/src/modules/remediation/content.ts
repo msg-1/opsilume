@@ -20,3 +20,13 @@ export function contentHash(a: Content): string {
   const content = { type: a.type, title: a.title, description: a.description, risk: a.risk, serviceId: a.serviceId ?? null, parameters: canonical(a.parameters ?? null) };
   return createHash('sha256').update(JSON.stringify(content)).digest('hex');
 }
+
+/**
+ * The hash approvals are bound to. Normally the content hash. While the source of an AI proposal
+ * is unverified (source.ts) it is a different hash, used only by people who acknowledged that:
+ * approvals given before, or without that acknowledgement, never count for it.
+ */
+export function approvalHash(a: Content, unverifiedSource: boolean): string {
+  const plain = contentHash(a);
+  return unverifiedSource ? createHash('sha256').update(`${plain}:unverified-source-reviewed`).digest('hex') : plain;
+}

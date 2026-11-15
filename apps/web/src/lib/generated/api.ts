@@ -411,6 +411,11 @@ export interface InvestigationDetail {
     facts: string[];
     assumptions: string[];
     gaps: string[];
+    /** Present when the stored rating is above what the current rules permit for an older report: the value stored at the time. `confidence` and `status` are what may be shown now. */
+    asRecorded?: {
+      confidence: number;
+      status: string;
+    };
   }[];
   remediations: {
     id: string;
@@ -430,6 +435,8 @@ export interface InvestigationDetail {
   cacheReadTokens: number;
   llmCalls: number;
   llmLatencyMs: number;
+  /** Present when the stored overall confidence of an older report is above what the current rules permit: the value stored at the time. */
+  confidenceAsRecorded?: number;
 }
 
 export interface Evidence {
@@ -458,6 +465,11 @@ export interface Hypothesis {
   facts: string[];
   assumptions: string[];
   gaps: string[];
+  /** Present when the stored rating is above what the current rules permit for an older report: the value stored at the time. `confidence` and `status` are what may be shown now. */
+  asRecorded?: {
+    confidence: number;
+    status: string;
+  };
 }
 
 export interface Step {
@@ -669,6 +681,12 @@ export interface Remediation {
   effectReasons: string[] | null;
   /** Hash of exactly what an approver is shown; sent back with the approval */
   currentHash: string;
+  /** For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource) */
+  sourceReview: {
+    required: boolean;
+    verified: boolean;
+    reasons: string[];
+  };
   attempts: number;
   service: {
     id: string;
@@ -696,8 +714,10 @@ export interface Remediation {
       id: string;
       name: string;
     } | null;
-    /** Whether this approval still counts: it was given for the current content and has not been superseded */
+    /** Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver */
     counts: boolean;
+    /** An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS) */
+    expired: boolean;
     supersededAt: string | null;
   }[];
   createdAt: string;
@@ -744,6 +764,12 @@ export interface RemediationDetail {
   effectReasons: string[] | null;
   /** Hash of exactly what an approver is shown; sent back with the approval */
   currentHash: string;
+  /** For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource) */
+  sourceReview: {
+    required: boolean;
+    verified: boolean;
+    reasons: string[];
+  };
   attempts: number;
   service: {
     id: string;
@@ -771,8 +797,10 @@ export interface RemediationDetail {
       id: string;
       name: string;
     } | null;
-    /** Whether this approval still counts: it was given for the current content and has not been superseded */
+    /** Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver */
     counts: boolean;
+    /** An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS) */
+    expired: boolean;
     supersededAt: string | null;
   }[];
   createdAt: string;
@@ -822,6 +850,12 @@ export interface RemediationList {
     effectReasons: string[] | null;
     /** Hash of exactly what an approver is shown; sent back with the approval */
     currentHash: string;
+    /** For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource) */
+    sourceReview: {
+      required: boolean;
+      verified: boolean;
+      reasons: string[];
+    };
     attempts: number;
     service: {
       id: string;
@@ -849,8 +883,10 @@ export interface RemediationList {
         id: string;
         name: string;
       } | null;
-      /** Whether this approval still counts: it was given for the current content and has not been superseded */
+      /** Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver */
       counts: boolean;
+      /** An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS) */
+      expired: boolean;
       supersededAt: string | null;
     }[];
     createdAt: string;
@@ -888,8 +924,10 @@ export interface Approval {
     id: string;
     name: string;
   } | null;
-  /** Whether this approval still counts: it was given for the current content and has not been superseded */
+  /** Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver */
   counts: boolean;
+  /** An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS) */
+  expired: boolean;
   supersededAt: string | null;
 }
 

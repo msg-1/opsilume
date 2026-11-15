@@ -123,6 +123,10 @@ export const Hypothesis = z.object({
   facts: z.array(z.string()),
   assumptions: z.array(z.string()),
   gaps: z.array(z.string()),
+  asRecorded: z
+    .object({ confidence: z.number(), status: z.string() })
+    .optional()
+    .describe('Present when the stored rating is above what the current rules permit for an older report: the value stored at the time. `confidence` and `status` are what may be shown now.'),
 });
 
 export const Step = z.object({
@@ -169,6 +173,7 @@ export const InvestigationDetail = InvestigationSummary.omit({ _count: true }).e
   cacheReadTokens: z.number(),
   llmCalls: z.number(),
   llmLatencyMs: z.number(),
+  confidenceAsRecorded: z.number().optional().describe('Present when the stored overall confidence of an older report is above what the current rules permit: the value stored at the time.'),
 });
 
 export const ExecutionResult = z.object({
@@ -187,7 +192,8 @@ export const Approval = z.object({
   comment: z.string().nullable(),
   createdAt: timestamp,
   approver: Ref.nullable(),
-  counts: z.boolean().describe('Whether this approval still counts: it was given for the current content and has not been superseded'),
+  counts: z.boolean().describe('Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver'),
+  expired: z.boolean().describe('An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS)'),
   supersededAt: timestamp.nullable(),
 });
 
@@ -206,6 +212,9 @@ export const Remediation = RemediationSummary.extend({
   executionResult: ExecutionResult.nullable(),
   effectReasons: z.array(z.string()).nullable(),
   currentHash: z.string().describe('Hash of exactly what an approver is shown; sent back with the approval'),
+  sourceReview: z
+    .object({ required: z.boolean(), verified: z.boolean(), reasons: z.array(z.string()) })
+    .describe('For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource)'),
   attempts: z.number(),
   service: ServiceRef.nullable(),
   incident: z.object({ id: z.string(), number: z.number(), title: z.string(), severity: z.string(), status: z.string() }).nullable(),

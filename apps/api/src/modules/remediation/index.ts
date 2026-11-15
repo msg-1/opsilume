@@ -15,6 +15,11 @@
  * service and parameters. Editing an action supersedes its approvals and returns it to PROPOSED.
  * Execution recomputes the hash and counts only approvals given for that hash.
  *
+ * Current rules. On submission, approval and execution the risk is re-derived (raised, never
+ * lowered), approvals count only within REMEDIATION_APPROVAL_VALIDITY_HOURS and once per approver,
+ * and the investigation behind an AI proposal is checked again; one that no longer supports a
+ * production change requires a fresh, acknowledged human review (source.ts, safeguards.ts).
+ *
  * Outcome. A webhook that times out or fails mid-flight leaves the outcome UNKNOWN, and the
  * record says so. Such an action can be retried only after a human confirms the change was not
  * applied; the idempotency key stays the same across attempts so a receiver can refuse a repeat.
@@ -25,6 +30,8 @@
  *   content.ts     action hashing
  *   effect.ts      effect classification, risk floor, approvals required
  *   approvals.ts   approval management and binding
+ *   source.ts      whether the investigation behind an AI proposal still supports it
+ *   safeguards.ts  raising the risk, and sending an action back for a fresh review
  *   execution.ts   webhook dispatch and manual attestation
  *   recording.ts   recording the outcome and its effect on the service history
  *   presenter.ts   loading an action and shaping the response

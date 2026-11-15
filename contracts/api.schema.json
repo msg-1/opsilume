@@ -2382,6 +2382,23 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "asRecorded": {
+                "description": "Present when the stored rating is above what the current rules permit for an older report: the value stored at the time. `confidence` and `status` are what may be shown now.",
+                "type": "object",
+                "properties": {
+                  "confidence": {
+                    "type": "number"
+                  },
+                  "status": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "confidence",
+                  "status"
+                ],
+                "additionalProperties": false
               }
             },
             "required": [
@@ -2477,6 +2494,10 @@
           "type": "number"
         },
         "llmLatencyMs": {
+          "type": "number"
+        },
+        "confidenceAsRecorded": {
+          "description": "Present when the stored overall confidence of an older report is above what the current rules permit: the value stored at the time.",
           "type": "number"
         }
       },
@@ -2644,6 +2665,23 @@
           "items": {
             "type": "string"
           }
+        },
+        "asRecorded": {
+          "description": "Present when the stored rating is above what the current rules permit for an older report: the value stored at the time. `confidence` and `status` are what may be shown now.",
+          "type": "object",
+          "properties": {
+            "confidence": {
+              "type": "number"
+            },
+            "status": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "confidence",
+            "status"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -3956,6 +3994,30 @@
           "type": "string",
           "description": "Hash of exactly what an approver is shown; sent back with the approval"
         },
+        "sourceReview": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean"
+            },
+            "verified": {
+              "type": "boolean"
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "required",
+            "verified",
+            "reasons"
+          ],
+          "additionalProperties": false,
+          "description": "For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource)"
+        },
         "attempts": {
           "type": "number"
         },
@@ -4097,7 +4159,11 @@
               },
               "counts": {
                 "type": "boolean",
-                "description": "Whether this approval still counts: it was given for the current content and has not been superseded"
+                "description": "Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver"
+              },
+              "expired": {
+                "type": "boolean",
+                "description": "An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS)"
               },
               "supersededAt": {
                 "anyOf": [
@@ -4118,6 +4184,7 @@
               "createdAt",
               "approver",
               "counts",
+              "expired",
               "supersededAt"
             ],
             "additionalProperties": false
@@ -4149,6 +4216,7 @@
         "executionResult",
         "effectReasons",
         "currentHash",
+        "sourceReview",
         "attempts",
         "service",
         "incident",
@@ -4376,6 +4444,30 @@
           "type": "string",
           "description": "Hash of exactly what an approver is shown; sent back with the approval"
         },
+        "sourceReview": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean"
+            },
+            "verified": {
+              "type": "boolean"
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "required",
+            "verified",
+            "reasons"
+          ],
+          "additionalProperties": false,
+          "description": "For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource)"
+        },
         "attempts": {
           "type": "number"
         },
@@ -4517,7 +4609,11 @@
               },
               "counts": {
                 "type": "boolean",
-                "description": "Whether this approval still counts: it was given for the current content and has not been superseded"
+                "description": "Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver"
+              },
+              "expired": {
+                "type": "boolean",
+                "description": "An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS)"
               },
               "supersededAt": {
                 "anyOf": [
@@ -4538,6 +4634,7 @@
               "createdAt",
               "approver",
               "counts",
+              "expired",
               "supersededAt"
             ],
             "additionalProperties": false
@@ -4579,6 +4676,7 @@
         "executionResult",
         "effectReasons",
         "currentHash",
+        "sourceReview",
         "attempts",
         "service",
         "incident",
@@ -4813,6 +4911,30 @@
                 "type": "string",
                 "description": "Hash of exactly what an approver is shown; sent back with the approval"
               },
+              "sourceReview": {
+                "type": "object",
+                "properties": {
+                  "required": {
+                    "type": "boolean"
+                  },
+                  "verified": {
+                    "type": "boolean"
+                  },
+                  "reasons": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "required": [
+                  "required",
+                  "verified",
+                  "reasons"
+                ],
+                "additionalProperties": false,
+                "description": "For an AI-proposed production change: whether the investigation behind it still supports one. Unverified means it needs an explicit, fresh human review (acknowledgeUnverifiedSource)"
+              },
               "attempts": {
                 "type": "number"
               },
@@ -4954,7 +5076,11 @@
                     },
                     "counts": {
                       "type": "boolean",
-                      "description": "Whether this approval still counts: it was given for the current content and has not been superseded"
+                      "description": "Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver"
+                    },
+                    "expired": {
+                      "type": "boolean",
+                      "description": "An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS)"
                     },
                     "supersededAt": {
                       "anyOf": [
@@ -4975,6 +5101,7 @@
                     "createdAt",
                     "approver",
                     "counts",
+                    "expired",
                     "supersededAt"
                   ],
                   "additionalProperties": false
@@ -5006,6 +5133,7 @@
               "executionResult",
               "effectReasons",
               "currentHash",
+              "sourceReview",
               "attempts",
               "service",
               "incident",
@@ -5156,7 +5284,11 @@
         },
         "counts": {
           "type": "boolean",
-          "description": "Whether this approval still counts: it was given for the current content and has not been superseded"
+          "description": "Whether this approval still counts: given for what approvals are bound to now, not superseded, within its validity, and the first from its approver"
+        },
+        "expired": {
+          "type": "boolean",
+          "description": "An approval that would count but is older than the validity window (REMEDIATION_APPROVAL_VALIDITY_HOURS)"
         },
         "supersededAt": {
           "anyOf": [
@@ -5177,6 +5309,7 @@
         "createdAt",
         "approver",
         "counts",
+        "expired",
         "supersededAt"
       ],
       "additionalProperties": false

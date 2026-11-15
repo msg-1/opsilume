@@ -57,6 +57,19 @@ export function summaryOrigin(report: Pick<Report, 'summarySource' | 'analysisMo
  * What a model (or the scripted mock) wrote as its summary, kept for anyone who wants to read it,
  * and labelled so that it is never taken for the assessment or for a verified explanation.
  */
+/**
+ * For an older report whose stored rating is above what the current rules permit: the value
+ * recorded at the time, beside the one shown. The shown one is never higher.
+ */
+export function RecordedRating({ asRecorded, what = 'This rating' }: { asRecorded?: { confidence: number; status?: string } | null; what?: string }) {
+  if (!asRecorded) return null;
+  return (
+    <span className="block text-[12px] text-ink-2">
+      {what} is shown as the current rules permit for this report&apos;s verified outcome. Recorded at the time as {Math.round(asRecorded.confidence * 100)}%{asRecorded.status ? ` (${asRecorded.status})` : ''}: historical, not current.
+    </span>
+  );
+}
+
 export function UnverifiedNarrative({ narrative, mode, model, children }: { narrative: string; mode: Report['analysisMode']; model?: string | null; children: ReactNode }) {
   const title = mode === 'mock' ? 'Unverified mock narrative' : 'Unverified model narrative';
   return (

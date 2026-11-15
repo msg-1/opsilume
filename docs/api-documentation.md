@@ -150,6 +150,8 @@ What can be connected and whether it works. Status follows what happened (data a
 
 The webhook request carries `Idempotency-Key: <action id>` (the same for every attempt), `X-OpsPilot-Attempt`, and in the body `idempotencyKey`, `attempt`, `effect`, `contentHash` and `approvals`. A timeout (`REMEDIATION_WEBHOOK_TIMEOUT_MS`, default 30 s), a dropped connection or a 5xx is recorded as outcome `unknown`. See [reliability.md](reliability.md).
 
+An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS` (default 24). An AI-proposed production change whose investigation no longer supports it (`sourceReview.verified: false` on the action) can be submitted and approved only with `acknowledgeUnverifiedSource: true` in the request body; see reliability.md §4c.
+
 ### Organisation and governance
 | Method and path | Description |
 |---|---|

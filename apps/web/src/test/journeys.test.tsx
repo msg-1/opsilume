@@ -322,6 +322,16 @@ describe('viewing an investigation report', () => {
     expect(screen.queryByText(/Built by OPSILUME from the computed assessment/)).not.toBeInTheDocument();
   });
 
+  it('shows an older hypothesis at the rating the current rules permit, with the recorded rating beside it', async () => {
+    const shown = structuredClone(investigation);
+    shown.hypotheses[0] = { ...shown.hypotheses[0]!, confidence: 0.45, status: 'possible', asRecorded: { confidence: 0.7, status: 'likely' } };
+    Object.assign(shown, { confidenceAsRecorded: 0.7 });
+    fakeApi({ 'GET /investigations/inv-1': shown });
+    show(<InvestigationPage />, session('ENGINEER'));
+    expect(await screen.findByText(/This rating is shown as the current rules permit for this report's verified outcome\. Recorded at the time as 70% \(likely\): historical, not current\./)).toBeInTheDocument();
+    expect(screen.getByText(/The overall confidence is shown as the current rules permit/)).toBeInTheDocument();
+  });
+
   it('labels a mock narrative as scripted', async () => {
     fakeApi({ 'GET /investigations/inv-1': modelReport({ analysisMode: 'mock' }) });
     show(<InvestigationPage />, session('ENGINEER'));
@@ -453,7 +463,7 @@ describe('approving a remediation', () => {
     const api = fakeApi({
       'GET /remediations/act-1': () => current,
       'POST /remediations/act-1/approve': () => {
-        current = { ...remediation, status: 'APPROVED', approvalsGranted: 1, approvals: [{ id: 'ap-1', decision: 'approved', comment: 'Matches the evidence.', createdAt: '2026-11-10T09:30:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: true, supersededAt: null }] };
+        current = { ...remediation, status: 'APPROVED', approvalsGranted: 1, approvals: [{ id: 'ap-1', decision: 'approved', comment: 'Matches the evidence.', createdAt: '2026-11-10T09:30:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: true, expired: false, supersededAt: null }] };
         return current;
       },
     });
@@ -529,12 +539,55 @@ describe('approving a remediation', () => {
   });
 
   it('marks an approval that no longer counts because the action was edited afterwards', async () => {
-    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-10T09:25:00.000Z', approver: { id: 'user-bob', name: 'Bob Owner' }, counts: false, supersededAt: '2026-11-10T09:27:00.000Z' }] } });
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-10T09:25:00.000Z', approver: { id: 'user-bob', name: 'Bob Owner' }, counts: false, expired: false, supersededAt: '2026-11-10T09:27:00.000Z' }] } });
     show(<RemediationDetailPage />, ada);
     expect(await screen.findByText('no longer counts: the action was changed afterwards')).toBeInTheDocument();
     expect(screen.getByText(/0 of 1 required/)).toBeInTheDocument();
     // A superseded decision by someone else does not stop this person deciding on the new content.
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  it('marks an approval given too long ago, and lets its approver decide again', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-01T09:25:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: false, expired: true, supersededAt: null }] } });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('no longer counts: given too long ago')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  const unverified = { ...remediation, currentHash: 'review-hash', sourceReview: { required: true, verified: false, reasons: ['its verified outcome is DEGRADED, not an incident'] } };
+
+  it('asks for a fresh, explicit review of an AI proposal whose investigation no longer supports it, and sends the acknowledgement', async () => {
+    const api = fakeApi({ 'GET /remediations/act-1': unverified, 'POST /remediations/act-1/approve': unverified });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText(/Needs a fresh human review/)).toBeInTheDocument();
+    expect(screen.getByText(/its verified outcome is DEGRADED, not an incident/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'Approve' });
+    expect(confirm).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /I have reviewed this action myself/ }));
+    await userEvent.click(confirm);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/approve', body: { expectedHash: 'review-hash', acknowledgeUnverifiedSource: true } }]));
+  });
+
+  it('submits such a proposal for approval only with the acknowledgement', async () => {
+    const proposed = { ...unverified, status: 'PROPOSED', requestedBy: null, requestedAt: null };
+    const api = fakeApi({ 'GET /remediations/act-1': proposed, 'POST /remediations/act-1/request-approval': proposed });
+    show(<RemediationDetailPage />, eve);
+    const submit = await screen.findByRole('button', { name: 'Submit for approval' });
+    expect(submit).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /I have reviewed this action myself/ }));
+    await userEvent.click(submit);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/request-approval', body: { acknowledgeUnverifiedSource: true } }]));
+  });
+
+  it('asks for nothing extra when the investigation still supports the change', async () => {
+    fakeApi({ 'GET /remediations/act-1': remediation });
+    show(<RemediationDetailPage />, ada);
+    await screen.findByRole('heading', { name: 'Roll back checkout to v2.3.1' });
+    expect(screen.queryByText(/Needs a fresh human review/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(within(await screen.findByRole('dialog')).queryByRole('checkbox')).not.toBeInTheDocument();
   });
 });
 
@@ -685,6 +738,14 @@ describe('the report to share', () => {
   const actions = { data: [{ ...remediation, id: 'act-1', title: 'Roll back checkout to v2.3.1', risk: 'MEDIUM', effect: 'state_changing', status: 'PENDING_APPROVAL', requiredApprovals: 1, approvalsGranted: 0 }], meta: { page: 1, pageSize: 50, total: 1, totalPages: 1 }, statusCounts: {}, executionMode: 'manual' };
   beforeEach(() => {
     nav.params = { id: 'inv-1' };
+  });
+
+  it('prints the recorded rating of an older hypothesis beside the one the current rules permit', async () => {
+    const shown = structuredClone(investigation);
+    shown.hypotheses[0] = { ...shown.hypotheses[0]!, confidence: 0.45, status: 'possible', asRecorded: { confidence: 0.7, status: 'likely' } };
+    fakeApi({ 'GET /investigations/inv-1': shown, 'GET /remediations': actions });
+    show(<InvestigationReportPage />, session('VIEWER'));
+    expect(await screen.findByText(/Recorded at the time as 70% \(likely\): historical, not current\./)).toBeInTheDocument();
   });
 
   it('prints the computed conclusion, and the model text only in its own unverified section', async () => {

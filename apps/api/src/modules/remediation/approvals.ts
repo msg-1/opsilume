@@ -1,22 +1,34 @@
 import type { Prisma } from '@prisma/client';
+import { env } from '../../config/env';
 import { prisma } from '../../lib/prisma';
 import { type Content, contentHash } from './content';
 
 /**
  * Approval management. An approval counts only for the content it was given for, and only
  * until that content changes: editing an action supersedes its approvals, and so does finding,
- * at execution, that the action is not the one that was approved. Superseded approvals stay
- * on record.
+ * at execution, that the action is not the one that was approved. An approval also counts only
+ * for a limited time (REMEDIATION_APPROVAL_VALIDITY_HOURS), and each approver counts once.
+ * Superseded and expired approvals stay on record.
  */
 
-type ApprovalRow = { decision: string; contentHash: string | null; supersededAt: Date | null };
+type ApprovalRow = { approverId: string; decision: string; contentHash: string | null; supersededAt: Date | null; createdAt: Date };
 
-export function countsFor(action: Content, approval: ApprovalRow) {
-  return approval.decision === 'approved' && !approval.supersededAt && approval.contentHash === contentHash(action);
+/** The moment before which an approval no longer counts. */
+export const approvalCutoff = (now = new Date()) => new Date(now.getTime() - env.REMEDIATION_APPROVAL_VALIDITY_HOURS * 3_600_000);
+
+/** An approval that would count but is older than the validity window. */
+export const isExpired = (approval: ApprovalRow, now = new Date()) => approval.decision === 'approved' && !approval.supersededAt && approval.createdAt < approvalCutoff(now);
+
+/** Whether an approval counts for `hash`, the hash approvals of the action are bound to now (approvalHash). */
+export function countsFor(approval: ApprovalRow, hash: string, now = new Date()) {
+  return approval.decision === 'approved' && !approval.supersededAt && approval.contentHash === hash && approval.createdAt >= approvalCutoff(now);
 }
 
-/** The approvals that count for the action as it is now. */
-export const validApprovals = <A extends ApprovalRow>(action: Content & { approvals: A[] }) => action.approvals.filter((a) => countsFor(action, a));
+/** The approvals that count for the action as it is now, one per approver. */
+export function validApprovals<A extends ApprovalRow>(approvals: A[], hash: string, now = new Date()): A[] {
+  const seen = new Set<string>();
+  return approvals.filter((a) => countsFor(a, hash, now) && !seen.has(a.approverId) && seen.add(a.approverId));
+}
 
 /**
  * PROPOSED → PENDING_APPROVAL, recording the hash that is being put up for approval. The status
@@ -35,7 +47,8 @@ export async function submitForApproval(actionId: string, requestedById: string,
 export function recordApproval(action: { id: string; requiredApprovals: number }, approverId: string, hash: string, comment?: string) {
   return prisma.$transaction(async (tx) => {
     await tx.approval.create({ data: { actionId: action.id, approverId, decision: 'approved', comment, contentHash: hash } });
-    const granted = await tx.approval.count({ where: { actionId: action.id, decision: 'approved', supersededAt: null, contentHash: hash } });
+    // Distinct approvers: two concurrent decisions by one person count once.
+    const granted = (await tx.approval.findMany({ where: { actionId: action.id, decision: 'approved', supersededAt: null, contentHash: hash, createdAt: { gte: approvalCutoff() } }, select: { approverId: true }, distinct: ['approverId'] })).length;
     if (granted >= action.requiredApprovals) {
       // Only while the content is still what was approved.
       await tx.remediationAction.updateMany({ where: { id: action.id, status: 'PENDING_APPROVAL', contentHash: hash }, data: { status: 'APPROVED' } });
@@ -49,6 +62,12 @@ export function recordRejection(action: Content & { id: string }, approverId: st
     prisma.approval.create({ data: { actionId: action.id, approverId, decision: 'rejected', comment, contentHash: contentHash(action) } }),
     prisma.remediationAction.updateMany({ where: { id: action.id, status: 'PENDING_APPROVAL' }, data: { status: 'REJECTED' } }),
   ]);
+}
+
+/** Marks approvals older than the validity window as superseded, so they stop counting and their approvers can decide again. Returns how many. */
+export async function supersedeExpired(actionId: string): Promise<number> {
+  const { count } = await prisma.approval.updateMany({ where: { actionId, decision: 'approved', supersededAt: null, createdAt: { lt: approvalCutoff() } }, data: { supersededAt: new Date() } });
+  return count;
 }
 
 /** Marks every current approval of an action as no longer counting. Usable inside a transaction. */

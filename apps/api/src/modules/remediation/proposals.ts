@@ -23,7 +23,10 @@ export const remediationInput = z.object({
 
 // expectedHash is the currentHash the approver was shown. Sending it makes the approval fail if
 // the action changed between reading it and deciding.
-export const decisionBody = z.object({ comment: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
+// acknowledgeUnverifiedSource: the person has seen that the AI investigation behind the action no
+// longer supports a production change (source.ts), and takes the decision on their own review.
+export const decisionBody = z.object({ comment: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional(), acknowledgeUnverifiedSource: z.boolean().optional() });
+export const requestApprovalBody = z.object({ acknowledgeUnverifiedSource: z.boolean().optional() });
 export const rejectionBody = decisionBody.extend({ comment: z.string().trim().min(3, 'Give a reason for rejecting').max(2000) });
 export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional() });
 export const retryBody = z.object({ confirmNotApplied: z.boolean().optional() });

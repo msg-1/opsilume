@@ -1,9 +1,10 @@
 import type { Prisma } from '@prisma/client';
 import { notFound } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
-import { countsFor } from './approvals';
-import { contentHash } from './content';
-import { type LegacyView, legacyViews } from '../investigations/legacy';
+import { countsFor, isExpired, validApprovals } from './approvals';
+import { approvalHash } from './content';
+import { sourceChecks } from './source';
+import { type LegacyRead, legacyViews } from '../investigations/legacy';
 
 /** Loading an action with its approvals, and the shape in which the API returns it. */
 
@@ -36,20 +37,28 @@ export async function presentMany(rows: Detailed[]) {
   // An older stored report's summary is shown as a new one's would be (investigations/legacy.ts).
   const byOrganization = new Map<string, string[]>();
   for (const r of rows) if (r.investigation) (byOrganization.get(r.organizationId) ?? byOrganization.set(r.organizationId, []).get(r.organizationId)!).push(r.investigation.id);
-  const views = new Map<string, LegacyView>();
+  const views = new Map<string, LegacyRead>();
   for (const [organizationId, ids] of byOrganization) for (const [id, view] of await legacyViews(organizationId, ids)) views.set(id, view);
-  return rows.map((r) => ({
+  const sources = await sourceChecks(rows);
+  const now = new Date();
+  return rows.map((r) => {
+    const source = sources.get(r.id)!;
+    // What approvals are bound to now (content.ts): an approver is shown this and sends it back.
+    const hash = approvalHash(r, source.required && !source.verified);
+    return {
     ...r,
-    investigation: r.investigation && views.has(r.investigation.id) ? { ...r.investigation, summary: views.get(r.investigation.id)!.summary } : r.investigation,
+    investigation: r.investigation && views.get(r.investigation.id)?.view ? { ...r.investigation, summary: views.get(r.investigation.id)!.view!.summary } : r.investigation,
     service: r.serviceId ? (services.get(r.serviceId) ?? null) : null,
     proposedBy: r.proposedByType === 'ai_agent' ? { id: null, name: 'OPSILUME AI' } : person(r.proposedById),
     requestedBy: person(r.requestedById),
     executedBy: person(r.executedById),
-    // An approval counts only for the content it was given for.
-    approvals: r.approvals.map((a) => ({ ...a, approver: person(a.approverId), counts: countsFor(r, a) })),
-    approvalsGranted: r.approvals.filter((a) => countsFor(r, a)).length,
-    currentHash: contentHash(r),
-  }));
+    // An approval counts only for the content it was given for, within its validity, once per approver.
+    approvals: r.approvals.map((a) => ({ ...a, approver: person(a.approverId), counts: countsFor(a, hash, now), expired: isExpired(a, now) })),
+    approvalsGranted: validApprovals(r.approvals, hash, now).length,
+    currentHash: hash,
+    sourceReview: source,
+    };
+  });
 }
 
 export async function load(organizationId: string, id: string) {
