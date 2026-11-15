@@ -30,16 +30,18 @@ class Ledger:
     max_cost_usd: float
     model: str
     entries: list[dict[str, Any]] = field(default_factory=list)
+    #: Repeats allowed across all scenarios together, fixed when the ledger is created.
+    max_repeats: int = 1
 
     # ── Opening ──
 
     @classmethod
-    def open(cls, path: Path, max_cost_usd: float, model: str) -> Ledger:
+    def open(cls, path: Path, max_cost_usd: float, model: str, max_repeats: int = 1) -> Ledger:
         """Opens the ledger at `path`, or creates it with this ceiling. An existing ledger keeps
         the ceiling and model it was created with: asking for another one is refused."""
         if path.exists():
             data = json.loads(path.read_text())
-            ledger = cls(path, float(data["maxCostUsd"]), str(data["model"]), list(data.get("entries") or []))
+            ledger = cls(path, float(data["maxCostUsd"]), str(data["model"]), list(data.get("entries") or []), int(data.get("maxRepeats", 1)))
             if abs(ledger.max_cost_usd - max_cost_usd) > 1e-9:
                 raise LedgerError(f"{path} was created for a ceiling of ${ledger.max_cost_usd:.2f}; this run asked for ${max_cost_usd:.2f}. A ledger's ceiling cannot be changed.")
             if ledger.model != model:
@@ -47,7 +49,9 @@ class Ledger:
             return ledger
         if max_cost_usd <= 0:
             raise LedgerError("The ceiling must be more than zero.")
-        ledger = cls(path, max_cost_usd, model)
+        if max_repeats < 0:
+            raise LedgerError("The number of repeats cannot be negative.")
+        ledger = cls(path, max_cost_usd, model, max_repeats=max_repeats)
         ledger._save()
         return ledger
 
@@ -63,14 +67,20 @@ class Ledger:
     def attempts(self, scenario: str) -> list[dict[str, Any]]:
         return [e for e in self.entries if e["scenario"] == scenario]
 
+    def repeats_used(self) -> int:
+        return sum(1 for e in self.entries if int(e.get("attempt", 1)) >= 2)
+
     # ── Deciding what may run ──
 
     def check_allowed(self, scenarios: list[str], repeat: bool) -> None:
         """Refuses the whole invocation, before anything is spent, if any scenario may not run.
 
         A scenario runs at most twice: once, and once more only with `repeat`, only if its first
-        attempt finished, was charged and failed.
+        attempt finished, was charged and failed. Across all scenarios together, no more than
+        `max_repeats` repeats are ever run.
         """
+        if repeat and self.repeats_used() + len(scenarios) > self.max_repeats:
+            raise LedgerError(f"This ledger allows {self.max_repeats} repeat(s) across all scenarios; {self.repeats_used()} already used and {len(scenarios)} asked for.")
         for name in scenarios:
             previous = self.attempts(name)
             if not previous:
@@ -107,7 +117,7 @@ class Ledger:
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"maxCostUsd": self.max_cost_usd, "model": self.model, "entries": self.entries, "committedUsd": round(self.committed(), 6)}
+        data = {"maxCostUsd": self.max_cost_usd, "model": self.model, "maxRepeats": self.max_repeats, "entries": self.entries, "committedUsd": round(self.committed(), 6)}
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         with tmp.open("w") as f:
             f.write(json.dumps(data, indent=2) + "\n")

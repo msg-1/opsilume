@@ -43,6 +43,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -339,6 +340,7 @@ def main() -> None:
     parser.add_argument("--rescore", type=Path, default=None, metavar="DIR", help="Score the reports saved in DIR again with the current scorer and guardrails. Calls no model")
     parser.add_argument("--ledger", type=Path, default=None, metavar="FILE", help="Spending ledger shared by every invocation of one approved budget. Required for a paid run")
     parser.add_argument("--model", default=None, metavar="ID", help="For a paid run: the exact model that was approved. The run is refused unless ANTHROPIC_MODEL is exactly this")
+    parser.add_argument("--key-env", default=None, metavar="NAME", help="For a paid run: the one environment variable the API key is read from. ANTHROPIC_API_KEY is then ignored")
     parser.add_argument("--repeat", action="store_true", help="Run the --only scenarios a second time; each must have failed once in the ledger and not been repeated")
     args = parser.parse_args()
     if args.rescore:
@@ -353,6 +355,12 @@ def main() -> None:
         sys.exit(0)
     # Never the repository's .env: a paid run uses only what is set in this process's environment.
     settings = Settings(_env_file=None)
+    if args.key_env:
+        # The key comes from this variable and nowhere else; its value is never printed.
+        settings = settings.model_copy(update={"anthropic_api_key": os.environ.get(args.key_env, "")})
+    if not args.heuristic and not args.estimate and settings.provider_choice == "anthropic" and not settings.anthropic_api_key:
+        print(f"Refusing to run: AI_PROVIDER=anthropic but no key is set{f' in {args.key_env}' if args.key_env else ''}. Nothing was run.", file=sys.stderr)
+        sys.exit(2)
     resolution = None if args.heuristic else asyncio.run(resolve(settings))
     paid = resolution is not None and resolution.available and resolution.provider not in ("mock",)
     names = [s.name for s in SCENARIOS if not args.only or s.name in args.only]
@@ -366,13 +374,15 @@ def main() -> None:
         print("Configuration (from the process environment; .env is not read):")
         print(f"  provider anthropic · model {model} · effort {settings.anthropic_effort} · output limit {settings.ai_max_tokens:,} tokens per call · SDK retries 0 (forced)")
         print(f"  prompt limit {EVAL_MAX_PROMPT_TOKENS:,} tokens per call, below the {HAIKU_LONG_PROMPT_THRESHOLD:,}-token threshold of the higher prices")
-        print(f"  ANTHROPIC_API_KEY is {'set' if settings.anthropic_api_key else 'NOT set'} in this environment (its value is not shown)")
+        print(f"  key: {args.key_env or 'ANTHROPIC_API_KEY'} is {'set' if settings.anthropic_api_key else 'NOT set'} in this environment (its value is not shown)")
         print(f"{len(names)} scenario(s); at most {per} model calls each, {per * len(names)} in all, before the budget is considered.")
         print(f"Worst case for one call: ${reserve:.5f} ({EVAL_MAX_PROMPT_TOKENS:,} prompt tokens all written to the cache, {settings.ai_max_tokens:,} output tokens).")
         if args.ledger and args.ledger.exists():
             data = json.loads(args.ledger.read_text())
-            spent = Ledger(args.ledger, float(data["maxCostUsd"]), str(data["model"]), list(data.get("entries") or [])).committed()
-            print(f"Ledger {args.ledger}: ceiling ${float(data['maxCostUsd']):.2f}, committed ${spent:.6f}, left ${float(data['maxCostUsd']) - spent:.6f}.")
+            existing = Ledger(args.ledger, float(data["maxCostUsd"]), str(data["model"]), list(data.get("entries") or []), int(data.get("maxRepeats", 1)))
+            print(f"Ledger {args.ledger}: ceiling ${existing.max_cost_usd:.2f}, committed ${existing.committed():.6f}, left ${existing.remaining():.6f}, repeats used {existing.repeats_used()} of {existing.max_repeats}.")
+        elif args.ledger:
+            print(f"Ledger {args.ledger} does not exist yet; the first paid run creates it with the --max-cost given and 1 repeat in all.")
         print("No model was called.")
         sys.exit(0)
     ledger: Ledger | None = None
@@ -391,6 +401,8 @@ def main() -> None:
             problems.append("--max-cost <USD> is required")
         if args.ledger is None:
             problems.append("--ledger FILE is required, so that every invocation spends from one budget")
+        if not args.key_env:
+            problems.append("--key-env NAME is required, naming the one variable that holds the key for this budget")
         if args.repeat and not args.only:
             problems.append("--repeat needs --only <scenario>")
         if problems:

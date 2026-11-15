@@ -82,8 +82,8 @@ Measured in the last live run (Milestone 3, same model and effort): one scenario
 
 The ceiling is enforced by the runner, not by this table (`services/ai/app/evals/run.py`, `ledger.py`, and `AnthropicProvider.reserve` in `app/llm.py`; each property is tested against a mocked API in `services/ai/tests/test_eval_budget.py`):
 
-- **Configuration from the process environment only.** The runner does not read the repository's `.env`. A paid run needs `AI_PROVIDER=anthropic` set explicitly, `--model` naming the configured model exactly, a model with a known price, no price overrides, `--max-cost` and `--ledger`.
-- **One ledger for one approved budget.** Every invocation that names the ledger file spends from the same ceiling. Before a scenario starts, its limit is reserved in the ledger. When it ends, the reservation is replaced by what it cost. A reservation never closed (a crash) stays charged in full. A ledger's ceiling and model cannot be changed. A scenario runs at most twice: the second time only with `--repeat`, only if its first attempt finished and failed.
+- **Configuration from the process environment only.** The runner does not read the repository's `.env`. A paid run needs `AI_PROVIDER=anthropic` set explicitly, `--model` naming the configured model exactly, `--key-env` naming the one variable the key is read from, a model with a known price, no price overrides, `--max-cost` and `--ledger`.
+- **One ledger for one approved budget.** Every invocation that names the ledger file spends from the same ceiling. Before a scenario starts, its limit is reserved in the ledger. When it ends, the reservation is replaced by what it cost. A reservation never closed (a crash) stays charged in full. A ledger's ceiling and model cannot be changed. A scenario runs at most twice: the second time only with `--repeat`, only if its first attempt finished and failed. A ledger allows one repeat across all scenarios together.
 - **Every call is reserved before it is sent.** The provider computes an upper bound on the call's cost, and refuses the call if the bound does not fit what is left. The bound counts every prompt token as one byte of the request (a token is never shorter), plus 2,000 for framing and, in a request that sends earlier assistant turns back, every output token of the tool loop so far (replayed thinking may be billed at full length), at the cache-write rate, and the full output limit. That a token is never shorter than one byte is an assumption, not a guarantee: after every call the bill is compared with the bound, and if it ever exceeds it the scenario's model calls stop and the run starts nothing further.
 - **The higher prices cannot apply.** A call whose prompt bound exceeds 98,000 tokens is refused, below the 100,000-token threshold. Measured without a model on all 14 scenarios with the tool loop exhausted (24 tool calls), the largest bound was 58,209 tokens for a tool-loop call and 18,172 for the report call.
 - **No retries.** A call that fails in a way that may have been billed (timeout, dropped connection, server error) is charged at its upper bound. It is not retried. A response from any model other than `claude-haiku-5-5` (or its dated snapshot) stops the scenario's model calls.
@@ -113,12 +113,12 @@ The same 14 scenarios are scored by the same scorer for both engines, so the com
 
 ```bash
 cd services/ai
-AI_PROVIDER=anthropic uv run python -m app.evals.run --estimate --ledger eval-runs/<budget>.json   # no call is made
-# the key must already be in this shell's environment; it is never typed into a file or a chat
+AI_PROVIDER=anthropic uv run python -m app.evals.run --estimate --key-env OPSILUME_M10_ANTHROPIC_KEY --ledger eval-runs/<budget>.json   # no call is made
+# the key is read only from the variable --key-env names; ANTHROPIC_API_KEY is ignored, and the value is never shown
 AI_PROVIDER=anthropic ANTHROPIC_MODEL=claude-haiku-5-5 ANTHROPIC_EFFORT=medium AI_MAX_TOKENS=8000 \
-  uv run python -m app.evals.run --model claude-haiku-5-5 --max-cost 1.00 --ledger eval-runs/<budget>.json   # saves each report under eval-runs/
-# a failed scenario, once, from the same ledger:
-AI_PROVIDER=anthropic ... uv run python -m app.evals.run --model claude-haiku-5-5 --max-cost 1.00 --ledger eval-runs/<budget>.json --repeat --only <scenario>
+  uv run python -m app.evals.run --model claude-haiku-5-5 --key-env OPSILUME_M10_ANTHROPIC_KEY --max-cost <USD> --ledger eval-runs/<budget>.json
+# the single repeat the ledger allows, for one failed scenario, from the same ledger:
+AI_PROVIDER=anthropic ... uv run python -m app.evals.run --model claude-haiku-5-5 --key-env OPSILUME_M10_ANTHROPIC_KEY --max-cost <USD> --ledger eval-runs/<budget>.json --repeat --only <scenario>
 uv run python -m app.evals.run --rescore eval-runs/<that directory>   # scores the saved reports again, free
 ```
 
