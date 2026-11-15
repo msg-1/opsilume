@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { env } from '../src/config/env';
-import { approvalHash, legacyApprovalHash } from '../src/modules/remediation/content';
+import { createHash } from 'node:crypto';
+import { approvalHash } from '../src/modules/remediation/content';
+
+// The v1 fingerprint as it was computed before this change, written out here rather than taken from the module.
+const v1Fingerprint = (a: { type: string; title: string; description: string; risk: string; serviceId: string | null }) =>
+  createHash('sha256').update(JSON.stringify({ type: a.type, title: a.title, description: a.description, risk: a.risk, serviceId: a.serviceId ?? null, parameters: null })).digest('hex');
 import { createOrg, createService, prisma } from './helpers';
 
 // Remediation actions stored by earlier versions, held to the current rules when they are
@@ -59,7 +64,7 @@ async function olderAction(org: Org, o: ActionOptions) {
     },
   });
   // Approved under the current fingerprint while the source looked sound (no webhook: carried out by hand), or under v1.
-  const hash = o.fingerprint === 'v1' ? legacyApprovalHash(created, false) : approvalHash(created, { unverifiedSource: false, executionTarget: 'manual' });
+  const hash = o.fingerprint === 'v1' ? v1Fingerprint(created) : approvalHash(created, { unverifiedSource: false, executionTarget: 'manual' });
   if (o.status && o.status !== 'PROPOSED') await prisma.remediationAction.update({ where: { id: created.id }, data: { contentHash: hash } });
   for (const a of o.approvers ?? []) await prisma.approval.create({ data: { actionId: created.id, approverId: a.userId, decision: 'approved', contentHash: hash, createdAt: a.at ?? new Date() } });
   return created;

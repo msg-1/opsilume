@@ -94,3 +94,18 @@ def test_only_documents_people_wrote_corroborate_a_mechanism_or_suggest_a_proced
     assert doc_ref not in earlier_h.evidence_refs
     assert any("Follow the documented procedure" in s for s in rules.build_next_steps(plain, []))
     assert not any("Follow the documented procedure" in s for s in rules.build_next_steps(earlier, []))
+
+
+def test_earlier_ai_output_cannot_make_an_outcome_an_incident():
+    # INCIDENT, the only outcome that allows a production change, needs a hypothesis citing
+    # something that can be a cause. A knowledge document, earlier AI output included, is not one.
+    store = EvidenceStore()
+    store.items = [
+        EvidenceItem(ref="E1", kind="log_pattern", title="300× ERROR in orders (new pattern)", summary="s", source_type="log_pattern", source_id="fp", service="orders", occurred_at="2026-06-01T11:30:00Z", data={"level": "ERROR", "count": 300, "kind": "new", "baselineCount": 0}),
+        EvidenceItem(ref="E2", kind="document", title="Postmortem › AI findings", summary="s", source_type="knowledge_chunk", source_id="c1", data={"provenance": "earlier_ai_output"}),
+    ]
+    report = InvestigationReport(summary="s", confidence=0.9, analysis_mode="llm", uncertainties=["u"], next_steps=["n"],
+                                 hypotheses=[HypothesisOut(title="Pool exhausted, as the old postmortem said", description="d", confidence=0.9, status="likely", evidence_refs=["E1", "E2"])])
+    guardrails.enforce(report, store, scope=["orders"], tool_failures=[])
+    assert report.assessment.outcome == "DEGRADED"
+    assert report.hypotheses[0].status != "likely"

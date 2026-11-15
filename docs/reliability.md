@@ -122,7 +122,7 @@ Each is stated as a contradiction on the hypothesis. This was added after a run 
 An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This is a policy, not an experimentally established value. Whoever deploys OPSILUME must choose it and review it.
 - **Valid values** are whole hours from 1 to 720. Anything else (0, negative, fractional, empty, above 720, not a number) stops the API from starting.
 - **Expiry is judged by the database clock,** which also timestamps approvals, at approval and at execution. An approval dated more than five minutes ahead of it does not count.
-- **An expired approval stays expired.** It is superseded when found: it stays on record, never counts again whatever any clock says later, and its approver may decide again. The action returns to `PENDING_APPROVAL`. The audit records the time of each expired approval and the cutoff (`remediation.approval_expired`).
+- **An expired approval stays expired.** It is superseded when found: it stays on record, never counts again whatever any clock says later, and its approver may decide again. Repeating an old approve request does not revive it either: it is a new approval, made now, by a signed-in person, for the fingerprint the action has now. The action returns to `PENDING_APPROVAL`. The audit records the time of each expired approval and the cutoff (`remediation.approval_expired`).
 - **Approvals are never extended.**
 
 ### Execution, outcome and reconciliation
@@ -299,7 +299,7 @@ Limits:
 - its "AI investigation findings (unconfirmed)" section;
 - timeline lines that begin "AI investigation completed".
 
-Before summaries were built from the assessment, that text was a model's own narrative. Postmortems can be edited, so a marker inside one would prove nothing. The agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) therefore decides provenance when it reads a result:
+Before summaries were built from the assessment, that text was a model's own narrative. Postmortems can be edited, so no stored flag is trusted. The agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance when it reads a result, from the section heading and the text:
 
 | Chunk | `provenance` | Given to the agent as |
 |---|---|---|
@@ -313,7 +313,11 @@ Neither the stored document nor the database row is changed. In the AI service:
 - **Rule-based engine:** it no longer lets earlier AI output corroborate a mechanism or suggest a "documented procedure".
 - **Prompt:** the system prompt tells the model it is not evidence.
 
-The label's effect on a real model's wording has not been measured: no model was called.
+Limits:
+- **The section heading is still inside the editable document.** A postmortem whose AI-findings heading was renamed, or whose text was moved to another section, loses the label.
+- **"Historical" is approximate.** A chunk is called historical when it does not contain the incident's current verified summary. A long section split across chunks, or a newer investigation of the same incident, can make a postmortem drafted under the current rules read as historical. That is the cautious direction.
+- **Only the agent's search is labelled.** The knowledge pages people read show documents as written.
+- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced is the guardrail rule and the rule-based engine's exclusion, which do not depend on the model reading the label.
 
 **Copies made before.**
 
