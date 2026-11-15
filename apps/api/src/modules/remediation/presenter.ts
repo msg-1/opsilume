@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { notFound } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { countsFor, isExpired, validApprovals } from './approvals';
-import { approvalHash } from './content';
+import { approvalHash, contentHash } from './content';
 import { sourceChecks } from './source';
 import { type LegacyRead, legacyViews } from '../investigations/legacy';
 
@@ -45,6 +45,12 @@ export async function presentMany(rows: Detailed[]) {
     const source = sources.get(r.id)!;
     // What approvals are bound to now (content.ts): an approver is shown this and sends it back.
     const hash = approvalHash(r, source.required && !source.verified);
+    // Past the approval stage (executing, executed, rejected, cancelled), approvals are shown as
+    // they counted then: for the hash that was approved, with no expiry since. A failed action can
+    // be retried, and is checked again, so it is shown under the current rules.
+    const live = ['PROPOSED', 'PENDING_APPROVAL', 'APPROVED', 'FAILED'].includes(r.status);
+    const settled = r.contentHash ?? contentHash(r);
+    const counted = (a: (typeof r.approvals)[number]) => (live ? countsFor(a, hash, now) : a.decision === 'approved' && !a.supersededAt && a.contentHash === settled);
     return {
     ...r,
     investigation: r.investigation && views.get(r.investigation.id)?.view ? { ...r.investigation, summary: views.get(r.investigation.id)!.view!.summary } : r.investigation,
@@ -53,8 +59,8 @@ export async function presentMany(rows: Detailed[]) {
     requestedBy: person(r.requestedById),
     executedBy: person(r.executedById),
     // An approval counts only for the content it was given for, within its validity, once per approver.
-    approvals: r.approvals.map((a) => ({ ...a, approver: person(a.approverId), counts: countsFor(a, hash, now), expired: isExpired(a, now) })),
-    approvalsGranted: validApprovals(r.approvals, hash, now).length,
+    approvals: r.approvals.map((a) => ({ ...a, approver: person(a.approverId), counts: counted(a), expired: live && isExpired(a, now) })),
+    approvalsGranted: live ? validApprovals(r.approvals, hash, now).length : new Set(r.approvals.filter(counted).map((a) => a.approverId)).size,
     currentHash: hash,
     sourceReview: source,
     };

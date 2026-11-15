@@ -212,7 +212,7 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
   });
   if (!claimed.count) throw conflict('This action is already being executed');
   const mode = readOnly ? 'diagnostic' : settings.remediationWebhookUrl ? 'webhook' : 'manual';
-  await audit(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, attempt: action.attempts + 1, approvedBy: approvers.map((a) => a.approverId) });
+  await audit(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, attempt: action.attempts + 1, approvedBy: approvers.map((a) => a.approverId), ...(approvedHash !== hash ? { sourceVerified: false, approvedOnAcknowledgedReview: true } : {}) });
 
   const startedAt = new Date();
   const result = await execute({ ...action, attempts: action.attempts + 1 }, { userId: auth.userId, label: auth.label }, approvers, body.notes);

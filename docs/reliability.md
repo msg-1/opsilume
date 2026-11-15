@@ -159,7 +159,7 @@ Signing the assessment would add a key to manage and rotate, and would protect o
 | Stored report | Shown as |
 |---|---|
 | Carries `summarySource` (every report from this change on) | Exactly as stored |
-| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Exactly as stored |
+| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Its own summary, as stored; hypothesis ratings at the current caps (section 4c) |
 | Model or mock, engine unknown included, with a trusted assessment (well-formed outcome, rationale and references; the same consistency check against the evidence stored for it) | The summary built from that assessment; the stored text as the unverified narrative; the outcome is the assessment's |
 | Model or mock without one (absent, malformed, citing unrecorded evidence, or an INCIDENT citing nothing) | "Outcome not verified"; the stored text as the unverified narrative; no outcome, and no assessment, shown |
 
@@ -225,7 +225,12 @@ Anything unclear counts as unverified. An unverified source does not discard the
 - **Each person acknowledges it.** Submitting it again and each approval need `acknowledgeUnverifiedSource: true`. The interface shows the reasons and asks each person to confirm that their decision does not rely on the investigation. The audit records the acknowledgement.
 - **Nothing is executed automatically** because it was approved earlier: execution checks the source, the risk, the approvals' hash, their age and their number every time.
 
-Actions proposed by a person, and read-only diagnostics, need no source. An action whose source is verified goes through exactly as before.
+Actions proposed by a person, and read-only diagnostics, need no source. An action whose source is verified goes through exactly as before. Once an action has left the approval stage (executing, executed, rejected, cancelled), its approvals are shown as they counted when it was decided; a failed action can be retried and is shown under the current rules.
+
+Limits:
+- **Rationale edits can remove the cited-evidence line.** The rationale is not part of what is approved, so editing it does not supersede approvals, and removing the `Evidence:` line removes the cited-evidence check. The assessment check is unaffected.
+- **A human proposal tied to an investigation is not checked.** Only AI proposals are.
+- **Consistency, not proof.** The source check is the same consistency check as in section 4b: it cannot tell a stored assessment that fits its evidence from one that was not computed by the AI service.
 
 **Confidence of older reports.** A report stored before `summarySource` existed, from any engine, is shown with the hypothesis ratings the current rules permit under its trusted outcome (`presentHypotheses` in `apps/api/src/modules/investigations/legacy.ts`):
 
@@ -261,7 +266,14 @@ New notifications and postmortems carry the verified summary, never the unverifi
 - that showing an action writes nothing;
 - the confidence shown under each outcome, with no assessment and with unrecorded evidence, on the detail, the list and a new postmortem, with the stored values unchanged.
 
-Each new guard was switched off in turn, and the tests failed each time. `legacy.test.ts` checks that no combination of outcome, engine, status, confidence and evidence raises a rating. The web tests cover the fresh-review notice, the acknowledgement on submission and approval, the expired-approval label and the recorded ratings.
+Each new guard was switched off in turn, and the tests failed each time.
+
+The rest of the lifecycle is covered by existing tests in `apps/api/tests/safety.test.ts`:
+- "lose their approval when anything an approver was shown is changed" (an edit supersedes approvals);
+- "counts the approvals again at execution and refuses when there are too few" (the threshold is recalculated);
+- "are dispatched once when execution is requested twice at the same moment";
+- "record an unknown outcome on timeout and are not retried until a person confirms nothing was applied";
+- "validates an explicit change of risk, applies the floor, and makes approvers decide again". `legacy.test.ts` checks that no combination of outcome, engine, status, confidence and evidence raises a rating. The web tests cover the fresh-review notice, the acknowledgement on submission and approval, the expired-approval label and the recorded ratings.
 
 ## 5. Figures and identifiers
 

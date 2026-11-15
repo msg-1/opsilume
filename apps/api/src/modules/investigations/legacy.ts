@@ -159,13 +159,13 @@ export async function legacyViews(organizationId: string, ids: string[]): Promis
 }
 
 /** Rows that carry a summary (and possibly an outcome and a confidence), with older reports shown through their view. */
-export function applyViews<T extends { id: string; summary: string | null }>(rows: T[], reads: Map<string, LegacyRead>): T[] {
+export function applyViews<T extends { id: string }>(rows: T[], reads: Map<string, LegacyRead>): T[] {
   return rows.map((r) => {
     const read = reads.get(r.id);
     if (!read) return r;
     return {
       ...r,
-      ...(read.view ? { summary: read.view.summary, ...('outcome' in r ? { outcome: read.view.outcome } : {}) } : {}),
+      ...(read.view && 'summary' in r ? { summary: read.view.summary, ...('outcome' in r ? { outcome: read.view.outcome } : {}) } : {}),
       ...('confidence' in r && read.confidenceAsRecorded != null ? { confidence: read.confidence } : {}),
     };
   });

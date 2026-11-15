@@ -26,8 +26,8 @@ type ActionLike = { id: string; organizationId: string; proposedByType: string; 
 type Row = { id: string; assessment: unknown };
 
 const NOT_REQUIRED: SourceCheck = { required: false, verified: true, reasons: [] };
-// What persistence.ts appends to an AI proposal's rationale.
-const EVIDENCE_LINE = /^Evidence: (.+)$/m;
+// What persistence.ts appends as the last line of an AI proposal's rationale.
+const EVIDENCE_LINE = /(?:^|\n)Evidence: ([^\n]+)$/;
 
 export async function sourceChecks(actions: ActionLike[]): Promise<Map<string, SourceCheck>> {
   const checks = new Map<string, SourceCheck>();

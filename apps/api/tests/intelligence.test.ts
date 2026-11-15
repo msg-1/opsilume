@@ -658,6 +658,9 @@ describe('what each response says the summary is', () => {
     expect(row.report).toMatchObject({ summary: verified, summarySource: 'assessment', narrative: modelText });
     expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([verified, verified, verified, verified]);
     expect(r.listed.outcome).toBe('INCIDENT');
+    // The notification sent on completion carries the verified summary, not the model's text.
+    const sent = await prisma.notification.findFirstOrThrow({ where: { type: 'investigation.completed', link: `/investigations/${r.id}` } });
+    expect(sent.body).toBe(verified.slice(0, 200));
     for (const shown of [r.listed, r.onIncident, r.action]) expect(JSON.stringify(shown)).not.toContain(modelText);
   });
 

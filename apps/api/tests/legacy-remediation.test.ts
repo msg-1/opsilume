@@ -15,7 +15,7 @@ const HOUR = 3_600_000;
 const auditOf = async (id: string) => (await prisma.auditLog.findMany({ where: { resourceId: id }, orderBy: { createdAt: 'asc' } })).map((a) => ({ action: a.action, meta: a.metadata as Record<string, unknown> | null }));
 
 /** A completed investigation as an older version stored it: no summarySource, the model's text as the summary. */
-async function sourceInvestigation(org: Org, assessment: unknown, recorded = ['E1', 'E2'], hypotheses: { title: string; confidence: number; status: string; evidenceRefs: string[] }[] = []) {
+async function sourceInvestigation(org: Org, assessment: unknown, recorded = ['E1', 'E2'], hypotheses: { title: string; confidence: number; status: string; evidenceRefs: string[] }[] = [], engine = 'llm') {
   return prisma.investigation.create({
     data: {
       organizationId: org.organizationId,
@@ -23,12 +23,12 @@ async function sourceInvestigation(org: Org, assessment: unknown, recorded = ['E
       status: 'COMPLETED',
       provider: 'anthropic',
       model: 'model-of-the-time',
-      analysisMode: 'llm',
+      analysisMode: engine,
       summary: 'Checkout is broken by v2, certainly.',
       confidence: 0.8,
       outcome: (assessment as Assessment | undefined)?.outcome ?? 'INCIDENT',
       completedAt: new Date(),
-      report: { summary: 'Checkout is broken by v2, certainly.', confidence: 0.8, analysisMode: 'llm', ...(assessment === undefined ? {} : { assessment }), hypotheses: hypotheses.map((h) => ({ ...h, description: 'd' })) } as never,
+      report: { summary: 'Checkout is broken by v2, certainly.', confidence: 0.8, analysisMode: engine, ...(assessment === undefined ? {} : { assessment }), hypotheses: hypotheses.map((h) => ({ ...h, description: 'd' })) } as never,
       evidence: { create: recorded.map((ref) => ({ ref, kind: 'log_pattern', title: `${ref} title`, summary: `${ref} summary` })) },
       hypotheses: { create: hypotheses.map((h, i) => ({ ...h, rank: i + 1, description: 'd', contradictingRefs: [], contradictions: [], facts: [], assumptions: [], gaps: [] })) },
     },
@@ -130,6 +130,7 @@ describe('older AI proposals and the investigation behind them', () => {
     expect(trail.map((a) => a.action)).toEqual(['remediation.source_review_required', 'remediation.request_approval', 'remediation.approve', 'remediation.execute_start', 'remediation.execute_success']);
     expect(trail[1]!.meta).toMatchObject({ sourceVerified: false, acknowledgedUnverifiedSource: true });
     expect(trail[2]!.meta).toMatchObject({ sourceVerified: false, acknowledgedUnverifiedSource: true });
+    expect(trail[3]!.meta).toMatchObject({ sourceVerified: false, approvedOnAcknowledgedReview: true });
   });
 
   it('a pending proposal whose investigation no longer supports it goes back for review when someone tries to approve it', async () => {
@@ -147,6 +148,26 @@ describe('older AI proposals and the investigation behind them', () => {
     const org = await createOrg();
     const action = await olderAction(org, { investigationId: null });
     expect((await org.owner.get(path(action.id))).body.sourceReview).toEqual({ required: true, verified: false, reasons: ['the investigation that proposed it no longer exists'] });
+  });
+
+  it('only the last line of the rationale is read as the evidence the proposal cites', async () => {
+    const org = await createOrg();
+    const inv = await sourceInvestigation(org, incident(), ['E1']);
+    const action = await olderAction(org, { investigationId: inv.id, rationale: 'Evidence: E7 was considered and ruled out.\nEvidence: E1' });
+    expect((await org.owner.get(path(action.id))).body.sourceReview).toEqual({ required: true, verified: true, reasons: [] });
+  });
+
+  it('an executed action keeps showing the approvals it was executed on, however long ago', async () => {
+    const org = await createOrg();
+    const approver = await org.member('ADMIN');
+    const inv = await sourceInvestigation(org, incident());
+    const action = await olderAction(org, { investigationId: inv.id, status: 'APPROVED', approvers: [{ userId: approver.userId }] });
+    await org.owner.post(`${path(action.id)}/execute`).send({ confirmManual: true }).expect(200);
+    await prisma.approval.updateMany({ where: { actionId: action.id }, data: { createdAt: new Date(Date.now() - 500 * HOUR) } });
+    await prisma.evidence.deleteMany({ where: { investigationId: inv.id } });
+    const shown = (await org.owner.get(path(action.id))).body;
+    expect(shown).toMatchObject({ status: 'EXECUTED', approvalsGranted: 1 });
+    expect(shown.approvals[0]).toMatchObject({ counts: true, expired: false });
   });
 
   it('a proposal made by a person needs no source', async () => {
@@ -281,6 +302,29 @@ describe('hypothesis confidence of older reports', () => {
     expect(detail.hypotheses[0]).toMatchObject({ confidence: 0.8, status: 'likely' });
     expect(detail.hypotheses[0].asRecorded).toBeUndefined();
     expect(detail.confidenceAsRecorded).toBeUndefined();
+  });
+
+  it.each([
+    ['rule-based', 'heuristic', { confidence: 0.45, status: 'possible' }],
+    ['mock', 'mock', { confidence: 0.1, status: 'possible' }],
+  ])('an older %s report is capped too; a rule-based summary stays its own', async (_label, engine, expected) => {
+    const org = await createOrg();
+    const inv = await sourceInvestigation(org, { ...incident(), outcome: 'DEGRADED' }, ['E1', 'E2'], [likely], engine);
+    const detail = (await org.owner.get(`/api/v1/investigations/${inv.id}`)).body;
+    expect(detail.hypotheses[0]).toMatchObject({ ...expected, asRecorded: { confidence: 0.8, status: 'likely' } });
+    if (engine === 'heuristic') expect(detail.summary).toBe('Checkout is broken by v2, certainly.');
+    const dashboard = (await org.owner.get('/api/v1/dashboard')).body;
+    expect(dashboard.recentInvestigations.find((i: { id: string }) => i.id === inv.id).confidence).toBe(expected.confidence);
+  });
+
+  it('an older rule-based report keeps its completion message, without a confidence figure the current rules would not show', async () => {
+    const org = await createOrg();
+    const created = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing' })).body;
+    const inv = await sourceInvestigation(org, { ...incident(), outcome: 'DEGRADED' }, ['E1', 'E2'], [likely], 'heuristic');
+    await prisma.investigation.update({ where: { id: inv.id }, data: { incidentId: created.id } });
+    await prisma.incidentEvent.create({ data: { incidentId: created.id, type: 'investigation', message: 'AI investigation completed (80% confidence): Errors began after v2.', actorType: 'ai_agent', actorLabel: 'OPSILUME AI', metadata: { investigationId: inv.id } } });
+    const timeline = (await org.owner.get(`/api/v1/incidents/${created.id}`)).body.timeline as { type: string; message: string }[];
+    expect(timeline.find((e) => e.type === 'investigation')!.message).toBe('AI investigation completed: Errors began after v2.');
   });
 
   it('a report stored under the current rules is shown exactly as stored', async () => {

@@ -5,7 +5,7 @@ import { assertRange, csvCell, param, timeParam } from '../lib/http';
 import { prisma } from '../lib/prisma';
 import { authOf, requirePermission } from '../middleware/auth';
 import { incidentKey, requireIncident } from './incidents';
-import { applyTimelineViews, legacyViews, presentDetail } from './investigations/legacy';
+import { applyTimelineViews, applyViews, legacyViews, presentDetail } from './investigations/legacy';
 import { createDocument } from './knowledge';
 import { logHistogram } from './logs';
 
@@ -215,7 +215,8 @@ dashboardRouter.get('/', requirePermission('read'), async (req, res) => {
     },
     serviceHealth: Object.fromEntries((['HEALTHY', 'DEGRADED', 'DOWN', 'UNKNOWN'] as const).map((h) => [h, health.find((x) => x.health === h)?._count ?? 0])),
     recentDeployments: deployments,
-    recentInvestigations: investigations,
+    // Older reports at the confidence the current rules permit (investigations/legacy.ts).
+    recentInvestigations: applyViews(investigations, await legacyViews(organizationId, investigations.map((i) => i.id))),
     pendingApprovals: pendingApprovals.map(({ _count, ...p }) => ({ ...p, approvalsRecorded: _count.approvals })),
     errorTrend: errorTrend.buckets.map((b) => ({ timestamp: b.timestamp, errors: Number(b.ERROR) + Number(b.FATAL), warnings: Number(b.WARN) })),
   });
