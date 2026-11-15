@@ -167,7 +167,7 @@ Rescoring the saved first live run (no model call; the saved files are unchanged
 | With the current guardrails (the final user-visible report) | 14 of 14 |
 | As the model wrote it (raw model output) | 9 of 14 |
 
-Four passes depend on a guardrail, not two as first reported:
+Five scenarios fail as the model wrote them. Four of them passed at the time only because a guardrail corrected the report, not two as first reported:
 
 | Scenario | What the model wrote | What the guardrail did |
 |---|---|---|
@@ -176,14 +176,14 @@ Four passes depend on a guardrail, not two as first reported:
 | `upstream_dependency_down` | An outcome of DEGRADED where the scenario is INCIDENT | The computed assessment, not the model, sets the outcome |
 | `tool_failures_degrade_gracefully` | A cause rated `likely` at 0.45, below the 0.5 threshold, that the data cannot establish | The existing rule rated it `possible` |
 
-The result recorded at the time, 13 of 14 under the criteria then in force, is unchanged; the run is not described as 14 of 14. The repeat run of `degraded_incomplete_evidence` passes 1 of 1 in all three views. No rule-based scenario needed a correction.
+The fifth, `degraded_incomplete_evidence`, is the scenario that failed at the time. It passes with the current guardrails only because of the DEGRADED cap added afterwards (section 1, `unestablishedCauseCap`), so it is a guardrail-dependent pass too, not a model improvement. The result recorded at the time, 13 of 14 under the criteria then in force, is unchanged; the run is not described as 14 of 14. The repeat run of `degraded_incomplete_evidence` passes 1 of 1 in all three views. No rule-based scenario needed a correction.
 
 **Limits.**
 - **Consistency is not correctness.** The summary agrees with the assessment by construction. That says nothing about whether the assessment, or the leading hypothesis, is right about the cause.
 - **The verified summary is formulaic.** It is built from the assessment's rationale, not written for the reader.
 - **The narrative can still contradict the assessment.** It is labelled as unverified rather than corrected. The evaluation recognises a stated outcome in it with three patterns (`services/ai/app/evals/scoring.py`), which catch explicit statements only and undercount paraphrases. The patterns are an evaluation measure, not a guarantee.
 - **Rule-based summaries are kept as written** (`summarySource: rule_based`). The API relies on `analysisMode` to recognise them, and on the assessment it is given.
-- **Stored reports are unchanged.** Rows stored before this change keep their old summary on the list, incident and remediation pages; the investigation page labels them as older.
+- **Stored reports are unchanged, and are labelled on one page only.** A model or mock report stored before this change keeps its old summary, the model's own text, and the investigation list, the incident page and the remediation page show it without any label. Only the investigation page and the printable report label it as older and unverified. A fresh install has no such rows: the seed creates no investigations and the demo uses the rule-based engine.
 - **The evaluation scores the AI service's output.** It does not run the API pass, which is tested separately.
 - **The model is not told the computed outcome before it writes.** The outcome depends on the hypotheses, which come in the same answer. The prompt is unchanged.
 
