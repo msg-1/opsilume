@@ -113,9 +113,20 @@ Each is stated as a contradiction on the hypothesis. This was added after a run 
 - **Any change supersedes.** An edit that changes the fingerprint supersedes every approval and returns the action to `PROPOSED`. So does a change made underneath the API, a change of execution target, or a change in the source investigation, found at approval or execution (`remediation.approval_invalid`). Superseded approvals stay on record and no longer count. Approval of one action authorises no other, even one with identical content.
 - **Earlier fingerprints.** Approvals given under version 1, which did not cover the rationale, the source or the target, are recognised. They are asked for again with their own message (`remediation.approval_fingerprint_outdated`), not reported as a change of content. After an upgrade, every action submitted or approved before it needs approval again.
 - **Risk is never lowered.** An edit that would lower the risk is refused; cancel the action and propose it again. On submission, on each approval and at execution, the risk is also worked out again from what the action does and the service it acts on, and raised if the stored one is below that floor. A raise supersedes the approvals and returns the action to `PROPOSED` (`remediation.risk_raised`).
-- **The threshold is recomputed.** When an approval is given and again at execution, the number needed is taken from the action's risk and the organisation's current settings, and is never lower than the number it was submitted with. If too few approvals count, nothing is executed and the action waits for the rest (`remediation.approval_insufficient`).
+- **The number of approvals needed only goes up.** For an action it is the higher of what its risk requires under the organisation's current settings and what the action already required:
+  - on proposal, the current settings;
+  - on submission, on an edit (changed or not) and when the risk is raised, never less than before;
+  - on approval and at execution, recomputed the same way.
+
+  Lowering the settings therefore never lowers an action already proposed, and raising them applies at once. An unchanged edit leaves the number as it was. If too few approvals count at execution, nothing is executed and the action waits for the rest (`remediation.approval_insufficient`, with the status it moved to).
 - **One person counts once,** at approval and at execution.
-- **Concurrent approval and edit.** Approving and every operation that supersedes approvals lock the action's row first. An approval is recorded only if the action is still awaiting approval under the fingerprint the approver was shown. So an approval and an edit at the same moment cannot leave an approval counting for content it was not given for.
+- **One lock order.** The action's row first, then its approvals. Every operation that records a decision (approve, reject), supersedes approvals (an edit, expiry, invalidation, sending an action back for review) or submits it takes the row lock first. Each acts only if the action is still in the state, and with the fingerprint, it was read in; nothing locks approvals before the action, so these cannot deadlock one another. Execution claims the action with one conditional update of the same row. As a result:
+  - an approval and an edit, or a rejection, at the same moment cannot leave an approval counting for content it was not given for;
+  - a rejection is recorded only against the content the person saw;
+  - expired approvals of an action that has moved on, to execution for example, are left as they were.
+
+  What is not locked: reading an action and the organisation's settings to decide what to do. Every write that follows is conditional, and approval and execution recompute the threshold from the settings as they are then.
+- **Audit records match what happened.** Sending an action back for review, invalidating its approvals and superseding expired ones happen in one transaction under the lock, and only if the action has not moved on. If it has, nothing changes, the request is refused, and nothing is audited. The audit records the number of approvals actually superseded and, at execution, the status the action actually moved to (`newStatus`). Existing audit entries are never changed.
 
 ### Approval validity: a security policy
 
@@ -129,6 +140,12 @@ An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This i
 
 - **Once.** The action is claimed atomically, under the fingerprint that was checked; a second request at the same moment is refused.
 - **Outcome.** A 2xx from the webhook is `applied`. A 4xx, or an address refused before sending, is `not_applied`. A timeout, a dropped connection or a 5xx is `unknown`: the request was sent and nobody knows whether the change happened. That is recorded as unknown, never as executed and never as a clean failure, and no effect is written to the service history.
+- **Failures never name the destination.** Messages from the network library, DNS and TLS name the host, the address or the URL, with any credentials or query string in it. So the stored, shown and audited summary gives a category only. The category is worked out from error codes and names, across nested causes, and is also stored as `executionResult.detail.failure`:
+  - `timeout`, `resolve`, `refused`, `reset`, `unreachable`, `tls`;
+  - `disallowed` (a private address), `invalid` (not an acceptable URL);
+  - `other`.
+
+  A redirect is not followed, and where it pointed is not recorded. Saving a webhook address records in the audit log only that it changed or was removed.
 - **A stopped process.** If the process stops after claiming the action, the action stays `EXECUTING`. The worker's sweep (`reapStranded`, `apps/api/src/modules/system.ts`) finds it after `REMEDIATION_EXECUTION_STALE_MINUTES`:
   - The threshold defaults to 10 and must be at least a minute longer than the webhook timeout.
   - The sweep records the outcome as `unknown` (`interrupted`), keeping the attempt's number, fingerprint, start time and idempotency key (`remediation.execute_interrupted`).
@@ -402,6 +419,14 @@ Other files:
 - `services/ai/tests/test_knowledge_provenance.py` also checks that a figure appearing only in earlier AI output, unknown, missing or unrecognised provenance is never "exact", while one in a trusted document is. It also checks that unknown and missing provenance support no hypothesis, fact, corroboration or production change.
 
   It also runs a report through the API whose hypotheses, facts and production change rest only on earlier AI output, text of unknown origin, or text with no provenance.
+- `remediation-consistency.test.ts` covers:
+  - audits that match the transitions that happened (including simultaneous and repeated requests, and an action cancelled mid-way);
+  - approval against rejection, rejection against rejection, and rejection against edit, at the same moment;
+  - expiry and invalidation of an action that moved on, and expiry racing a cancel;
+  - webhook failures (DNS, refusal, TLS, timeout, a redirect, credentials in the URL, nested and unexpected errors) recorded without the host, address, URL or credentials, and the settings audit without the address;
+  - the approval threshold under raised and lowered settings, unchanged and content edits, a risk increase, edits racing a settings change, and execution after a change.
+
+  Each protection was switched off in turn, and its test failed.
 - `reconciliation.test.ts` also walks reconcile, retry and execute, with each current rule refusing in turn (changed content, a risk below the floor, an expired approval, a source that no longer supports it), and concurrent retries and executions resulting in exactly one webhook call.
 - `config.test.ts` covers the validity bounds.
 - `services/ai/tests/test_knowledge_provenance.py` covers the AI service side.
