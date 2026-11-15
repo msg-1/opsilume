@@ -1,0 +1,46 @@
+# Dependency update pull requests. Dependabot reads this file from the default branch (develop),
+# so nothing here runs until it is merged there. Security alerts and automatic security updates
+# are repository settings, not part of this file (docs/git-workflow.md).
+#
+# Commit messages read "chore(deps): bump …", which the commit-message check accepts. Updates
+# are weekly and capped, so they arrive as reviewable pull requests, never as a flood.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: chore, include: scope }
+    labels: [dependencies]
+    # Pinned majors (docs/decisions.md): TypeScript 5, Prisma 6, Next 15, Zod 3, Vitest 3.
+    # A major upgrade is a decision, not a routine update.
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: uv
+    directory: /services/ai
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    commit-message: { prefix: chore, include: scope }
+    labels: [dependencies]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: docker
+    directories: [/apps/api, /apps/web, /services/ai]
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    commit-message: { prefix: chore, include: scope }
+    labels: [dependencies]
+    ignore:
+      - dependency-name: "*"
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    commit-message: { prefix: chore, include: scope }
+    labels: [dependencies]

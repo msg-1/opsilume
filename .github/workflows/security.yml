@@ -1,0 +1,75 @@
+name: Security scans
+
+# Scans that CI did not have: the AI service's Python dependencies, and the application images.
+# This workflow is separate from ci.yml and is not a required check: a newly published advisory
+# shows up here without blocking unrelated pull requests. Nothing is uploaded anywhere; results
+# are printed in the job log and the run summary. No token or account is needed.
+#
+# It runs on pull requests that change dependencies, images or this file; on every push to
+# develop; weekly, so new advisories against unchanged code are noticed; and on request.
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - package-lock.json
+      - "**/package.json"
+      - services/ai/uv.lock
+      - services/ai/pyproject.toml
+      - "**/Dockerfile"
+      - docker-compose.yml
+      - .github/workflows/security.yml
+  push:
+    branches: [develop]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: services/ai }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      # The locked production dependencies, exactly as the image installs them. pip-audit sends
+      # package names and versions to the PyPI vulnerability service; no source code leaves.
+      - name: Export the locked dependencies
+        run: uv export --frozen --no-dev --no-hashes --no-emit-project -q > "$RUNNER_TEMP/requirements.txt"
+      - name: Audit them
+        run: uvx --quiet pip-audit@2.9.0 -r "$RUNNER_TEMP/requirements.txt" --no-deps --disable-pip --progress-spinner off
+
+  images:
+    name: Container image scan (Trivy, report only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Built under their own Compose project name, so they cannot be confused with any other copy.
+      - name: Build the application images
+        run: |
+          cp .env.example .env
+          docker compose -p opspilot-scan --profile app build api ai web
+      # Trivy's official image, pinned by digest (aquasec/trivy:0.76.1). Report only for now:
+      # high and critical findings that have a fix are listed, and the job does not fail on
+      # them. Making it fail is a decision once the current findings are known.
+      - name: Scan the images
+        env:
+          TRIVY: aquasec/trivy@sha256:790fd66d1697395d8693d1acaa1ea702406a20f109b6fc7bac8db623eca6c06c
+        run: |
+          echo "## Container image scan (Trivy 0.76.1, HIGH and CRITICAL with a fix available)" >> "$GITHUB_STEP_SUMMARY"
+          for image in api ai web; do
+            echo "### opspilot-scan-$image" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v trivy-cache:/root/.cache "$TRIVY" \
+              image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 --no-progress --skip-version-check "opspilot-scan-$image" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          done

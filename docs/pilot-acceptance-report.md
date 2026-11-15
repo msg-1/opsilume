@@ -1,8 +1,8 @@
 # Pilot acceptance report
 
-Milestone 9, 15 November 2026. What has been verified about OPSILUME before an external team is asked to try it, how it was verified, what has not been, and what stands in the way.
+Milestone 9, 15 November 2026; updated after Milestone 10 the same day for model-backed investigations, spend and security scanning. What has been verified about OPSILUME before an external team is asked to try it, how it was verified, what has not been, and what stands in the way. The audit record of the live model evaluation is [milestone-10-final-validation-report.md](milestone-10-final-validation-report.md).
 
-**This report does not say OPSILUME is ready for production or for enterprise use.** No external team has used it. Nothing here shows that it shortens incidents. No model has been run against the current code, so there is no validated accuracy of AI analysis, on customer data or otherwise. Every measurement comes from one laptop and is not a throughput figure for production. There has been no external security review or certification. There is one process of each component on one machine: no high availability and no disaster recovery.
+**This report does not say OPSILUME is ready for production or for enterprise use.** No external team has used it. Nothing here shows that it shortens incidents. A model has been run against the current code only on 14 synthetic scenarios (Milestone 10), so there is no validated accuracy of AI analysis on customer data or on real incidents. Every measurement comes from one laptop and is not a throughput figure for production. There has been no external security review or certification. There is one process of each component on one machine: no high availability and no disaster recovery.
 
 What it does say: for each area, which claims rest on which kind of evidence, so that whoever decides on a controlled pilot knows what they are relying on.
 
@@ -22,7 +22,7 @@ Every claim carries one of these labels. They are not grades of confidence; they
 
 **Nothing in this report carries the label External.** That is the single most important fact in it.
 
-Suites, as of this report: API 206 integration tests; AI service 232 tests and 14 evaluation scenarios; web 53; browser journeys 12; failure drills 11; backup drill 9 steps. All run with the rule-based engine; none calls a model.
+Suites, as of `develop` at `8be2789` (CI): API 213 integration tests; AI service 276 tests and 14 evaluation scenarios; web 53; browser journeys 12; failure drills 11; backup drill 9 steps. All run with the rule-based engine or a mocked model; none calls a model. The one live model evaluation (Milestone 10) is in section 6.
 
 ## 1. Architecture and deployment topology
 
@@ -129,7 +129,7 @@ Detail: [ai-validation.md](ai-validation.md).
 | Control characters and credential-like strings are removed from report text | Automated | `test_validation_matrix.py` (added in Milestone 9) |
 | With no model, an unusable answer, a timeout or exhausted credit, the rule-based engine writes the report and it is labelled as rule-based | Automated | `test_model_responses.py`, `test_claude_provider.py` |
 | Ten failure scenarios on real telemetry from three instrumented services | Local | `npm run demo:e2e`, rule-based engine; the recorded run is in `demo/README.md`. Not in CI and not re-run in this milestone |
-| **A language model with the current report format, tools and guardrails** | **Not tested** | Last live run: Milestone 3, six scenarios, an older format. A plan with a proposed ceiling of $1.00 is written and was not executed |
+| **A language model with the current report format, tools and guardrails** | **Local, synthetic only; acceptance criteria not all met** | Milestone 10, `claude-haiku-5-5`: **13 of 14** on the first live run; 14 of 14 when its saved output is rescored with the PR #28 guardrails (post-processing, not a live result); **1 of 1** on the single live repeat of the failed scenario. Two healthy-state scenarios passed only because the guardrails corrected the model. One figure in a stated fact is flagged unsupported, which question 6 of [ai-validation.md](ai-validation.md) does not allow. $0.108031 spent of $0.87 approved. Not tested: real incidents, other models, a provider failure mid-run |
 | Usefulness of a report to an engineer who did not build the product | Not tested | No such engineer has read one |
 | Accuracy on real incidents | Not tested | Every scenario is synthetic and small |
 | The rule-based engine recognises only the patterns it has rules for | Limitation | Outside them it reports what it found and says the cause is undetermined |
@@ -237,9 +237,10 @@ What an operator must provide. None of it was exercised outside the development 
 | Review by anyone other than the author | **Not done** |
 | External penetration test, audit or certification of any kind | **Not done** |
 | Dependency advisories: `npm audit` on shipped Node dependencies, high and critical, on every pull request | Automated |
-| Python dependency advisories; container image scanning; static analysis | **Not in place** |
+| Python dependency audit (`pip-audit`) and container image scanning (Trivy, report only) | Configured in `.github/workflows/security.yml`, not a required check. **First run, 15 Nov 2026 (run 43704593518, on the pull request that added it): both jobs executed.** `pip-audit`: no known vulnerabilities. Trivy, HIGH and CRITICAL with a fix: api 10 HIGH and web 10 HIGH, in Node packages that are very likely the npm CLI bundled in `node:22-slim` and not our dependencies; ai 2 HIGH in Debian `zlib1g`. No critical. Findings are reported, not yet remediated (`docs/git-workflow.md`). Static analysis: not in place |
 | Secret scanning and push protection on the repository | Enabled (GitHub setting, read on 15 November 2026) |
-| Dependabot alerts and security updates | Not enabled |
+| Dependabot | Version updates configured (`.github/dependabot.yml`); they take effect once the file is on `develop`. Alerts and automatic security updates are repository settings and are **not enabled** |
+| Shipped Node dependencies | `npm audit --omit=dev`: 5 moderate advisories, no high or critical. They come from one chain under the OpenTelemetry GCP resource detector (`gcp-metadata` → `gaxios` 7.1.3 → `rimraf` → `glob` → `minimatch`); see `docs/git-workflow.md`. Not reachable as installed. The fix needs an override, which is an owner decision |
 | Credentials encrypted at rest (AES-256-GCM) or stored as hashes; never returned by the API | Automated |
 | Audit log of mutating actions | Automated |
 | Spans and logs scrubbed of content, credentials and personal identifiers | Automated (shared fixtures in both services) |
@@ -251,7 +252,7 @@ A blocker is resolved either by doing it or by taking the thing out of the pilot
 
 | # | Blocker | Resolved by |
 |---|---|---|
-| 1 | **Engine not decided.** A model has not run on this code | Pilot on the rule-based engine and say so; or approve the budget in [ai-validation.md](ai-validation.md) (proposed ceiling $1.00), run it, and meet its acceptance criteria |
+| 1 | **Engine not decided.** The live model evaluation ran (Milestone 10) and does not meet all of its pre-set acceptance criteria: question 6 is not met as written, and question 4 needed guardrail repair in two scenarios | Pilot on the rule-based engine and say so. Or review the five flagged figures and the guardrail-assisted passes, decide whether they are acceptable, and if a further run is wanted, approve it under a new ledger; this one's repeat is used |
 | 2 | **GitHub never tested against github.com** | The ten-minute read-only procedure in [github-validation.md](github-validation.md) with a dedicated token and repository; or exclude GitHub from the pilot |
 | 3 | **No pilot host exists.** Nothing has run outside a laptop and CI | Provision one; TLS; real secrets; scheduled backup with `status` check; one restore there; `npm run loadtest` there |
 | 4 | **No review by a second person** of authentication, tenancy and outbound requests | Someone other than the author reads those paths. An external test is better and is a cost decision |
@@ -274,7 +275,7 @@ Not blockers, but the customer should hear them: single machine with no failover
 | Outbound request security | Ready for a controlled pilot | Tested with real connections; no external test |
 | Idempotency | Ready for a controlled pilot | Tested including under concurrency |
 | Investigations, rule-based | Ready with limitations | Verified on synthetic scenarios; usefulness to real engineers unknown |
-| Investigations, with a model | **Not validated** | No run on the current code |
+| Investigations, with a model | **Not validated** for a pilot | Evaluated on 14 synthetic scenarios (13 of 14 live, 1 of 1 on the repeat); the acceptance criteria set in advance are not all met. Not run on any customer's data |
 | Remediation safety | Ready for a controlled pilot | Human approval enforced and tested; the receiver's behaviour is the customer's |
 | Backup and restore | Ready with limitations | Drilled locally and in CI; scheduling and off-site copies are the operator's; no point-in-time recovery |
 | Performance | Ready with limitations | Adequate at the measured volumes on one laptop; aggregating views unresolved; no figure for the customer's volume |

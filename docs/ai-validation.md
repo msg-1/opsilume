@@ -1,12 +1,51 @@
 # Validating the analysis with a live model
 
-**Status, 15 November 2026: no model has been called since the live verification of Milestone 3** ([claude-live-verification.md](claude-live-verification.md)), and none was called in Milestone 9. Since Milestone 3 the report format, the outcome assessment, the action-effect rules, the trace tool and the historical health tool have all changed. Everything about them is verified on the rule-based engine and with a scripted stand-in for a model. Whether a real model behaves well with them is not known.
+**Status, 15 November 2026: a live model has been run on the current code.** In Milestone 10, Anthropic `claude-haiku-5-5` was evaluated on the 14 synthetic scenarios, under an approved ceiling of $0.87 enforced by a ledger. The full audit record is [milestone-10-final-validation-report.md](milestone-10-final-validation-report.md); spend is in [claude-live-verification.md](claude-live-verification.md).
 
-This document says what was tested without a model, and exactly what a paid run would have to cover, what it should cost and what it may cost at most. A paid run needs the owner's explicit approval of that budget; none is made by any test, script or CI job in this repository. **The plan below has not been executed.**
+Measured against the acceptance criteria this document set beforehand (below), **the run does not meet them all.**
+- **Question 6 is not met as written:** one figure in a stated fact is flagged as unsupported.
+- **Question 4 is met** on the reports the product shows, but in two of four healthy scenarios only because the guardrails corrected the model.
+
+Under the rule stated with those criteria, a pilot runs with the rule-based engine until question 6 is resolved. Whether passes that needed guardrail repair are acceptable is the owner's decision.
+
+This document also says what is tested without a model, and what a paid run must cover. Every paid run needs the owner's explicit approval of a budget; no test, script or CI job in this repository makes one.
+
+## Live results, Milestone 10
+
+Three results, which must not be combined:
+
+| Result | What it is | Outcome |
+|---|---|---|
+| Original live evaluation | 14 scenarios, real model, 15 Nov 2026 08:23–08:33 UTC, before the DEGRADED guardrail (PR #28) | **13 / 14** |
+| Corrected rescore | The same saved model output with the PR #28 guardrails applied, `--rescore`; no model call | 14 / 14. Post-processing, not a live result |
+| Post-fix live repeat | `degraded_incomplete_evidence` only, real model, 15 Nov 2026 09:56 UTC, after PR #28 | **1 / 1** |
+
+**The original live run did not pass 14 of 14.** Here is what happened to each kind of scenario:
+
+- **The failure:** `degraded_incomplete_evidence` rated a symptom-only explanation `likely` at 0.50, under a DEGRADED outcome. The guardrails then had no rule for DEGRADED; PR #28 added one in both services.
+- **The repeat:** the model rated its explanation `possible` at 0.40 and every applicable criterion passed. It had **no guardrail notes**: the model stayed within the rule itself, so **the new cap was not exercised live**. It is proven by tests only. One sample cannot show whether the new report instruction caused the change.
+- **Passes that needed guardrail repair:** `healthy_no_signal` and `healthy_misleading_signals`. The model concluded DEGRADED and offered a fault hypothesis rated `possible` at 0.30. The assessment recomputed HEALTHY, and the guardrails capped the hypothesis at 0.20, `unlikely`. Both score as passes on the reports the product shows; as the model wrote them they would have failed question 4.
+- **Assessment above the model:** in `upstream_dependency_down` the model concluded DEGRADED and the assessment computed INCIDENT. The outcome score uses the assessment.
+- **The API is not part of a model evaluation.** The runner drives the AI service against a simulated tool API. The API's independent guardrail pass, including the DEGRADED cap and the rule that a report without an assessment has no verified outcome, is covered by the API tests (`apps/api/tests/contract.test.ts`, `intelligence.test.ts`).
+
+Against the questions below:
+
+| # | Question | Result |
+|---|---|---|
+| 1 | Report format | Met. All 14 reports, and the repeat, were written by the model (`mode: llm`); no fallback. `citations` and `no_invention` 14 of 14 |
+| 2 | Respects time | Met. The three historical scenarios passed |
+| 3 | `get_service` with a window | Met. In the three historical scenarios, 8 of 8 calls succeeded, all with the investigation window |
+| 4 | "Nothing is wrong" when nothing is | **Met only after guardrail repair.** The final reports pass 4 of 4; as written by the model, 2 of 4 claimed DEGRADED with a `possible` fault hypothesis at 0.30 |
+| 5 | Only safe actions | Met. `remediation` 14 of 14, and 1 of 1 in the repeat; no production change proposed where none was justified |
+| 6 | Figures true to the evidence | **Not met as written.** 595 figures checked, 574 supported, 21 flagged: 15 uncited, 1 stated as an estimate, 5 unsupported. One unsupported figure is in a fact ("13.33 ERROR/FATAL lines per minute" against evidence of "13.33 /min" in `red_herring_closer_in_time`). The value matches and the wording of the unit does not, so this looks like a checker false positive, not yet confirmed. The other four: three in summaries and one in an action, including "09:30Z" in `upstream_dependency_down` (in a summary and in the action), which no evidence carries. Reviewed in `docs/pr-30-security-and-ai-evidence-investigation.md`. The repeat: 35 checked, 35 supported |
+| 7 | Cost and time | Recorded: $0.100903 and 83 requests for 14 scenarios (575 s); $0.007128 and 7 requests for the repeat |
+| 8 | Provider failure mid-run | **Not run.** Not authorised; covered only by mocked tests (`tests/test_model_responses.py`, `test_claude_provider.py`) |
+
+Compared with the rule-based baseline (14 of 14, $0, under a second per scenario), the model passed 13 of 14 as shown at the time. It needed guardrail corrections in 5 of 14 reports: two healthy-state overclaims, one outcome raised by the assessment, and figure flags in three. **None of this is accuracy on real incidents:** every scenario is synthetic, and each was run once (one twice).
 
 ## The twelve areas, and where each is tested without a model
 
-All of these run in CI with `AI_PROVIDER=deterministic` or a scripted model. AI suite: 232 tests; evaluations: 14 of 14 scenarios.
+All of these run in CI with `AI_PROVIDER=deterministic` or a scripted model. AI suite: 276 tests at `8be2789` (CI); evaluations: 14 of 14 scenarios.
 
 | Area | What is asserted | Where |
 |---|---|---|
@@ -99,9 +138,9 @@ The same 14 scenarios are scored by the same scorer for both engines, so the com
 
 | Compared | Baseline (rule-based, free, in CI) | Live model |
 |---|---|---|
-| Scenarios passing | 14 of 14 | To be recorded |
+| Scenarios passing | 14 of 14 | 13 of 14 live (15 Nov 2026); 14 of 14 after rescoring with the PR #28 guardrails; 1 of 1 on the repeat |
 | Outcome (HEALTHY / DEGRADED / INCIDENT / UNDETERMINED) | Computed from evidence | Computed the same way from the evidence the model gathered: a difference means the model gathered different evidence |
-| Cause and service | Pass on all that have one | To be recorded |
+| Cause and service | Pass on all that have one | Root cause 13 of 14, service 5 of 5 applicable |
 | Citations, no invention | Pass by construction | The point of the run |
 | Confidence | Within ceilings | Value before and after the guardrails, per scenario |
 | Guardrail repairs | None needed | Count and kind per report: a model that needs many repairs is passing because of the guardrails |
