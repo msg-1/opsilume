@@ -566,3 +566,20 @@ def test_deployment_and_commit_evidence_show_the_same_commit_prefix():
     deployment_item, commit_item = store.items
     assert sha[:12] in deployment_item.summary and sha[:13] not in deployment_item.summary
     assert sha[:12] in f"{commit_item.title} {commit_item.summary}"
+
+
+# The API uses an assessment only if every reference it cites arrived as an evidence event before
+# the report, and an INCIDENT cites at least one (apps/api/src/modules/investigations/guardrails.ts,
+# trustedAssessment). A genuine report must always pass that check.
+@pytest.mark.parametrize("engine", ["rule-based", "mock"])
+@pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
+async def test_the_assessment_cites_only_evidence_sent_to_the_api_before_the_report(scenario, engine):
+    from app.mock_provider import MockProvider
+
+    _, events, _ = await run(scenario.name, MockProvider(Settings(_env_file=None)) if engine == "mock" else None)
+    final = next(i for i, e in enumerate(events) if e["type"] == "final")
+    sent = {e["evidence"]["ref"] for e in events[:final] if e["type"] == "evidence"}
+    assessment = events[final]["report"]["assessment"]
+    assert set(assessment["supportingRefs"]) <= sent
+    if assessment["outcome"] == "INCIDENT":
+        assert assessment["supportingRefs"]

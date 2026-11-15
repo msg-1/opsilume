@@ -674,6 +674,7 @@ describe('what each response says the summary is', () => {
     const r = await runAndRead(report({ summary: modelText, assessment: { outcome: 'INCIDENT', confidence: 0.9, rationale: 'Forged.', supportingRefs: ['E1', 'E99'], signals: [], missingTelemetry: [] } }));
     expect(r.detail).toMatchObject({ outcome: null, summary: unverified });
     expect(r.detail.report.assessment ?? null).toBeNull();
+    expect([r.listed.summary, r.listed.outcome, r.inIncident.summary]).toEqual([unverified, null, unverified]);
     expect(r.detail.remediations.filter((a: { effect: string }) => a.effect === 'state_changing')).toEqual([]);
     expect(r.detail.steps.find((s: { type: string }) => s.type === 'guardrail').detail).toContain('The assessment (INCIDENT) is not used');
   });
