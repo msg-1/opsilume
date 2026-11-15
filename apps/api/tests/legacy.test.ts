@@ -48,3 +48,21 @@ describe('legacy report view', () => {
     expect(legacyView(stored({ summary: null }), recorded)?.narrative).toBe('');
   });
 });
+
+describe('legacy hypothesis ratings', () => {
+  const RANK: Record<string, number> = { unlikely: 0, possible: 1, likely: 2 };
+  it('never raises a confidence or a status, for any outcome, engine or evidence', async () => {
+    const { presentHypotheses, presentConfidence } = await import('../src/modules/investigations/legacy');
+    for (const outcome of ['HEALTHY', 'DEGRADED', 'INCIDENT', 'UNDETERMINED', null])
+      for (const engine of ['llm', 'mock', 'heuristic', null])
+        for (const status of ['likely', 'possible', 'unlikely'])
+          for (const confidence of [0, 0.1, 0.3, 0.45, 0.5, 0.8, 1])
+            for (const evidenceRefs of [[], ['E1'], ['E9']]) {
+              const [shown] = presentHypotheses([{ confidence, status, evidenceRefs }], outcome, new Set(['E1']), engine);
+              expect(shown!.confidence).toBeLessThanOrEqual(confidence);
+              expect(RANK[shown!.status]).toBeLessThanOrEqual(RANK[status]!);
+              expect(shown!.asRecorded === undefined).toBe(shown!.confidence === confidence && shown!.status === status);
+              expect(presentConfidence(confidence, [shown!])).toBeLessThanOrEqual(confidence);
+            }
+  });
+});

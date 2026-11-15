@@ -35,6 +35,9 @@ VERIFICATION_STATUSES: tuple[str, ...] = ("verified", "partly", "unsupported", "
 SummarySource = Literal["assessment", "unverified", "rule_based"]
 SUMMARY_SOURCES: tuple[str, ...] = ("assessment", "unverified", "rule_based")
 
+KnowledgeProvenance = Literal["document", "earlier_ai_output", "contains_earlier_ai_output", "unknown"]
+KNOWLEDGE_PROVENANCES: tuple[str, ...] = ("document", "earlier_ai_output", "contains_earlier_ai_output", "unknown")
+
 GUARDRAIL_LIMITS: dict[str, Any] = {
     "maxConfidence": {
         "llm": 0.9,
@@ -58,7 +61,8 @@ GUARDRAIL_LIMITS: dict[str, Any] = {
     "withdrawalReasons": {
         "unlikelyHypothesis": "it would change production on the strength of a hypothesis rated unlikely",
         "noIncident": "it would change production, and the evidence supports {outcome}, not an incident with an established cause",
-        "noAssessment": "it would change production, and the report carries no assessment of the evidence, so no incident with an established cause is verified"
+        "noAssessment": "it would change production, and the report carries no assessment of the evidence, so no incident with an established cause is verified",
+        "earlierAiOutput": "it would change production, and it rests only on knowledge-base text that is earlier AI output or of unknown origin, which is not evidence"
     },
     "nextStepPrefixes": {
         "withdrawn": "Considered and not recommended ({reason}): {title}",

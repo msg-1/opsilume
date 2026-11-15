@@ -96,20 +96,74 @@ Each is stated as a contradiction on the hypothesis. This was added after a run 
 
 ## 4. Approval and execution
 
-`apps/api/src/modules/remediation/`. Only signed-in people can approve, execute, edit or retry; API keys and the AI's tool token are refused on those routes.
+`apps/api/src/modules/remediation/`. Only signed-in people can approve, execute, edit, retry or reconcile; API keys and the AI's tool token are refused on those routes.
+
+**Lifecycle.** `PROPOSED → PENDING_APPROVAL → APPROVED → EXECUTING → EXECUTED | FAILED`, with `REJECTED`, and `CANCELLED` from any state before execution. A `FAILED` action carries an outcome: `not_applied` (certainly not done) or `unknown` (may or may not have been done).
+
+### Approval
 
 - **Read-only diagnostics** need no approval. A person records that it was done and what was found. They are never sent to the webhook, so a misjudged text cannot change anything. The effect is recomputed at that moment; if the text now reads as a change, the action is reclassified and refused.
 - **State-changing actions** need at least one approval, whatever the organisation's settings say, from someone other than the proposer and the requester (unless self-approval is switched on), and are at least medium risk.
-- **Binding.** An approval is given for a hash of the action's type, title, description, risk, service and parameters. The interface sends the hash it displayed, so an approver who has an old version open is stopped.
-- **Edits.** Changing anything an approver was shown supersedes every approval and returns the action to `PROPOSED`. Superseded approvals stay on record and no longer count. Changing the rationale alone does not. An edit changes only the fields it names: the risk stays what it was unless a new one is given, and a new one is subject to the same floor as a proposal. A change of risk is a change of content.
-- **At execution** the hash is recomputed and only approvals given for it are counted. If the content is not what was approved, however it came to differ, execution is refused, the approvals are superseded and the action starts again. Approval of one action authorises no other, even one with identical content.
-- **The threshold is recomputed.** When an approval is given and again at execution, the number needed is taken from the action's risk and the organisation's current settings, and is never lower than the number it was submitted with. If the content is what was approved but too few approvals count for it, nothing is executed, the approvals given stay valid and the action returns to `PENDING_APPROVAL` for the rest (audit action `remediation.approval_insufficient`).
-- **Once.** The action is claimed atomically; a second request at the same moment is refused.
-- **Outcome.** A 2xx from the webhook is `applied`. A 4xx, or an address refused before sending, is `not_applied`. A timeout, a dropped connection or a 5xx is `unknown`: the request was sent and nobody knows whether the change happened. That is recorded as unknown, never as executed and never as a clean failure, and no effect is written to the service history.
-- **Retry.** After `not_applied`, a retry needs nothing further. After `unknown`, a person must first confirm that the change was not applied. Every attempt carries the same idempotency key (`Idempotency-Key` header and `idempotencyKey` in the body), so a receiver that did apply the first attempt can refuse the second. The approvals are checked again when it is executed.
-- **Record.** The execution result and the audit trail carry the content hash, the approvers with the time of each approval, the attempt number, the mode and the outcome.
+- **The approval fingerprint** (`content.ts`, version 2) is what an approval is given for. The rule: everything an approver is shown and everything the webhook receives, plus where it would be carried out:
+  - **content:** type, title, description, rationale, risk, service, incident, source investigation, the evidence the rationale cites, and the parameters;
+  - **target:** carried out by hand, or by a webhook, identified by a digest of its address (never the address);
+  - **review:** whether the source investigation was unverified when the action was submitted (section 4c).
 
-What OPSILUME cannot guarantee: that a webhook receiver honours the idempotency key, or that a person who confirms "not applied" checked.
+  Free text is compared after normalising line endings and trailing whitespace only, so re-saving the same text keeps the approvals. Parameters are compared as values: key order does not matter, nothing else is normalised. Each approval stores the fingerprint it was given for. The interface sends the fingerprint it displayed, on approval and on execution, so a person who has an old version open is stopped.
+- **Any change supersedes.** An edit that changes the fingerprint supersedes every approval and returns the action to `PROPOSED`. So does a change made underneath the API, a change of execution target, or a change in the source investigation, found at approval or execution (`remediation.approval_invalid`). Superseded approvals stay on record and no longer count. Approval of one action authorises no other, even one with identical content.
+- **Earlier fingerprints.** Approvals given under version 1, which did not cover the rationale, the source or the target, are recognised. They are asked for again with their own message (`remediation.approval_fingerprint_outdated`), not reported as a change of content. After an upgrade, every action submitted or approved before it needs approval again.
+- **Risk is never lowered.** An edit that would lower the risk is refused; cancel the action and propose it again. On submission, on each approval and at execution, the risk is also worked out again from what the action does and the service it acts on, and raised if the stored one is below that floor. A raise supersedes the approvals and returns the action to `PROPOSED` (`remediation.risk_raised`).
+- **The threshold is recomputed.** When an approval is given and again at execution, the number needed is taken from the action's risk and the organisation's current settings, and is never lower than the number it was submitted with. If too few approvals count, nothing is executed and the action waits for the rest (`remediation.approval_insufficient`).
+- **One person counts once,** at approval and at execution.
+- **Concurrent approval and edit.** Approving and every operation that supersedes approvals lock the action's row first. An approval is recorded only if the action is still awaiting approval under the fingerprint the approver was shown. So an approval and an edit at the same moment cannot leave an approval counting for content it was not given for.
+
+### Approval validity: a security policy
+
+An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This is a policy, not an experimentally established value. Whoever deploys OPSILUME must choose it and review it.
+- **Valid values** are whole hours from 1 to 720. Anything else (0, negative, fractional, empty, above 720, not a number) stops the API from starting.
+- **Expiry is judged by the database clock,** which also timestamps approvals, at approval and at execution. An approval dated more than five minutes ahead of it does not count.
+- **An expired approval stays expired.** It is superseded when found: it stays on record, never counts again whatever any clock says later, and its approver may decide again. Repeating an old approve request does not revive it either: it is a new approval, made now, by a signed-in person, for the fingerprint the action has now. The action returns to `PENDING_APPROVAL`. The audit records the time of each expired approval and the cutoff (`remediation.approval_expired`).
+- **Approvals are never extended.**
+
+### Execution, outcome and reconciliation
+
+- **Once.** The action is claimed atomically, under the fingerprint that was checked; a second request at the same moment is refused.
+- **Outcome.** A 2xx from the webhook is `applied`. A 4xx, or an address refused before sending, is `not_applied`. A timeout, a dropped connection or a 5xx is `unknown`: the request was sent and nobody knows whether the change happened. That is recorded as unknown, never as executed and never as a clean failure, and no effect is written to the service history.
+- **A stopped process.** If the process stops after claiming the action, the action stays `EXECUTING`. The worker's sweep (`reapStranded`, `apps/api/src/modules/system.ts`) finds it after `REMEDIATION_EXECUTION_STALE_MINUTES`:
+  - The threshold defaults to 10 and must be at least a minute longer than the webhook timeout.
+  - The sweep records the outcome as `unknown` (`interrupted`), keeping the attempt's number, fingerprint, start time and idempotency key (`remediation.execute_interrupted`).
+  - It moves only that exact attempt, so two workers sweeping at once record it once.
+  - It never resets the action to `APPROVED` or `PROPOSED`, and never sends anything.
+- **A late outcome.** The outcome of an attempt is written only while that attempt is still in progress. An answer that arrives after the attempt was recorded as interrupted goes to the audit log (`remediation.outcome_after_interruption`) and changes nothing else.
+- **Reconciliation** (`POST /remediations/:id/reconcile`, needs `remediation:execute`). For the latest attempt whose outcome is unknown, a person checks the target system and records what they found, with notes. Nothing is sent anywhere.
+
+  | They record | Result |
+  |---|---|
+  | applied | The action is `EXECUTED`, and its effect goes on the service history |
+  | not applied | It stays `FAILED` with outcome `not_applied`, and may be retried |
+  | still unknown | It stays blocked, with the check on record, and can be reconciled again later |
+
+  The decision is conditional on the attempt and the state, so a second decision made from the same view is refused. Every decision is audited (`remediation.reconcile`) and kept on the execution record.
+- **Retry only after "not applied" is established.** A retry names the attempt it retries (`{ attempt }`), and is accepted only for the latest attempt and only when its outcome is `not_applied`:
+  - either the webhook refused it (a 4xx, or a destination refused before sending), so nothing was sent or applied;
+  - or a person recorded "not applied" through reconciliation, as a separate decision.
+
+  An unknown outcome is never retried on anyone's word inside the retry request. The former `confirmNotApplied` shortcut is gone. A retry returns the action to `APPROVED`, conditionally on the attempt, so concurrent retries count once. Execution then checks everything again: the fingerprint, the source investigation and its evidence, the risk, and the number and age of the approvals. The audit records the reconciliation (`remediation.reconcile`) and the retry (`remediation.retry`, with `notAppliedBecause: refused | reconciled`). Every attempt carries the same idempotency key (`Idempotency-Key` header and `idempotencyKey` in the body), so a receiver that did apply the first attempt can refuse the second.
+- **Record.** The execution result and the audit trail carry the approval fingerprint, the approvers with the time of each approval, the attempt number, the source check, the mode and the outcome.
+
+**Operator procedure for an unknown outcome.**
+1. Open the action. An interrupted attempt says so under "Mode".
+2. Check the target system for the change, using the attempt number and the idempotency key (the action id).
+3. Record what you found with "Record what happened": applied, not applied, or still unknown, saying what you checked.
+4. Only after "not applied" is recorded, retry (naming the attempt), and execute again. Execution checks the current approvals, which may have expired meanwhile, so fresh approval may be needed.
+5. Look in the audit log for a late outcome (`remediation.outcome_after_interruption`): it can tell you what the webhook answered after the attempt was marked interrupted.
+
+**What OPSILUME cannot guarantee:**
+- that a webhook receiver honours the idempotency key;
+- that a person who records an outcome checked;
+- what an external system actually did.
+
+These controls make sure nothing is repeated or assumed by the product itself. They do not establish the outcome.
 
 ## 4a. Health belongs to a time
 
@@ -155,7 +209,7 @@ Signing the assessment would add a key to manage and rotate, and would protect o
 | Stored report | Shown as |
 |---|---|
 | Carries `summarySource` (every report from this change on) | Exactly as stored |
-| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Exactly as stored |
+| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Its own summary, as stored; hypothesis ratings at the current caps (section 4c) |
 | Model or mock, engine unknown included, with a trusted assessment (well-formed outcome, rationale and references; the same consistency check against the evidence stored for it) | The summary built from that assessment; the stored text as the unverified narrative; the outcome is the assessment's |
 | Model or mock without one (absent, malformed, citing unrecorded evidence, or an INCIDENT citing nothing) | "Outcome not verified"; the stored text as the unverified narrative; no outcome, and no assessment, shown |
 
@@ -203,11 +257,158 @@ The fifth, `degraded_incomplete_evidence`, is the scenario that failed at the ti
 - **The narrative can still contradict the assessment.** It is labelled as unverified rather than corrected. The evaluation recognises a stated outcome in it with three patterns (`services/ai/app/evals/scoring.py`), which catch explicit statements only and undercount paraphrases. The patterns are an evaluation measure, not a guarantee.
 - **Rule-based summaries are kept as written** (`summarySource: rule_based`). The API relies on `analysisMode` to recognise them. A report that arrives labelled rule-based keeps its own summary: the label comes from the same trusted service.
 - **The API's trust in the assessment is a boundary and a consistency check, not proof.** An assessment that fits the recorded evidence is used whoever produced it. See above.
-- **Copies made before this change keep the old text.** The read-time view changes what is shown, not what was copied: notifications already sent, postmortems already drafted, and remediation actions already proposed from an older report. An older report without a trusted assessment may have proposed a production change at the time; the action remains, and still needs a person to submit, another to approve, and one to execute it. A fresh install has no older rows: the seed creates no investigations and the demo uses the rule-based engine.
-- **An older report's hypotheses are shown as stored.** The read-time view changes the summary, narrative, outcome and assessment only. An older report shown as unverified may still show a hypothesis rated likely, at its stored confidence, which a new report without a trusted assessment would have capped.
+- **Copies made before this change keep the old text.** Notifications already delivered and postmortems already drafted are not rewritten (section 4c). Remediation actions proposed from an older report are checked again before anything happens to them (section 4c). A fresh install has no older rows: the seed creates no investigations and the demo uses the rule-based engine.
+- **Older hypotheses are shown at the current caps,** with their stored ratings beside them (section 4c).
 - **An older report shown as verified is verified now, not then.** Its summary is derived when it is read, from the assessment it stored.
 - **The evaluation scores the AI service's output.** It does not run the API pass or the read-time view, which are tested separately, and its outcome patterns undercount paraphrases (above).
 - **The model is not told the computed outcome before it writes.** The outcome depends on the hypotheses, which come in the same answer. The prompt is unchanged.
+
+## 4c. Source investigations, older actions, confidence and copies
+
+**Which proposals have a source to check.** A state-changing action linked to an investigation, whoever proposed it, and every AI proposal (one without an investigation has lost its source). `apps/api/src/modules/remediation/source.ts` checks it from what is stored, when it is proposed, submitted, approved, executed or shown:
+- the investigation still exists;
+- its stored assessment is well formed, cites only evidence recorded for that run (an INCIDENT at least one), and is INCIDENT;
+- the evidence the rationale cites (its last `Evidence:` line) was recorded for that run.
+
+Anything unclear counts as unverified. The result is recorded in the audit log on `propose`, `request_approval`, `approve` and `execute_start`.
+
+**An unverified source needs a fresh human review.** It is neither discarded nor rejected: rejecting it would only teach people to drop the link, since an unlinked proposal is judged as before.
+- **Approvals given before are set aside.** While the source is unverified, approvals are bound to a fingerprint that marks it (section 4), so approvals given before, or without acknowledging it, never count. An action already submitted or approved goes back to `PROPOSED`, with its approvals kept on record (`remediation.source_review_required`).
+- **Each person acknowledges it.** Submitting and each approval need `acknowledgeUnverifiedSource: true`. The interface shows the reasons, says whether an AI proposed it or it is linked to an investigation, and asks each person to confirm that their decision does not rely on the investigation.
+- **Nothing is executed automatically** because it was approved earlier.
+
+Authorship is kept: a human proposal stays a human proposal. Human proposals not linked to an investigation, and read-only diagnostics, keep the existing policy, with no source check. An action whose source is verified goes through exactly as before. Once an action has left the approval stage (executing, executed, rejected, cancelled), its approvals are shown as they counted when it was decided.
+
+Limits:
+- **Only AI proposals carry structured evidence references.** A person's rationale is checked for an `Evidence:` line only if they wrote one.
+- **The link can be removed.** A human proposal created without an investigation link, or whose investigation was deleted, is not source-checked. Deleting the investigation does change the fingerprint, so approvals given before no longer count.
+- **Consistency, not proof.** The source check is the same consistency check as in section 4b: it cannot tell a stored assessment that fits its evidence from one that was not computed by the AI service.
+
+**Confidence of older reports.** A report stored before `summarySource` existed, from any engine, is shown with the hypothesis ratings the current rules permit under its trusted outcome (`presentHypotheses` in `apps/api/src/modules/investigations/legacy.ts`):
+
+| Trusted outcome | Each hypothesis is shown |
+|---|---|
+| HEALTHY or UNDETERMINED | Unlikely, at most `noFaultHypothesisCap` (0.2) |
+| DEGRADED, or no trusted assessment | At most `unestablishedCauseCap` (0.45), and not likely |
+| INCIDENT | As stored, unless it cites no recorded evidence: then at most `unsupportedHypothesisCap` (0.3), and not likely |
+
+- **Caps:** the engine's maximum confidence applies in every case too.
+- **Direction and order:** ratings are only ever lowered, never raised, and the order is kept.
+- **Overall confidence:** shown no higher than the strongest hypothesis shown.
+- **Stored values:** unchanged, and returned beside the shown ones (`asRecorded`, `confidenceAsRecorded`).
+- **Labelling:** the investigation page and the printable report label the stored values as historical, not current.
+- **Where the shown values are used:** the list, the incident page, the dashboard and a postmortem drafted now. The analytics averages use the stored values.
+
+**Earlier AI output in the knowledge base.** A postmortem drafted by OPSILUME copies text from records that are still stored:
+- what the incident's AI investigations reported: their summaries, narratives and hypotheses, the "AI investigation completed" timeline entries, and the actions the AI proposed;
+- what people recorded on the incident: title, description, impact, root cause, resolution, the other timeline entries, and the actions people proposed.
+
+Before summaries were built from the assessment, an investigation's summary was a model's own narrative. Postmortems can be edited, so the agent's knowledge search (`apps/api/src/modules/knowledgeProvenance.ts`) decides provenance from stored records, not from formatting.
+
+**Whether OPSILUME drafted the document.** A postmortem counts as drafted when either of these holds:
+- it is linked to an incident, which through the API only the generator does;
+- there is a `postmortem.create` audit entry for it.
+
+Either is enough. Audit writes are best-effort (a failed write is logged, not retried), so the incident link keeps a drafted postmortem from reading as written by people when its audit entry is missing. The seeded demo postmortem is linked to its incident, so it is treated as drafted.
+
+**Where each piece of text came from.** The chunk is split into the pieces the template assembled: a line; a timeline entry's message; a hypothesis or action line's parts. Each piece is attributed:
+- **template:** headings, the summary fields, placeholders;
+- **AI:** contained in what an investigation reported, or sharing a 48-character window with it. The template's "Analysis by … These are hypotheses" line and "AI investigation completed" lines are AI markers;
+- **people:** contained in what was recorded on the incident;
+- **unmatched:** anything else.
+
+Text is compared after normalising whitespace, case and Markdown emphasis. Pieces with fewer than four letters or digits say nothing and are skipped. Text found in both an AI record and a people record counts as AI. Renaming, removing or reordering headings, and where a chunk starts, do not change the answer; a piece cut at a chunk edge is still contained in the record it came from.
+
+| Pieces in the chunk | `provenance` | `provenanceBasis` | Given to the agent as |
+|---|---|---|---|
+| Every substantive piece is something people recorded | `document` | `incident_record` | As written: usable operational knowledge, such as the resolution steps |
+| Some AI pieces, no people pieces | `earlier_ai_output` | `source_match` (or `heading` when only the template's markers identify it) | Labelled "[Earlier AI output, not evidence …]", as historical and unverified when it contains a model's own summary or narrative; the incident's current verified assessment attached separately |
+| AI pieces and people pieces | `contains_earlier_ai_output` | as above | Each AI line labelled "[earlier AI output, unverified]" where it stands |
+| No AI piece, and at least one unmatched piece, even beside people's text | `unknown` | `unmatched` | Labelled "[Origin unknown, not evidence …]" |
+| Template lines only | `unknown` | `template_only` | Labelled as template text, not evidence |
+
+A document is `document` only when every substantive piece of it is attributed to what people recorded. A partial match never makes a chunk trusted. Any document OPSILUME did not draft (runbooks, guides, postmortems people wrote without an incident link) is `document` (`not_generated`).
+
+**What can support a report.** Only knowledge text whose provenance is explicitly `document`. This is an allowlist in both services: earlier AI output, unknown origin, and a missing or unrecognised provenance may be read and cited, never as support. A postmortem result that carries no provenance is `unknown` in the AI service.
+
+In both guardrail passes:
+- a hypothesis citing only such text is capped at `unsupportedHypothesisCap` and is not likely;
+- a "fact" resting only on it becomes an assumption;
+- a production change resting only on it is withdrawn (`withdrawalReasons.earlierAiOutput`, a shared guardrail case).
+
+The figure checker (`services/ai/app/claims.py`) uses only evidence that can support anything. A number or timestamp that appears only in such text is never "exact": it is reported as appearing in no collected evidence. It can never make an outcome INCIDENT, because the assessment counts only evidence that can be a cause, and a knowledge document is not one. The rule-based engine does not let it corroborate a mechanism or suggest a "documented procedure", and the system prompt says it is not evidence. Neither the stored document nor any database row is changed.
+
+Limits:
+- **The API trusts the AI service's label at its boundary.** The API computes provenance when the agent searches. When the report comes back, its guardrail pass reads the provenance on each evidence item as the AI service recorded it, and does not recompute it or compare it with what the search returned. Anything other than `document` is treated as not evidence there.
+- **Audit entries can be missing.** Audit writes are best-effort. The incident link is the second signal; a drafted postmortem that lost both would read as written by people. Through the API that cannot happen: the link is set when it is drafted and cannot be removed, and incidents cannot be deleted.
+- **Matching recognises copied text, not meaning.** Model text that a person rewrote in their own words matches nothing, and is then `unknown`: not evidence, but not identified as AI output either. Text copied by hand into a new, unlinked document reads as written by people.
+- **Conservative by construction.** Text people wrote in a drafted postmortem that is not in an incident record (added later, or reworded) makes its chunk `unknown`. This includes the seeded demo postmortem's prose. Such text is still readable; it just supports nothing.
+- **"Historical" is approximate.** It means the chunk contains a model's own summary or narrative, or was identified only by the template's markers.
+- **Only the agent's search is labelled.** People see documents as written.
+- **No new column.** A stored per-chunk provenance field would need a migration and a backfill; none was added. The incident link, the audit entry and the source records are the structured provenance.
+- **The label's effect on a real model's wording has not been measured:** no model was called. What is enforced does not depend on the model reading the label: the allowlist in both guardrail passes, the figure checker and the rule-based exclusion.
+
+**Copies made before.**
+
+| Record | Corrected when read? | Why |
+|---|---|---|
+| Investigation detail, list, incident page and its completion entry, remediation actions, dashboard | Yes | Derived from the stored report at each read (section 4b and above) |
+| Postmortem drafted from now on | Yes | Built from the same view |
+| Postmortem drafted before, as shown to people | No | A document people may have edited and shared. It is not rewritten. |
+| Postmortem drafted before, as given to the investigation agent | Labelled when read, not rewritten | Classified from the incident link, the generator's audit entry and the stored source records ("Earlier AI output in the knowledge base") |
+| In-app notification already delivered | No | A delivered message is not rewritten. Its body may quote an older model summary |
+| Audit log | No | A record of what happened at the time |
+
+New notifications and postmortems carry the verified summary, never the unverified narrative.
+
+**Tests.**
+
+`apps/api/tests/legacy-remediation.test.ts` covers older actions:
+- actions whose source has no assessment, a malformed one, unrecorded evidence, a non-INCIDENT outcome or a deleted investigation;
+- the fresh-review path for AI and human proposals;
+- linked and unlinked human proposals;
+- risk raised and never lowered;
+- expired and future-dated approvals;
+- distinct approvers;
+- concurrent executions.
+
+The same file covers the fingerprint:
+- edits of the rationale, cited evidence, parameters, description and target;
+- source and incident changes made underneath the API;
+- identical content submitted twice;
+- a stale execution request;
+- approvals under the v1 fingerprint;
+- an approval racing an edit over repeated rounds.
+
+It also covers older-report confidence.
+
+Other files:
+- `reconciliation.test.ts` simulates a process stopping:
+  - before sending;
+  - after sending, before any response;
+  - after a success response, before it was stored.
+
+  It also covers a timeout, a 5xx, duplicate sweeps, a late outcome, all three reconciliation decisions, duplicate decisions and an explicit retry.
+- `knowledge-provenance.test.ts` runs the real indexer and the agent's search over drafted postmortems:
+  - with their original headings, a renamed findings heading, no findings heading, and reordered sections;
+  - with model text split across chunks;
+  - with their sources deleted (then `unknown`);
+  - with findings and a resolution in one chunk;
+  - with a lost audit entry but an incident link;
+  - the seeded demo postmortem itself, read from `prisma/seed.ts` (no chunk is `document`);
+  - people's text mixed with paraphrased AI text, with AI text shorter than the matching window, with short unmatched text, or with text from a deleted investigation (never `document`);
+  - a chunk entirely from people's records (`document`), and template lines only (`unknown`, `template_only`);
+  - an unlinked postmortem without an audit entry (`document`).
+- `services/ai/tests/test_knowledge_provenance.py` also checks that a figure appearing only in earlier AI output, unknown, missing or unrecognised provenance is never "exact", while one in a trusted document is. It also checks that unknown and missing provenance support no hypothesis, fact, corroboration or production change.
+
+  It also runs a report through the API whose hypotheses, facts and production change rest only on earlier AI output, text of unknown origin, or text with no provenance.
+- `reconciliation.test.ts` also walks reconcile, retry and execute, with each current rule refusing in turn (changed content, a risk below the floor, an expired approval, a source that no longer supports it), and concurrent retries and executions resulting in exactly one webhook call.
+- `config.test.ts` covers the validity bounds.
+- `services/ai/tests/test_knowledge_provenance.py` covers the AI service side.
+- The lifecycle tests already in `safety.test.ts` were updated for the new policy: a rationale edit and a target change need fresh approval; risk cannot be lowered.
+- The web tests cover the review notice, the acknowledgements, the expired-approval label, the recorded ratings and the reconciliation control.
+
+Each new guard was switched off in turn, and its tests failed. The approval-and-edit race test failed in each of three runs with the locks removed.
 
 ## 5. Figures and identifiers
 

@@ -207,15 +207,20 @@ describe('state-changing actions', () => {
     await org.owner.post(`${base}/request-approval`).expect(200);
     const stale = await approver.agent.post(`${base}/approve`).send({ expectedHash: action.currentHash });
     expect(stale.status).toBe(409);
-    expect(stale.body.error.message).toContain('changed after it was submitted or after you opened it');
+    expect(stale.body.error.message).toContain('changed after you opened it');
     await approver.agent.post(`${base}/approve`).send({ expectedHash: edited.currentHash }).expect(200);
     expect((await org.owner.post(`${base}/execute`).send({}).expect(200)).body.status).toBe('EXECUTED');
     expect(received[0]!.body).toMatchObject({ parameters: { pattern: '*' }, contentHash: edited.currentHash });
     const edit = (await auditOf(action.id)).find((a) => a.action === 'remediation.edit')!;
-    expect(edit.meta).toMatchObject({ previousHash: action.currentHash, newHash: edited.currentHash, supersededApprovals: 1, previousStatus: 'APPROVED' });
-    // An edit that changes nothing an approver saw (the rationale) keeps the approval.
+    // The edit records the content fingerprints before and after (content.ts).
+    expect(edit.meta).toMatchObject({ previousHash: expect.stringMatching(/^[0-9a-f]{64}$/), newHash: expect.stringMatching(/^[0-9a-f]{64}$/), supersededApprovals: 1, previousStatus: 'APPROVED' });
+    expect(edit.meta!.previousHash).not.toBe(edit.meta!.newHash);
+    // The rationale is part of what an approver saw: changing it needs fresh approval.
     const second = await approved(org);
-    expect((await org.owner.patch(second.base).send({ rationale: 'Added context for the record.' })).body).toMatchObject({ status: 'APPROVED', approvalsGranted: 1 });
+    expect((await org.owner.patch(second.base).send({ rationale: 'Added context for the record.' })).body).toMatchObject({ status: 'PROPOSED', approvalsGranted: 0 });
+    // Re-saving the same text with other line endings or trailing spaces changes nothing an approver saw.
+    const third = await approved(org, { ...FLUSH, rationale: 'The cache holds stale prices.\nFlushing it forces a reload.' });
+    expect((await org.owner.patch(third.base).send({ rationale: 'The cache holds stale prices.   \r\nFlushing it forces a reload.  ' })).body).toMatchObject({ status: 'APPROVED', approvalsGranted: 1 });
   });
 
   it('are refused at execution if their content is not what was approved, however it changed', async () => {
@@ -226,7 +231,7 @@ describe('state-changing actions', () => {
     await prisma.remediationAction.update({ where: { id: action.id }, data: { parameters: { cache: 'orders-cache', pattern: '*' } } });
     const refused = await org.owner.post(`${base}/execute`).send({});
     expect(refused.status).toBe(409);
-    expect(refused.body.error.message).toContain('not the one that was approved');
+    expect(refused.body.error.message).toContain('changed after it was approved or submitted');
     expect(received).toHaveLength(0);
     expect((await org.owner.get(base)).body).toMatchObject({ status: 'PROPOSED', approvalsGranted: 0 });
     expect((await auditOf(action.id)).find((a) => a.action === 'remediation.approval_invalid')!.meta).toMatchObject({ approvedHash: action.currentHash, validApprovals: 0 });
@@ -257,7 +262,7 @@ describe('state-changing actions', () => {
     expect((await org.owner.get(base)).body).toMatchObject({ status: 'EXECUTED', attempts: 1 });
   });
 
-  it('record an unknown outcome on timeout and are not retried until a person confirms nothing was applied', async () => {
+  it('record an unknown outcome on timeout and are not retried until a person records that nothing was applied', async () => {
     const org = await createOrg();
     await useWebhook(org);
     const service = await createService(org.owner, 'Orders');
@@ -271,17 +276,21 @@ describe('state-changing actions', () => {
     expect(await prisma.serviceEvent.count({ where: { organizationId: org.organizationId } })).toBe(0); // no effect is recorded for something that may not have happened
     expect((await auditOf(action.id)).at(-1)).toMatchObject({ action: 'remediation.execute_failure', meta: { outcome: 'unknown' } });
 
-    const blocked = await org.owner.post(`${base}/retry`).send({});
+    const blocked = await org.owner.post(`${base}/retry`).send({ attempt: 1 });
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.message).toContain('the change may have been applied');
+    // The one-step confirmation is gone: it is not accepted in place of a recorded decision.
+    expect((await org.owner.post(`${base}/retry`).send({ attempt: 1, confirmNotApplied: true })).status).toBe(409);
     expect((await org.owner.post(`${base}/execute`).send({})).status).toBe(409);
-    await org.owner.post(`${base}/retry`).send({ confirmNotApplied: true }).expect(200);
+    await org.owner.post(`${base}/reconcile`).send({ outcome: 'not_applied', notes: 'No flush in the cache logs.', attempt: 1 }).expect(200);
+    await org.owner.post(`${base}/retry`).send({ attempt: 1 }).expect(200);
     respond.delayMs = 0;
     const done = (await org.owner.post(`${base}/execute`).send({}).expect(200)).body;
     expect(done).toMatchObject({ status: 'EXECUTED', attempts: 2, executionResult: { outcome: 'applied', attempt: 2 } });
     // Both attempts carried the same idempotency key, so a receiver that did apply the first can refuse the second.
     expect(received.map((r) => [r.headers['idempotency-key'], r.body.attempt])).toEqual([[action.id, 1], [action.id, 2]]);
-    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.retry')!.meta).toMatchObject({ previousOutcome: 'unknown', confirmedNotApplied: true });
+    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.reconcile')!.meta).toMatchObject({ outcome: 'not_applied', previousOutcome: 'unknown', attempt: 1 });
+    expect((await auditOf(action.id)).find((a) => a.action === 'remediation.retry')!.meta).toMatchObject({ attempt: 1, previousOutcome: 'not_applied', notAppliedBecause: 'reconciled' });
     expect(await prisma.serviceEvent.count({ where: { organizationId: org.organizationId, source: 'remediation' } })).toBe(1);
   });
 
@@ -291,19 +300,24 @@ describe('state-changing actions', () => {
     const first = await approved(org);
     respond.status = 500;
     expect((await org.owner.post(`${first.base}/execute`).send({})).body).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'unknown', detail: { status: 500 } } });
-    expect((await org.owner.post(`${first.base}/retry`).send({})).status).toBe(409);
+    expect((await org.owner.post(`${first.base}/retry`).send({ attempt: 1 })).status).toBe(409);
     const second = await approved(org);
     respond.status = 403;
     const refused = (await org.owner.post(`${second.base}/execute`).send({})).body;
     expect(refused).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'not_applied' } });
     expect(refused.executionResult.summary).toContain('Nothing was applied');
-    await org.owner.post(`${second.base}/retry`).send({}).expect(200); // nothing was applied, so no confirmation is needed
+    await org.owner.post(`${second.base}/retry`).send({ attempt: 1 }).expect(200); // refused by the webhook: certainly not applied, so no reconciliation is needed
     // A retry does not skip the binding: the content is checked again when it is executed.
     await prisma.remediationAction.update({ where: { id: second.action.id }, data: { title: 'Flush everything' } });
     expect((await org.owner.post(`${second.base}/execute`).send({})).status).toBe(409);
     // An unreachable webhook: the connection failed, so the outcome is unknown rather than assumed clean.
-    const third = await approved(org);
+    // Where it is carried out is part of what was approved: a webhook changed afterwards needs fresh approval.
+    const moved = await approved(org);
     await prisma.organizationSettings.update({ where: { organizationId: org.organizationId }, data: { remediationWebhookUrl: 'http://127.0.0.1:9/hook' } });
+    const elsewhere = await org.owner.post(`${moved.base}/execute`).send({});
+    expect(elsewhere.status).toBe(409);
+    expect(elsewhere.body.error.message).toContain('where it would be carried out');
+    const third = await approved(org);
     expect((await org.owner.post(`${third.base}/execute`).send({})).body).toMatchObject({ status: 'FAILED', executionResult: { outcome: 'unknown' } });
   });
 });
@@ -352,29 +366,34 @@ describe('risk and the approval threshold', () => {
     for (const risk of ['CRITICAL', 'medium', '', null, 2]) expect((await org.owner.patch(base).send({ risk })).status).toBe(400);
     expect((await org.owner.get(base)).body).toMatchObject({ risk: 'HIGH', requiredApprovals: 2, currentHash: action.currentHash });
 
-    // Lowered on purpose while one approval is in: allowed, recorded, and the approval no longer counts.
+    // Lowering the risk is refused, also while an approval is in: cancel and propose again instead.
     await org.owner.post(`${base}/request-approval`).expect(200);
     await first.agent.post(`${base}/approve`).send({}).expect(200);
-    const lowered = (await org.owner.patch(base).send({ risk: 'MEDIUM' }).expect(200)).body;
-    expect(lowered).toMatchObject({ status: 'PROPOSED', risk: 'MEDIUM', requiredApprovals: 1, approvalsGranted: 0 });
-    expect(lowered.currentHash).not.toBe(action.currentHash);
-    expect((await auditOf(action.id)).findLast((a) => a.action === 'remediation.edit')!.meta).toMatchObject({ previousRisk: 'HIGH', newRisk: 'MEDIUM', supersededApprovals: 1, previousStatus: 'PENDING_APPROVAL' });
-    // An approval of the high-risk version cannot be replayed onto the medium-risk one.
-    await org.owner.post(`${base}/request-approval`).expect(200);
-    expect((await second.agent.post(`${base}/approve`).send({ expectedHash: action.currentHash })).status).toBe(409);
+    const lowering = await org.owner.patch(base).send({ risk: 'MEDIUM' });
+    expect(lowering.status).toBe(400);
+    expect(lowering.body.error.message).toContain('cannot be lowered');
+    expect((await org.owner.get(base)).body).toMatchObject({ risk: 'HIGH', status: 'PENDING_APPROVAL', approvalsGranted: 1 });
+    await second.agent.post(`${base}/approve`).send({}).expect(200);
+    await org.owner.post(`${base}/cancel`).expect(200);
 
-    // A configuration change cannot be declared low risk by editing it either.
-    // The floor leaves it at medium, so nothing an approver sees changed and it stays submitted.
-    expect((await org.owner.patch(base).send({ risk: 'LOW' }).expect(200)).body).toMatchObject({ risk: 'MEDIUM', requiredApprovals: 1, status: 'PENDING_APPROVAL' });
+    // A medium-risk configuration change cannot be declared low risk by editing it either.
+    const medium = (await org.owner.post('/api/v1/remediations').send({ ...RESIZE, risk: 'MEDIUM' }).expect(201)).body;
+    const mbase = `/api/v1/remediations/${medium.id}`;
+    await org.owner.post(`${mbase}/request-approval`).expect(200);
+    expect((await org.owner.patch(mbase).send({ risk: 'LOW' })).status).toBe(400);
+    expect((await org.owner.get(mbase)).body).toMatchObject({ risk: 'MEDIUM', requiredApprovals: 1, status: 'PENDING_APPROVAL' });
 
     // Raised after it was fully approved: it needs two again, and the single approval does not carry over.
-    expect((await first.agent.post(`${base}/approve`).send({}).expect(200)).body.status).toBe('APPROVED');
-    const raised = (await org.owner.patch(base).send({ risk: 'HIGH' }).expect(200)).body;
+    expect((await first.agent.post(`${mbase}/approve`).send({}).expect(200)).body.status).toBe('APPROVED');
+    const raised = (await org.owner.patch(mbase).send({ risk: 'HIGH' }).expect(200)).body;
     expect(raised).toMatchObject({ status: 'PROPOSED', risk: 'HIGH', requiredApprovals: 2, approvalsGranted: 0 });
-    expect((await org.owner.post(`${base}/execute`).send({ confirmManual: true })).status).toBe(409);
+    expect((await auditOf(medium.id)).findLast((a) => a.action === 'remediation.edit')!.meta).toMatchObject({ previousRisk: 'MEDIUM', newRisk: 'HIGH', supersededApprovals: 1, previousStatus: 'APPROVED' });
+    expect((await org.owner.post(`${mbase}/execute`).send({ confirmManual: true })).status).toBe(409);
     // High risk is for admins and owners to approve, also after an edit.
-    await org.owner.post(`${base}/request-approval`).expect(200);
-    expect((await (await org.member('ENGINEER')).agent.post(`${base}/approve`).send({})).status).toBe(403);
+    await org.owner.post(`${mbase}/request-approval`).expect(200);
+    expect((await (await org.member('ENGINEER')).agent.post(`${mbase}/approve`).send({})).status).toBe(403);
+    // An approval of the medium-risk version cannot be replayed onto the high-risk one.
+    expect((await second.agent.post(`${mbase}/approve`).send({ expectedHash: medium.currentHash })).status).toBe(409);
   });
 
   it('counts the approvals again at execution and refuses when there are too few', async () => {

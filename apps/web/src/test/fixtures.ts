@@ -161,6 +161,7 @@ export const remediation: RemediationDetail = {
   executionResult: null,
   effectReasons: ['a rollback changes what is running'],
   currentHash: 'hash-of-what-the-approver-sees',
+  sourceReview: { required: true, verified: true, reasons: [] },
   attempts: 0,
   service: { id: 'svc-checkout', name: 'Checkout', slug: 'checkout' },
   incident: { id: 'inc-1', number: 42, title: incident.title, severity: 'SEV1', status: 'INVESTIGATING' },

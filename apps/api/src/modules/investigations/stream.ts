@@ -22,6 +22,8 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
   const evidenceRefs = new Set<string>();
   // Reference of each deployment evidence item by the deployment's id, to tell what a rollback acts on.
   const deploymentRefs = new Map<string, string>();
+  // Knowledge results quoting an earlier AI investigation: citable, never support (knowledgeProvenance.ts).
+  const notEvidence = new Set<string>();
   const addStep = stepWriter(investigationId);
 
   const assertNotCancelled = async () => {
@@ -48,6 +50,9 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
         if (evidenceRefs.has(e.ref)) break;
         evidenceRefs.add(e.ref);
         if (e.kind === 'deployment' && e.sourceId) deploymentRefs.set(e.sourceId, e.ref);
+        const provenance = (e.data as { provenance?: unknown } | null | undefined)?.provenance;
+        // An allowlist: only text people wrote supports anything. Earlier AI output, unknown origin, a missing or unrecognised value: not evidence.
+        if (e.kind === 'document' && provenance !== 'document') notEvidence.add(e.ref);
         await saveEvidence(investigationId, e);
         break;
       }
@@ -56,7 +61,7 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
         if (state.finished) break;
         const parsed = reportSchema.safeParse(event.report);
         if (!parsed.success) throw new Error(`AI service returned a malformed report: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
-        const report = await withSpan('investigation.guardrails', {}, () => applyGuardrails(parsed.data, evidenceRefs, addStep, deploymentRefs));
+        const report = await withSpan('investigation.guardrails', {}, () => applyGuardrails(parsed.data, evidenceRefs, addStep, deploymentRefs, notEvidence));
         const stored = await withSpan('investigation.persist', {}, () => persistFinal(investigationId, report, event.usage, event.engine));
         // Not stored: the investigation stopped being a running one while the report was on its way.
         if (!stored) throw new Superseded();

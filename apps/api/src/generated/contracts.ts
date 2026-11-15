@@ -33,6 +33,9 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 export const SUMMARY_SOURCES = ["assessment","unverified","rule_based"] as const;
 export type SummarySource = (typeof SUMMARY_SOURCES)[number];
 
+export const KNOWLEDGE_PROVENANCES = ["document","earlier_ai_output","contains_earlier_ai_output","unknown"] as const;
+export type KnowledgeProvenance = (typeof KNOWLEDGE_PROVENANCES)[number];
+
 export const GUARDRAIL_LIMITS = {
   "maxConfidence": {
     "llm": 0.9,
@@ -56,7 +59,8 @@ export const GUARDRAIL_LIMITS = {
   "withdrawalReasons": {
     "unlikelyHypothesis": "it would change production on the strength of a hypothesis rated unlikely",
     "noIncident": "it would change production, and the evidence supports {outcome}, not an incident with an established cause",
-    "noAssessment": "it would change production, and the report carries no assessment of the evidence, so no incident with an established cause is verified"
+    "noAssessment": "it would change production, and the report carries no assessment of the evidence, so no incident with an established cause is verified",
+    "earlierAiOutput": "it would change production, and it rests only on knowledge-base text that is earlier AI output or of unknown origin, which is not evidence"
   },
   "nextStepPrefixes": {
     "withdrawn": "Considered and not recommended ({reason}): {title}",

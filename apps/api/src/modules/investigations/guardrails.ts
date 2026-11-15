@@ -70,6 +70,8 @@ export async function applyGuardrails(
   known: Set<string>,
   addStep: (step: StepInput) => Promise<unknown>,
   deploymentRefs: Map<string, string> = new Map(),
+  // References to earlier AI output found in the knowledge base (knowledgeProvenance.ts): citable, never support.
+  notEvidence: Set<string> = new Set(),
 ): Promise<InvestigationReport> {
   const notes: string[] = [];
   const clean = (list: string[], where: string) => {
@@ -87,8 +89,8 @@ export async function applyGuardrails(
   const hypotheses = report.hypotheses.map((h) => {
     const evidence = clean(h.evidenceRefs, `hypothesis "${h.title}"`);
     let { confidence, status } = h;
-    if (!evidence.length) {
-      if (confidence > LIMITS.unsupportedHypothesisCap || status === 'likely') notes.push(`Hypothesis "${h.title}" has no supporting evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.`);
+    if (!evidence.some((r) => !notEvidence.has(r))) {
+      if (confidence > LIMITS.unsupportedHypothesisCap || status === 'likely') notes.push(evidence.length ? `Hypothesis "${h.title}" cites only earlier AI output, which is not evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.` : `Hypothesis "${h.title}" has no supporting evidence; confidence capped at ${LIMITS.unsupportedHypothesisCap}.`);
       confidence = Math.min(confidence, LIMITS.unsupportedHypothesisCap);
       if (status === 'likely') status = 'possible';
     }
@@ -118,8 +120,8 @@ export async function applyGuardrails(
     hypotheses: hypotheses.sort((a, b) => b.confidence - a.confidence),
     timeline: report.timeline.map((t) => ({ ...t, evidenceRefs: clean(t.evidenceRefs, 'the timeline') })),
     facts: report.facts.map((f) => ({ ...f, evidenceRefs: clean(f.evidenceRefs, 'a stated fact') })).filter((f) => {
-      if (f.evidenceRefs.length) return true;
-      notes.push(`Moved unsupported statement to assumptions: "${f.statement.slice(0, 80)}"`);
+      if (f.evidenceRefs.some((r) => !notEvidence.has(r))) return true;
+      notes.push(f.evidenceRefs.length ? `Moved a statement resting only on earlier AI output to assumptions: "${f.statement.slice(0, 80)}"` : `Moved unsupported statement to assumptions: "${f.statement.slice(0, 80)}"`);
       report.assumptions.push(f.statement);
       return false;
     }),
@@ -146,6 +148,11 @@ export async function applyGuardrails(
   held.forEach((r) => doubted.delete(r));
   result.recommendedActions = result.recommendedActions.filter((a) => {
     if (a.effect !== 'state_changing') return true;
+    // 0. Knowledge-base text that is earlier AI output, or of unknown origin, supports no change.
+    if (a.evidenceRefs.length && a.evidenceRefs.every((r) => notEvidence.has(r))) {
+      withdraw(a, LIMITS.withdrawalReasons.earlierAiOutput);
+      return false;
+    }
     // A rollback rests on the deployment it rolls back, not on every record it cites (the
     // previous version's deployment is cited as the target, whatever else that record supports).
     const id = a.type === 'rollback_deployment' ? (a.parameters as { deploymentId?: unknown } | null | undefined)?.deploymentId : undefined;

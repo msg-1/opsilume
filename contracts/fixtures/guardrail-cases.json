@@ -902,6 +902,185 @@
         "narrative": "Nothing is materially wrong with orders, so the outcome is HEALTHY.",
         "summarySource": "assessment"
       }
+    },
+    {
+      "name": "earlier AI output from the knowledge base is citable but supports nothing",
+      "evidence": [
+        {
+          "ref": "E1",
+          "kind": "deployment",
+          "title": "Deployment of orders v1.5.0 (succeeded)",
+          "summary": "Deployment of orders v1.5.0 (succeeded)",
+          "sourceType": "deployment",
+          "sourceId": "d-new",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:27:00Z",
+          "data": {
+            "version": "v1.5.0",
+            "status": "SUCCEEDED",
+            "isRollback": false
+          }
+        },
+        {
+          "ref": "E2",
+          "kind": "deployment",
+          "title": "Deployment of orders v1.4.0 (succeeded)",
+          "summary": "Deployment of orders v1.4.0 (succeeded)",
+          "sourceType": "deployment",
+          "sourceId": "d-prev",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:00:00Z",
+          "data": {
+            "version": "v1.4.0",
+            "status": "SUCCEEDED",
+            "isRollback": false
+          }
+        },
+        {
+          "ref": "E3",
+          "kind": "log_pattern",
+          "title": "300× ERROR in orders (new pattern)",
+          "summary": "300× ERROR in orders (new pattern)",
+          "sourceType": "log_pattern",
+          "sourceId": "fp:orders",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:30:00Z",
+          "data": {
+            "level": "ERROR",
+            "count": 300,
+            "kind": "new",
+            "firstSeen": "2026-06-01T11:30:00Z"
+          }
+        },
+        {
+          "ref": "E4",
+          "kind": "document",
+          "title": "Postmortem: orders outage › AI investigation findings (unconfirmed) (earlier AI output, not evidence)",
+          "summary": "The old investigation said the pool was exhausted.",
+          "sourceType": "knowledge_chunk",
+          "sourceId": "chunk-1",
+          "data": {
+            "docType": "postmortem",
+            "provenance": "earlier_ai_output"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Errors began after a deployment.",
+        "confidence": 0.8,
+        "analysisMode": "llm",
+        "outcome": "INCIDENT",
+        "assessment": {
+          "outcome": "INCIDENT",
+          "confidence": 0.9,
+          "rationale": "r",
+          "supportingRefs": [
+            "E3"
+          ],
+          "signals": [],
+          "missingTelemetry": []
+        },
+        "observations": [],
+        "timeline": [],
+        "facts": [
+          {
+            "statement": "v1.5.0 was deployed before the errors.",
+            "evidenceRefs": [
+              "E1"
+            ]
+          },
+          {
+            "statement": "The connection pool was exhausted last time.",
+            "evidenceRefs": [
+              "E4"
+            ]
+          }
+        ],
+        "assumptions": [],
+        "uncertainties": [
+          "Diff not reviewed."
+        ],
+        "hypotheses": [
+          {
+            "title": "Connection pool exhausted, as the old postmortem said",
+            "description": "d",
+            "confidence": 0.8,
+            "status": "likely",
+            "evidenceRefs": [
+              "E4"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "facts": [],
+            "assumptions": [],
+            "gaps": []
+          },
+          {
+            "title": "Regression introduced by v1.5.0",
+            "description": "d",
+            "confidence": 0.6,
+            "status": "likely",
+            "evidenceRefs": [
+              "E1",
+              "E3",
+              "E4"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "facts": [],
+            "assumptions": [],
+            "gaps": []
+          }
+        ],
+        "nextSteps": [
+          "Review the diff"
+        ],
+        "recommendedActions": [
+          {
+            "type": "config_change",
+            "title": "Raise the connection pool size, as the old postmortem said",
+            "description": "Set DB_POOL_MAX=40 for orders.",
+            "risk": "MEDIUM",
+            "serviceSlug": "orders",
+            "evidenceRefs": [
+              "E4"
+            ]
+          }
+        ]
+      },
+      "expect": {
+        "hypotheses": [
+          {
+            "title": "Regression introduced by v1.5.0",
+            "status": "likely",
+            "evidenceRefs": [
+              "E1",
+              "E3",
+              "E4"
+            ],
+            "maxConfidence": 0.6
+          },
+          {
+            "title": "Connection pool exhausted, as the old postmortem said",
+            "notStatus": "likely",
+            "evidenceRefs": [
+              "E4"
+            ],
+            "maxConfidence": 0.3
+          }
+        ],
+        "maxConfidence": 0.6,
+        "facts": [
+          "v1.5.0 was deployed before the errors."
+        ],
+        "nextStepsContain": [
+          "rests only on knowledge-base text that is earlier AI output"
+        ],
+        "assumptionsContain": [
+          "The connection pool was exhausted last time."
+        ],
+        "actions": []
+      }
     }
   ]
 }

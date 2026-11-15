@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 from .assessment import find_signals
-from .evidence import EvidenceStore
+from .evidence import EvidenceStore, is_earlier_ai_output
 from .generated.contracts import GUARDRAIL_LIMITS
 from .schemas import EvidenceItem, Fact, HypothesisOut, RecommendedAction, RemediationParameters, Signal, TimelineEntry
 from .textutil import SYNONYMS, iso, keywords, parse_time, text_of
@@ -159,7 +159,8 @@ def rule_recent_change(case: Case) -> None:
             score += 0.05
             refs += [m.ref for m in moved[:3]]
             facts.append("Metrics for the service shifted sharply in the window: " + "; ".join(f"{m.title} ({m.ref})" for m in moved[:3]) + ".")
-        docs = [d for d in store.by_kind("document", "incident") if len(keywords(text_of(d)) & (mechanism or symptom_words) & set(SYNONYMS.values())) >= 2]
+        # An earlier AI investigation's words are not corroboration: only documents people wrote count.
+        docs = [d for d in store.by_kind("document", "incident") if not is_earlier_ai_output(d) and len(keywords(text_of(d)) & (mechanism or symptom_words) & set(SYNONYMS.values())) >= 2]
         if docs and mechanism:
             score += 0.05
             refs += [d.ref for d in docs[:2]]
@@ -468,7 +469,7 @@ def build_next_steps(case: Case, signals: list[Signal]) -> list[str]:
         next_steps += top.gaps
     if dominant:
         next_steps.append(f"Open the log explorer filtered to pattern {(dominant.data or {}).get('fingerprint')} and follow a trace id across services.")
-    docs = store.by_kind("document")
+    docs = [d for d in store.by_kind("document") if not is_earlier_ai_output(d)]
     if docs:
         next_steps.append(f"Follow the documented procedure in \"{docs[0].title}\" ({docs[0].ref}).")
     if not top:

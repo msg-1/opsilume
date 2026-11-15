@@ -8,7 +8,28 @@ from __future__ import annotations
 
 from typing import Any
 
+from .generated.contracts import KNOWLEDGE_PROVENANCES
 from .schemas import EvidenceItem
+
+# Provenance of knowledge results, decided by the API when it reads them (apps/api/src/modules/
+# knowledgeProvenance.ts). An allowlist: only "document" (written by people) can support anything.
+# Earlier AI output, text of unknown origin and any value not recognised are never evidence.
+EARLIER_AI_OUTPUT = frozenset(p for p in KNOWLEDGE_PROVENANCES if p != "document")
+
+
+def provenance_of(hit: dict[str, Any]) -> str:
+    """A result without a provenance is a plain document, except a postmortem: those may quote an
+    earlier AI investigation, so one whose origin is not stated is of unknown origin."""
+    value = hit.get("provenance")
+    if value is None:
+        return "unknown" if hit.get("type") == "postmortem" else "document"
+    return str(value) if value in KNOWLEDGE_PROVENANCES else "unknown"
+
+
+def is_earlier_ai_output(item: EvidenceItem) -> bool:
+    """Knowledge text that cannot support a cause, a fact, a figure or a production change: anything
+    whose provenance is not explicitly "document", a missing one included."""
+    return item.kind == "document" and (item.data or {}).get("provenance") != "document"
 
 NOTABLE_METRIC_CHANGE = 25.0  # percent
 
@@ -56,6 +77,10 @@ class EvidenceStore:
 
     def refs(self) -> set[str]:
         return {e.ref for e in self.items}
+
+    def not_evidence(self) -> set[str]:
+        """References to earlier AI output: they may be cited for context, never as support."""
+        return {e.ref for e in self.items if is_earlier_ai_output(e)}
 
     # ── extraction per tool ──
 
@@ -286,10 +311,16 @@ class EvidenceStore:
             section = str(h.get("section") or "").split(" › ")[-1]
             doc_title = str(h.get("title") or "Document")
             label = doc_title if not section or section == doc_title.split(": ")[-1] or section in doc_title else f"{doc_title} › {section}"
+            provenance = provenance_of(h)
+            if provenance == "unknown":
+                label += " (origin unknown, not evidence)"
+            elif provenance in EARLIER_AI_OUTPUT:
+                label += " (earlier AI output, not evidence)"
             out.append(self.add(
                 "document", label, _clip(h.get("content"), 560),
                 source_type="knowledge_chunk", source_id=h["chunkId"], relevance=h.get("similarity"),
-                data={"documentId": h.get("documentId"), "content": h.get("content"), "matchedBy": h.get("matchedBy"), "docType": h.get("type")},
+                data={"documentId": h.get("documentId"), "content": h.get("content"), "matchedBy": h.get("matchedBy"), "docType": h.get("type"), "provenance": provenance,
+                      **({"currentAssessment": h["currentAssessment"]} if h.get("currentAssessment") else {})},
             ))
         return out
 

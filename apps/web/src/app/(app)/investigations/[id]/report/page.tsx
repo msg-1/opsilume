@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import type { ReactNode } from 'react';
 import { EffectBadge, OutcomeBadge, RiskBadge } from '@/components/badges';
-import { VerificationMark } from '@/components/findings';
+import { RecordedRating, VerificationMark } from '@/components/findings';
 import { Button, ErrorState, LinkButton, Notice, Spinner } from '@/components/ui';
 import { useApi } from '@/lib/api';
 import { dateTime, percent, titleCase } from '@/lib/format';
@@ -147,6 +147,7 @@ export default function InvestigationReportPage() {
               <>
                 <p className="text-[15px] font-semibold">{leading.title}</p>
                 <p className="text-ink-2">Confidence in this explanation: {percent(leading.confidence)} ({confidenceWord(leading.confidence)}; rated {leading.status}). This is separate from the confidence in the conclusion above.</p>
+                <RecordedRating asRecorded={leading.asRecorded} />
                 <p>{leading.description}</p>
                 <div>
                   <h3 className="text-[13px] font-semibold text-ink-2">Evidence that supports it</h3>
@@ -173,7 +174,7 @@ export default function InvestigationReportPage() {
               <div>
                 <h3 className="text-[13px] font-semibold text-ink-2">Other explanations considered</h3>
                 <ul className="list-disc space-y-1 pl-5">
-                  {others.map((h) => <li key={h.id}><span className="font-medium">{h.title}</span> <span className="text-ink-2">({percent(h.confidence)}, {h.status})</span> <Refs refs={h.evidenceRefs} known={known} /></li>)}
+                  {others.map((h) => <li key={h.id}><span className="font-medium">{h.title}</span> <span className="text-ink-2">({percent(h.confidence)}, {h.status})</span> <Refs refs={h.evidenceRefs} known={known} /><RecordedRating asRecorded={h.asRecorded} /></li>)}
                 </ul>
               </div>
             )}

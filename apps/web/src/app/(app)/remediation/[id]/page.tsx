@@ -44,8 +44,11 @@ export default function RemediationDetailPage() {
   const session = useSession();
   const { data: a, error, isLoading } = useApi<RemediationDetail>(`/remediations/${id}`, { refetchInterval: 10_000 });
   const { run, busy, error: actionError } = useAction();
-  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'retry'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'reconcile'>(null);
+  const [found, setFound] = useState<null | 'applied' | 'not_applied' | 'unknown'>(null);
   const [comment, setComment] = useState('');
+  // The person has reviewed an AI proposal whose investigation no longer supports a production change.
+  const [acknowledged, setAcknowledged] = useState(false);
 
   if (error) return <ErrorState error={error} />;
   if (isLoading || !a) return <Spinner label="Loading action" />;
@@ -55,11 +58,21 @@ export default function RemediationDetailPage() {
     if (await run(() => api.post(`${base}/${path}`, body), key)) {
       setDialog(null);
       setComment('');
+      setAcknowledged(false);
+      setFound(null);
     }
   };
   const me = session.user.id;
   const involved = a.requestedBy?.id === me || a.proposedBy?.id === me;
-  const alreadyDecided = a.approvals.some((x) => x.approver?.id === me && !x.supersededAt);
+  const alreadyDecided = a.approvals.some((x) => x.approver?.id === me && !x.supersededAt && !x.expired);
+  const unverifiedSource = a.sourceReview.required && !a.sourceReview.verified;
+  const acknowledgement = unverifiedSource ? { acknowledgeUnverifiedSource: true } : {};
+  const Acknowledge = () => (
+    <label className="mt-3 flex items-start gap-2 text-sm">
+      <input type="checkbox" className="mt-1" checked={acknowledged} onChange={(e) => setAcknowledged(e.target.checked)} />
+      <span>I have reviewed this action myself. The investigation behind it does not support a production change, and my decision does not rely on it.</span>
+    </label>
+  );
   const readOnly = a.effect === 'read_only';
   const outcomeUnknown = a.status === 'FAILED' && a.executionResult?.outcome !== 'not_applied';
   const canApproveRole = session.can('remediation:approve') && (a.risk !== 'HIGH' || session.can('remediation:approve:high'));
@@ -82,7 +95,7 @@ export default function RemediationDetailPage() {
         description={<span className="mt-1 flex flex-wrap items-center gap-2"><RemediationStatusBadge status={a.status} /><EffectBadge effect={a.effect} /><RiskBadge risk={a.risk} /><span>{titleCase(a.type)}{a.service ? ` on ${a.service.name}` : ''}</span></span>}
         actions={
           <>
-            {a.status === 'PROPOSED' && !readOnly && session.can('remediation:propose') && <Button variant="primary" loading={busy === 'request'} onClick={() => void act('request-approval', {}, 'request')}>Submit for approval</Button>}
+            {a.status === 'PROPOSED' && !readOnly && session.can('remediation:propose') && <Button variant="primary" loading={busy === 'request'} disabled={unverifiedSource && !acknowledged} onClick={() => void act('request-approval', acknowledgement, 'request')}>Submit for approval</Button>}
             {a.status === 'PROPOSED' && readOnly && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('execute')}>Record as done</Button>}
             {a.status === 'PENDING_APPROVAL' && !blocker && (
               <>
@@ -91,8 +104,8 @@ export default function RemediationDetailPage() {
               </>
             )}
             {a.status === 'APPROVED' && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('execute')}>{readOnly ? 'Record as done' : manual ? 'Mark as executed' : 'Execute'}</Button>}
-            {a.status === 'FAILED' && !outcomeUnknown && session.can('remediation:execute') && <Button loading={busy === 'retry'} onClick={() => void act('retry', {}, 'retry')}>Retry</Button>}
-            {outcomeUnknown && session.can('remediation:execute') && <Button variant="danger" onClick={() => setDialog('retry')}>Retry…</Button>}
+            {a.status === 'FAILED' && !outcomeUnknown && session.can('remediation:execute') && <Button loading={busy === 'retry'} onClick={() => void act('retry', { attempt: a.attempts }, 'retry')}>Retry</Button>}
+            {outcomeUnknown && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('reconcile')}>Record what happened</Button>}
             {['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && session.can('remediation:propose') && <Button variant="ghost" loading={busy === 'cancel'} onClick={() => void act('cancel', {}, 'cancel')}>Cancel action</Button>}
           </>
         }
@@ -100,9 +113,17 @@ export default function RemediationDetailPage() {
       <FormError error={actionError} />
       <Card className="mb-4"><Progress status={a.status} /></Card>
       {blocker && <div className="mb-4"><Notice tone="warn">{blocker}</Notice></div>}
-      {outcomeUnknown && <div className="mb-4"><Notice tone="warn"><strong>The outcome of the last attempt is unknown.</strong> The request was sent, but no clear answer came back, so the change may or may not have been applied. Check the target system before retrying: a retry could apply it a second time.</Notice></div>}
+      {outcomeUnknown && <div className="mb-4"><Notice tone="warn"><strong>The outcome of the last attempt is unknown.</strong> The request was sent, but no clear answer came back, so the change may or may not have been applied. Check the target system and record what happened. It can be retried only once it is recorded as not applied: a retry could otherwise apply it a second time.</Notice></div>}
       {readOnly && ['PROPOSED', 'APPROVED'].includes(a.status) && <div className="mb-4"><Notice>This is a read-only diagnostic. It changes nothing, so it needs no approval: carry it out and record what you found.</Notice></div>}
-      {a.status === 'PROPOSED' && a.proposedByType === 'ai_agent' && <div className="mb-4"><Notice>This action was proposed by an AI investigation. Review the rationale and evidence before submitting it for approval.</Notice></div>}
+      {a.status === 'PROPOSED' && a.proposedByType === 'ai_agent' && !unverifiedSource && <div className="mb-4"><Notice>This action was proposed by an AI investigation. Review the rationale and evidence before submitting it for approval.</Notice></div>}
+      {unverifiedSource && ['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && (
+        <div className="mb-4">
+          <Notice tone="warn">
+            <strong>Needs a fresh human review.</strong> {a.proposedByType === 'ai_agent' ? 'This production change was proposed by an AI investigation that does not support it' : 'The investigation this production change is linked to does not support it'}: {a.sourceReview.reasons.join('; ')}. Approvals given before this was known do not count. It can go ahead only on the review of the people who submit and approve it.
+            {a.status === 'PROPOSED' && session.can('remediation:propose') && <Acknowledge />}
+          </Notice>
+        </div>
+      )}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
         <div className="space-y-4">
@@ -134,7 +155,7 @@ export default function RemediationDetailPage() {
                   <li key={ap.id} className="flex gap-3">
                     <Avatar name={ap.approver?.name ?? '?'} size={28} />
                     <div className="min-w-0">
-                      <div className="text-sm"><span className="font-medium">{ap.approver?.name}</span> <span className={ap.decision === 'approved' ? 'text-good-ink' : 'text-critical-ink'}>{ap.decision}</span>{ap.decision === 'approved' && ap.counts === false && <span className="ml-1 rounded bg-warn-soft px-1 text-[11px] font-medium text-warn-ink">no longer counts: the action was changed afterwards</span>} <span className="text-[12px] text-ink-3">{timeAgo(ap.createdAt)}</span></div>
+                      <div className="text-sm"><span className="font-medium">{ap.approver?.name}</span> <span className={ap.decision === 'approved' ? 'text-good-ink' : 'text-critical-ink'}>{ap.decision}</span>{ap.decision === 'approved' && ap.counts === false && <span className="ml-1 rounded bg-warn-soft px-1 text-[11px] font-medium text-warn-ink">{ap.expired ? 'no longer counts: given too long ago' : 'no longer counts: the action was changed afterwards'}</span>} <span className="text-[12px] text-ink-3">{timeAgo(ap.createdAt)}</span></div>
                       {ap.comment && <p className="mt-0.5 text-[13px] text-ink-2">{ap.comment}</p>}
                     </div>
                   </li>
@@ -146,7 +167,17 @@ export default function RemediationDetailPage() {
           {a.executionResult && (
             <Card title="Execution result">
               <Notice tone={a.executionResult.success ? 'good' : 'warn'}>{a.executionResult.summary}</Notice>
-              <DefinitionList items={[['Outcome', a.executionResult.outcome === 'applied' ? 'Applied' : a.executionResult.outcome === 'not_applied' ? 'Not applied' : 'Unknown: may or may not have been applied'], ['Attempt', String(a.executionResult.attempt ?? a.attempts ?? 1)], ['Mode', a.executionResult.mode === 'diagnostic' ? 'Read-only diagnostic, recorded by a person' : a.executionResult.mode === 'manual' ? 'Carried out manually, attested in OPSILUME' : 'Dispatched to remediation webhook'], ['By', a.executedBy?.name ?? '—'], ['At', dateTime(a.executedAt)]]} />
+              <DefinitionList items={[['Outcome', a.executionResult.outcome === 'applied' ? 'Applied' : a.executionResult.outcome === 'not_applied' ? 'Not applied' : 'Unknown: may or may not have been applied'], ['Attempt', String(a.executionResult.attempt ?? a.attempts ?? 1)], ['Mode', a.executionResult.mode === 'diagnostic' ? 'Read-only diagnostic, recorded by a person' : a.executionResult.mode === 'manual' ? 'Carried out manually, attested in OPSILUME' : a.executionResult.mode === 'unknown' ? 'Interrupted: the process stopped while executing' : 'Dispatched to remediation webhook'], ['By', a.executedBy?.name ?? '—'], ['At', dateTime(a.executedAt)]]} />
+              {a.executionResult.reconciliations && a.executionResult.reconciliations.length > 0 && (
+                <div className="mt-3">
+                  <h3 className="mb-1 text-[12px] font-semibold tracking-wide text-ink-2 uppercase">Reconciled by people</h3>
+                  <ul className="space-y-1 text-[13px]">
+                    {a.executionResult.reconciliations.map((r, i) => (
+                      <li key={i}><span className="font-medium">{r.byLabel}</span> recorded <strong>{r.outcome === 'applied' ? 'applied' : r.outcome === 'not_applied' ? 'not applied' : 'still unknown'}</strong>{r.via === 'retry' ? ' when retrying' : ''}, {dateTime(r.at)}: <span className="text-ink-2">{r.notes}</span></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {a.executionResult.detail && <pre className="mt-3 max-h-48 overflow-auto rounded-md bg-sunken p-3 font-mono text-[12px]">{JSON.stringify(a.executionResult.detail, null, 2)}</pre>}
             </Card>
           )}
@@ -182,18 +213,19 @@ export default function RemediationDetailPage() {
         open={dialog === 'approve' || dialog === 'reject'}
         onClose={() => setDialog(null)}
         title={dialog === 'approve' ? 'Approve this action' : 'Reject this action'}
-        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant={dialog === 'reject' ? 'danger' : 'primary'} loading={busy === 'decide'} disabled={dialog === 'reject' && comment.trim().length < 3} onClick={() => void act(dialog === 'approve' ? 'approve' : 'reject', { ...(comment.trim() ? { comment } : {}), ...(dialog === 'approve' && a.currentHash ? { expectedHash: a.currentHash } : {}) }, 'decide')}>{dialog === 'approve' ? 'Approve' : 'Reject'}</Button></>}
+        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant={dialog === 'reject' ? 'danger' : 'primary'} loading={busy === 'decide'} disabled={(dialog === 'reject' && comment.trim().length < 3) || (dialog === 'approve' && unverifiedSource && !acknowledged)} onClick={() => void act(dialog === 'approve' ? 'approve' : 'reject', { ...(comment.trim() ? { comment } : {}), ...(dialog === 'approve' && a.currentHash ? { expectedHash: a.currentHash, ...acknowledgement } : {}) }, 'decide')}>{dialog === 'approve' ? 'Approve' : 'Reject'}</Button></>}
       >
         <p className="mb-3 text-sm text-ink-2">{dialog === 'approve' ? `You are approving "${a.title}". Your name and time are recorded in the audit trail.` : 'The requester will be notified with your reason.'}</p>
         <FormError error={actionError} />
         <Field label={dialog === 'approve' ? 'Comment (optional)' : 'Reason'}>{(fid) => <Textarea id={fid} rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />}</Field>
+        {dialog === 'approve' && unverifiedSource && <Acknowledge />}
       </Modal>
 
       <Modal
         open={dialog === 'execute'}
         onClose={() => setDialog(null)}
         title={readOnly ? 'Record this diagnostic as done' : manual ? 'Confirm manual execution' : 'Execute approved action'}
-        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'execute'} onClick={() => void act('execute', manual || readOnly ? { confirmManual: true, ...(comment.trim() ? { notes: comment } : {}) } : {}, 'execute')}>{manual ? 'I have carried this out' : 'Dispatch now'}</Button></>}
+        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'execute'} onClick={() => void act('execute', { ...(manual || readOnly ? { confirmManual: true, ...(comment.trim() ? { notes: comment } : {}) } : {}), ...(!readOnly && a.currentHash ? { expectedHash: a.currentHash } : {}) }, 'execute')}>{manual ? 'I have carried this out' : 'Dispatch now'}</Button></>}
       >
         <FormError error={actionError} />
         {manual || readOnly ? (
@@ -206,13 +238,20 @@ export default function RemediationDetailPage() {
         )}
       </Modal>
       <Modal
-        open={dialog === 'retry'}
+        open={dialog === 'reconcile'}
         onClose={() => setDialog(null)}
-        title="Retry after an unknown outcome"
-        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="danger" loading={busy === 'retry'} onClick={() => void act('retry', { confirmNotApplied: true }, 'retry')}>I have checked: it was not applied</Button></>}
+        title="Record what happened"
+        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'reconcile'} disabled={!found || comment.trim().length < 3} onClick={() => void act('reconcile', { outcome: found, notes: comment, attempt: a.attempts }, 'reconcile')}>Record</Button></>}
       >
+        <p className="mb-3 text-sm text-ink-2">Attempt {a.attempts} ended without a clear answer. Check the target system, then record what you found. Nothing is sent anywhere.</p>
         <FormError error={actionError} />
-        <p className="text-sm text-ink-2">The last attempt may have changed the target system. Retrying sends the action again with the same idempotency key, but a receiver that does not honour the key would apply it twice. Confirm only after you have checked the target system and the change is <strong className="text-ink">not</strong> in place. Your confirmation is recorded in the audit trail.</p>
+        <fieldset className="mb-3 space-y-1 text-sm">
+          <legend className="sr-only">What you found</legend>
+          {([['applied', 'It was applied'], ['not_applied', 'It was not applied'], ['unknown', 'Still unknown']] as const).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2"><input type="radio" name="found" checked={found === value} onChange={() => setFound(value)} />{label}</label>
+          ))}
+        </fieldset>
+        <Field label="What you checked">{(fid) => <Textarea id={fid} rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />}</Field>
       </Modal>
     </>
   );

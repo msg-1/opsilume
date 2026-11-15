@@ -322,6 +322,16 @@ describe('viewing an investigation report', () => {
     expect(screen.queryByText(/Built by OPSILUME from the computed assessment/)).not.toBeInTheDocument();
   });
 
+  it('shows an older hypothesis at the rating the current rules permit, with the recorded rating beside it', async () => {
+    const shown = structuredClone(investigation);
+    shown.hypotheses[0] = { ...shown.hypotheses[0]!, confidence: 0.45, status: 'possible', asRecorded: { confidence: 0.7, status: 'likely' } };
+    Object.assign(shown, { confidenceAsRecorded: 0.7 });
+    fakeApi({ 'GET /investigations/inv-1': shown });
+    show(<InvestigationPage />, session('ENGINEER'));
+    expect(await screen.findByText(/This rating is shown as the current rules permit for this report's verified outcome\. Recorded at the time as 70% \(likely\): historical, not current\./)).toBeInTheDocument();
+    expect(screen.getByText(/The overall confidence is shown as the current rules permit/)).toBeInTheDocument();
+  });
+
   it('labels a mock narrative as scripted', async () => {
     fakeApi({ 'GET /investigations/inv-1': modelReport({ analysisMode: 'mock' }) });
     show(<InvestigationPage />, session('ENGINEER'));
@@ -453,7 +463,7 @@ describe('approving a remediation', () => {
     const api = fakeApi({
       'GET /remediations/act-1': () => current,
       'POST /remediations/act-1/approve': () => {
-        current = { ...remediation, status: 'APPROVED', approvalsGranted: 1, approvals: [{ id: 'ap-1', decision: 'approved', comment: 'Matches the evidence.', createdAt: '2026-11-10T09:30:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: true, supersededAt: null }] };
+        current = { ...remediation, status: 'APPROVED', approvalsGranted: 1, approvals: [{ id: 'ap-1', decision: 'approved', comment: 'Matches the evidence.', createdAt: '2026-11-10T09:30:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: true, expired: false, supersededAt: null }] };
         return current;
       },
     });
@@ -529,12 +539,77 @@ describe('approving a remediation', () => {
   });
 
   it('marks an approval that no longer counts because the action was edited afterwards', async () => {
-    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-10T09:25:00.000Z', approver: { id: 'user-bob', name: 'Bob Owner' }, counts: false, supersededAt: '2026-11-10T09:27:00.000Z' }] } });
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-10T09:25:00.000Z', approver: { id: 'user-bob', name: 'Bob Owner' }, counts: false, expired: false, supersededAt: '2026-11-10T09:27:00.000Z' }] } });
     show(<RemediationDetailPage />, ada);
     expect(await screen.findByText('no longer counts: the action was changed afterwards')).toBeInTheDocument();
     expect(screen.getByText(/0 of 1 required/)).toBeInTheDocument();
     // A superseded decision by someone else does not stop this person deciding on the new content.
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  it('marks an approval given too long ago, and lets its approver decide again', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, approvals: [{ id: 'ap-0', decision: 'approved', comment: null, createdAt: '2026-11-01T09:25:00.000Z', approver: { id: 'user-ada', name: 'Ada Admin' }, counts: false, expired: true, supersededAt: null }] } });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('no longer counts: given too long ago')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  const unverified = { ...remediation, currentHash: 'review-hash', sourceReview: { required: true, verified: false, reasons: ['its verified outcome is DEGRADED, not an incident'] } };
+
+  it('asks for a fresh, explicit review of an AI proposal whose investigation no longer supports it, and sends the acknowledgement', async () => {
+    const api = fakeApi({ 'GET /remediations/act-1': unverified, 'POST /remediations/act-1/approve': unverified });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText(/Needs a fresh human review/)).toBeInTheDocument();
+    expect(screen.getByText(/its verified outcome is DEGRADED, not an incident/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const dialog = await screen.findByRole('dialog');
+    const confirm = within(dialog).getByRole('button', { name: 'Approve' });
+    expect(confirm).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole('checkbox', { name: /I have reviewed this action myself/ }));
+    await userEvent.click(confirm);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/approve', body: { expectedHash: 'review-hash', acknowledgeUnverifiedSource: true } }]));
+  });
+
+  it('submits such a proposal for approval only with the acknowledgement', async () => {
+    const proposed = { ...unverified, status: 'PROPOSED', requestedBy: null, requestedAt: null };
+    const api = fakeApi({ 'GET /remediations/act-1': proposed, 'POST /remediations/act-1/request-approval': proposed });
+    show(<RemediationDetailPage />, eve);
+    const submit = await screen.findByRole('button', { name: 'Submit for approval' });
+    expect(submit).toBeDisabled();
+    await userEvent.click(screen.getByRole('checkbox', { name: /I have reviewed this action myself/ }));
+    await userEvent.click(submit);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/request-approval', body: { acknowledgeUnverifiedSource: true } }]));
+  });
+
+  it('lets a person record what happened to an attempt whose outcome is unknown', async () => {
+    const unknown = { ...remediation, status: 'FAILED', attempts: 1, executionResult: { mode: 'unknown', success: false, outcome: 'unknown' as const, summary: 'Execution was interrupted and its outcome is unknown.', interrupted: true, attempt: 1 } };
+    const api = fakeApi({ 'GET /remediations/act-1': unknown, 'POST /remediations/act-1/reconcile': unknown });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('Interrupted: the process stopped while executing')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Record what happened' }));
+    const dialog = await screen.findByRole('dialog');
+    const record = within(dialog).getByRole('button', { name: 'Record' });
+    expect(record).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'It was not applied' }));
+    await userEvent.type(within(dialog).getByLabelText('What you checked'), 'No restart in the pod events.');
+    await userEvent.click(record);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/reconcile', body: { outcome: 'not_applied', notes: 'No restart in the pod events.', attempt: 1 } }]));
+  });
+
+  it('shows who reconciled an attempt and what they found', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'EXECUTED', attempts: 1, executionResult: { mode: 'webhook', success: true, outcome: 'applied' as const, summary: 'Recorded as applied.', attempt: 1, reconciliations: [{ outcome: 'applied' as const, by: 'user-ada', byLabel: 'Ada Admin', at: '2026-11-10T10:00:00.000Z', notes: 'Pods show the restart.', previousOutcome: 'unknown' }] } } });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('Reconciled by people')).toBeInTheDocument();
+    expect(screen.getByText('Pods show the restart.')).toBeInTheDocument();
+  });
+
+  it('asks for nothing extra when the investigation still supports the change', async () => {
+    fakeApi({ 'GET /remediations/act-1': remediation });
+    show(<RemediationDetailPage />, ada);
+    await screen.findByRole('heading', { name: 'Roll back checkout to v2.3.1' });
+    expect(screen.queryByText(/Needs a fresh human review/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(within(await screen.findByRole('dialog')).queryByRole('checkbox')).not.toBeInTheDocument();
   });
 });
 
@@ -564,25 +639,19 @@ describe('viewing execution outcomes', () => {
     expect(screen.getByText('Outcome').nextElementSibling).toHaveTextContent('Not applied');
     expect(screen.queryByText('The outcome of the last attempt is unknown.')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: {} }]));
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: { attempt: 1 } }]));
   });
 
-  it('an unknown outcome: is never shown as failed-and-safe, and a retry needs an explicit confirmation', async () => {
-    const api = fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'FAILED', approvalsGranted: 1, attempts: 1, executionResult: result('unknown', 'The webhook did not answer within 10 s.') }, 'POST /remediations/act-1/retry': { ok: true } });
+  it('an unknown outcome: is never shown as failed-and-safe, and cannot be retried until someone records what happened', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'FAILED', approvalsGranted: 1, attempts: 1, executionResult: result('unknown', 'The webhook did not answer within 10 s.') } });
     show(<RemediationDetailPage />, ada);
 
     expect(await screen.findByText('The outcome of the last attempt is unknown.')).toBeInTheDocument();
     expect(screen.getByText(/the change may or may not have been applied/)).toBeInTheDocument();
     expect(screen.getByText('Outcome').nextElementSibling).toHaveTextContent('Unknown: may or may not have been applied');
-    // No one-click retry: the plain button is replaced by one that opens a confirmation.
-    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry…' }));
-    expect(api.writes()).toEqual([]);
-
-    const dialog = screen.getByRole('dialog', { name: 'Retry after an unknown outcome' });
-    expect(dialog).toHaveTextContent('a receiver that does not honour the key would apply it twice');
-    await userEvent.click(within(dialog).getByRole('button', { name: 'I have checked: it was not applied' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/retry', body: { confirmNotApplied: true } }]));
+    // No retry of any kind: only recording what happened.
+    expect(screen.queryByRole('button', { name: /Retry/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Record what happened' })).toBeInTheDocument();
   });
 
   it('without a webhook: the person carries the change out and confirms it, with notes', async () => {
@@ -594,7 +663,7 @@ describe('viewing execution outcomes', () => {
     expect(dialog).toHaveTextContent('OPSILUME is not connected to your infrastructure.');
     await userEvent.type(within(dialog).getByLabelText('Notes (optional)'), 'kubectl rollout undo deploy/checkout');
     await userEvent.click(within(dialog).getByRole('button', { name: 'I have carried this out' }));
-    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/execute', body: { confirmManual: true, notes: 'kubectl rollout undo deploy/checkout' } }]));
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/execute', body: { confirmManual: true, notes: 'kubectl rollout undo deploy/checkout', expectedHash: 'hash-of-what-the-approver-sees' } }]));
   });
 
   it('a viewer sees the outcome but can neither retry nor execute', async () => {
@@ -685,6 +754,14 @@ describe('the report to share', () => {
   const actions = { data: [{ ...remediation, id: 'act-1', title: 'Roll back checkout to v2.3.1', risk: 'MEDIUM', effect: 'state_changing', status: 'PENDING_APPROVAL', requiredApprovals: 1, approvalsGranted: 0 }], meta: { page: 1, pageSize: 50, total: 1, totalPages: 1 }, statusCounts: {}, executionMode: 'manual' };
   beforeEach(() => {
     nav.params = { id: 'inv-1' };
+  });
+
+  it('prints the recorded rating of an older hypothesis beside the one the current rules permit', async () => {
+    const shown = structuredClone(investigation);
+    shown.hypotheses[0] = { ...shown.hypotheses[0]!, confidence: 0.45, status: 'possible', asRecorded: { confidence: 0.7, status: 'likely' } };
+    fakeApi({ 'GET /investigations/inv-1': shown, 'GET /remediations': actions });
+    show(<InvestigationReportPage />, session('VIEWER'));
+    expect(await screen.findByText(/Recorded at the time as 70% \(likely\): historical, not current\./)).toBeInTheDocument();
   });
 
   it('prints the computed conclusion, and the model text only in its own unverified section', async () => {

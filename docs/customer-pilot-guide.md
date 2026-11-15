@@ -133,8 +133,14 @@ For a change:
 
 1. Someone submits it for approval. From then on, approvals are bound to its exact content.
 2. The required number of people approve: by default one for low and medium risk, two for high risk (Settings → Organisation). High risk needs an admin or owner. Nobody can approve what they proposed or requested, unless your organisation switches that rule off.
-3. Editing the action afterwards cancels the approvals given. The approvals are counted again at the moment of execution.
-4. It is carried out: sent to your webhook if you configured one, otherwise done by a person who then confirms it. A webhook that times out or fails is recorded as **outcome unknown**, never as done, and cannot be retried until a person confirms that nothing was applied.
+3. Editing the action afterwards cancels the approvals given, and so does changing your webhook address. Its risk can be raised, never lowered. The approvals are counted again at the moment of execution, each person once.
+4. **Approvals expire.** By default an approval counts for 24 hours. After that it stays on record but no longer counts, and the action needs approval again before it can be carried out. Whoever runs your installation sets this (`REMEDIATION_APPROVAL_VALIDITY_HOURS`, 1 to 720 hours). It is a security policy for you to choose, not a recommended value.
+5. It is carried out: sent to your webhook if you configured one, otherwise done by a person who then confirms it.
+
+**When the outcome is unknown.** A webhook that times out, returns a server error or drops the connection is recorded as **outcome unknown**, never as done. So is an execution whose process stopped part-way: OPSILUME's worker finds it after 10 minutes by default (`REMEDIATION_EXECUTION_STALE_MINUTES`) and records it as interrupted. OPSILUME never sends it again by itself, because the change may already have been applied. To continue:
+1. Check the target system for the change.
+2. Press **Record what happened** on the action, and say what you found: applied, not applied, or still unknown, with what you checked.
+3. Only after "not applied" is recorded can it be retried. It is then checked again: its content, its risk, the investigation behind it and its approvals, which may have expired meanwhile.
 
 API keys and the analysis itself can never approve or execute anything. Everything is in the audit log (Settings → Audit log).
 

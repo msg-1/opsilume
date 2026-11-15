@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { ConfidenceMeter, EffectBadge, EngineBadge, InvestigationStatusBadge, RemediationStatusBadge, RiskBadge, SeverityBadge } from '@/components/badges';
-import { AssessmentCard, IntegritySummary, UnverifiedNarrative, VerificationMark, summaryOrigin } from '@/components/findings';
+import { AssessmentCard, IntegritySummary, RecordedRating, UnverifiedNarrative, VerificationMark, summaryOrigin } from '@/components/findings';
 import { Button, Card, EmptyState, ErrorState, FormError, Mono, Notice, PageHeader, Spinner, Tabs, LinkButton } from '@/components/ui';
 import { api, useApi } from '@/lib/api';
 import { clock, dateTime, timeAgo, titleCase } from '@/lib/format';
@@ -87,6 +87,7 @@ function HypothesisCard({ h, evidence, onSelect, top }: { h: Hypothesis; evidenc
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-semibold text-ink">{h.title}</span>
           <span className="mt-1.5 block"><ConfidenceMeter value={h.confidence} status={h.status} /></span>
+          <RecordedRating asRecorded={h.asRecorded} />
         </span>
         <ChevronDown className={clsx('mt-1 size-4 shrink-0 text-ink-3 transition-transform', open && 'rotate-180')} aria-hidden />
       </button>
@@ -265,6 +266,7 @@ export default function InvestigationPage() {
             {/* With no fault hypothesis there is no hypothesis confidence to show; the assessment below carries its own. */}
             {data.hypotheses.length > 0 && <ConfidenceMeter value={report.confidence} />}
           </div>
+          {data.confidenceAsRecorded != null && <RecordedRating asRecorded={{ confidence: data.confidenceAsRecorded }} what="The overall confidence" />}
           <p className="mt-2 max-w-4xl text-[15px] leading-relaxed text-ink"><WithRefs text={report.summary} evidence={evidence} onSelect={select} /></p>
           <p className="mt-3 flex items-start gap-1.5 text-[12px] text-ink-2">
             <ShieldAlert className="mt-px size-3.5 shrink-0" aria-hidden />

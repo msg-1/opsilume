@@ -23,10 +23,18 @@ export const remediationInput = z.object({
 
 // expectedHash is the currentHash the approver was shown. Sending it makes the approval fail if
 // the action changed between reading it and deciding.
-export const decisionBody = z.object({ comment: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
+// acknowledgeUnverifiedSource: the person has seen that the AI investigation behind the action no
+// longer supports a production change (source.ts), and takes the decision on their own review.
+export const decisionBody = z.object({ comment: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional(), acknowledgeUnverifiedSource: z.boolean().optional() });
+export const requestApprovalBody = z.object({ acknowledgeUnverifiedSource: z.boolean().optional() });
 export const rejectionBody = decisionBody.extend({ comment: z.string().trim().min(3, 'Give a reason for rejecting').max(2000) });
-export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional() });
-export const retryBody = z.object({ confirmNotApplied: z.boolean().optional() });
+// expectedHash: the fingerprint the person executing was shown (currentHash). A request from an older view is refused.
+export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
+// `attempt` is the failed attempt being retried, so a retry made from an older view cannot land on another one.
+export const retryBody = z.object({ attempt: z.number().int().min(1) });
+// What a person found on the target system for the latest attempt whose outcome is unknown.
+// `attempt` is the attempt they looked at, so a decision cannot land on a newer one.
+export const reconcileBody = z.object({ outcome: z.enum(['applied', 'not_applied', 'unknown']), notes: z.string().trim().min(3, 'Say what you checked').max(2000), attempt: z.number().int().min(1) });
 /**
  * An edit changes only the fields it names. The risk is declared without a default on purpose:
  * `remediationInput.risk` defaults to MEDIUM, and a default survives `.partial()`, so an edit that
