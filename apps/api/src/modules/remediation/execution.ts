@@ -79,18 +79,62 @@ export async function execute(action: RemediationAction, operator: { userId: str
       detail: { status: res.status },
     };
   } catch (err) {
+    const failure = networkFailure(err);
     // Refused before any connection was made: certainly nothing was applied.
     if (err instanceof UnsafeDestinationError || (err instanceof AppError && err.status === 400)) {
-      return { mode: 'webhook', success: false, outcome: 'not_applied', summary: `Nothing was sent: the remediation webhook address was refused (${(err as Error).message}).` };
+      return { mode: 'webhook', success: false, outcome: 'not_applied', summary: `Nothing was sent: the remediation webhook address was refused (${FAILURES[failure]}).`, detail: { failure } };
     }
-    const timedOut = (err as Error).name === 'TimeoutError' || (err as Error).name === 'AbortError';
     return {
       mode: 'webhook',
       success: false,
       outcome: 'unknown',
-      summary: timedOut
-        ? `The remediation webhook did not answer within ${env.REMEDIATION_WEBHOOK_TIMEOUT_MS / 1000} seconds. The request was sent; whether the change was applied is unknown. Check the target system before retrying.`
-        : `The connection to the remediation webhook failed (${(err as Error).message}). Whether the change was applied is unknown: check the target system before retrying.`,
+      summary:
+        failure === 'timeout'
+          ? `The remediation webhook did not answer within ${env.REMEDIATION_WEBHOOK_TIMEOUT_MS / 1000} seconds. The request was sent; whether the change was applied is unknown. Check the target system before retrying.`
+          : `The connection to the remediation webhook failed (${FAILURES[failure]}). Whether the change was applied is unknown: check the target system before retrying.`,
+      detail: { failure },
     };
   }
+}
+
+/**
+ * What went wrong on the way to the webhook, as a category only. Error messages from the network
+ * library, DNS and TLS name the host, the address or the URL (with any credentials or query
+ * string in it), and the summary is stored, shown and audited, so no message text is ever used:
+ * only codes and error names, from the error and everything it wraps.
+ */
+export type NetworkFailure = keyof typeof FAILURES;
+const FAILURES = {
+  timeout: 'no answer in time',
+  resolve: 'the host name could not be resolved',
+  disallowed: 'the address is private, loopback or link-local',
+  invalid: 'the address is not an acceptable http(s) URL',
+  refused: 'the connection was refused',
+  reset: 'the connection was reset',
+  unreachable: 'the host could not be reached',
+  tls: 'the TLS connection could not be established or its certificate was not accepted',
+  other: 'a network error',
+};
+
+export function networkFailure(err: unknown): NetworkFailure {
+  const seen: { code: string; name: string; text: string }[] = [];
+  const walk = (e: unknown, depth: number) => {
+    if (!e || typeof e !== 'object' || depth > 5) return;
+    const x = e as { code?: unknown; name?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+    seen.push({ code: String(x.code ?? ''), name: String(x.name ?? ''), text: String(x.message ?? '').toLowerCase() });
+    walk(x.cause, depth + 1);
+    if (Array.isArray(x.errors)) for (const inner of x.errors) walk(inner, depth + 1);
+  };
+  walk(err, 0);
+  const any = (test: (s: (typeof seen)[number]) => boolean) => seen.some(test);
+  // Classified from codes and names; the message is read here only to tell the categories apart, never kept.
+  if (any((s) => s.name === 'TimeoutError' || s.name === 'AbortError' || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT'].includes(s.code))) return 'timeout';
+  if (any((s) => ['ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EAI_FAIL'].includes(s.code) || s.text.includes('could not be resolved'))) return 'resolve';
+  if (any((s) => s.text.includes('private, loopback or link-local'))) return 'disallowed';
+  if (err instanceof AppError && err.status === 400) return 'invalid';
+  if (any((s) => s.code === 'ECONNREFUSED')) return 'refused';
+  if (any((s) => ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(s.code))) return 'reset';
+  if (any((s) => ['EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN'].includes(s.code))) return 'unreachable';
+  if (any((s) => s.code === 'EPROTO' || /^(ERR_TLS|ERR_SSL)|CERT|SELF_SIGNED|UNABLE_TO_VERIFY/.test(s.code) || /certificate|\bssl\b|\btls\b/.test(s.text))) return 'tls';
+  return 'other';
 }

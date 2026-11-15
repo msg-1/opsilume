@@ -26,6 +26,12 @@ import { recordEffects, recordOutcome } from './recording';
 export const remediationRouter = Router();
 
 type Settings = Awaited<ReturnType<typeof getSettings>>;
+
+const MOVED_ON = 'This action changed while it was being executed or checked by someone else. Reload it. Nothing was executed.';
+
+/** An APPROVED action that may not run yet goes back to waiting for approvals, or, failing that, to PROPOSED. Null when it had already moved on. */
+const stepBack = async (actionId: string, hash: string, required: number) =>
+  (await awaitMoreApprovals(actionId, hash, required)) ? ('PENDING_APPROVAL' as const) : (await invalidateApproval(actionId)) ? ('PROPOSED' as const) : null;
 const bindingOf = (settings: Settings, unverifiedSource: boolean) => ({ unverifiedSource, executionTarget: executionTarget(settings) });
 
 /** Why the fingerprint an action was submitted under no longer matches it, or null when it does. */
@@ -122,7 +128,7 @@ remediationRouter.post('/:id/approve', requirePermission('remediation:approve'),
   let action = await load(auth.organizationId, param(req.params.id));
   if (action.status !== 'PENDING_APPROVAL') throw conflict(`This action is not awaiting approval (current status: ${action.status})`);
   // Approvals past their validity stop counting here, so their approvers can decide again.
-  const expired = await supersedeExpired(action.id);
+  const expired = await supersedeExpired(action.id, 'PENDING_APPROVAL');
   if (expired.count) {
     await audit(req, 'remediation.approval_expired', 'remediation_action', action.id, { superseded: expired.count, approvedAt: expired.approvedAt, cutoff: expired.cutoff, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'approve' });
     action = await load(auth.organizationId, action.id);
@@ -216,21 +222,25 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
     const expiredHere = action.approvals.filter((a) => a.contentHash === expected && isExpired(a, now));
     if (expected === action.contentHash && valid.length < required && expiredHere.length) {
       // Approvals given for this content, but too long ago. They stay on record; the action waits for fresh ones.
-      const superseded = await supersedeExpired(action.id);
-      if (!(await awaitMoreApprovals(action.id, expected, required))) await invalidateApproval(action.id);
-      await audit(req, 'remediation.approval_expired', 'remediation_action', action.id, { expired: expiredHere.length, approvedAt: expiredHere.map((a) => a.createdAt.toISOString()), cutoff: superseded.cutoff, validApprovals: valid.length, required, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'execute' });
+      const superseded = await supersedeExpired(action.id, 'APPROVED');
+      if (!superseded.count) throw conflict(MOVED_ON);
+      const newStatus = await stepBack(action.id, expected, required);
+      // What was superseded, and where the action went, as it actually happened.
+      await audit(req, 'remediation.approval_expired', 'remediation_action', action.id, { expired: superseded.count, approvedAt: superseded.approvedAt, cutoff: superseded.cutoff, validApprovals: valid.length, required, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'execute', newStatus: newStatus ?? 'unchanged' });
+      if (!newStatus) throw conflict(MOVED_ON);
       throw conflict(`${expiredHere.length} approval(s) of this action are older than ${env.REMEDIATION_APPROVAL_VALIDITY_HOURS} hours and no longer count. It is waiting for approval again; nothing was executed.`);
     }
     if (!valid.length) {
       // Bound to this fingerprint, but no approval counts for it. It starts again.
-      await invalidateApproval(action.id);
-      await audit(req, 'remediation.approval_invalid', 'remediation_action', action.id, { approvedHash: action.contentHash, currentHash: expected, validApprovals: 0, required, stage: 'execute' });
+      if (!(await invalidateApproval(action.id))) throw conflict(MOVED_ON);
+      await audit(req, 'remediation.approval_invalid', 'remediation_action', action.id, { approvedHash: action.contentHash, currentHash: expected, validApprovals: 0, required, stage: 'execute', newStatus: 'PROPOSED' });
       throw conflict('No approval counts for this action as it is now. Submit it for approval again. Nothing was executed.');
     }
     if (valid.length < required) {
       // Same content, too few approvals. Those given still count; the action waits for the rest.
-      if (!(await awaitMoreApprovals(action.id, expected, required))) await invalidateApproval(action.id);
-      await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: valid.length, required, recorded: action.requiredApprovals });
+      const newStatus = await stepBack(action.id, expected, required);
+      if (!newStatus) throw conflict(MOVED_ON);
+      await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: valid.length, required, recorded: action.requiredApprovals, newStatus });
       throw conflict(`This ${action.risk.toLowerCase()}-risk action needs ${required} approvals and has ${valid.length}. It is waiting for approval again; nothing was executed.`);
     }
     approvers = valid.map((a) => ({ approverId: a.approverId, approvedAt: a.createdAt }));
@@ -302,7 +312,8 @@ remediationRouter.patch('/:id', requirePermission('remediation:propose'), requir
       data: {
         title: next.title, description: next.description, rationale: next.rationale, risk: next.risk, serviceId: next.serviceId,
         parameters: (next.parameters ?? undefined) as Prisma.InputJsonValue | undefined,
-        effect, effectReasons: reasons, requiredApprovals: requiredApprovals(settings, next.risk, effect),
+        // Never fewer approvals than the action already needed (effect.ts, approvalThreshold).
+        effect, effectReasons: reasons, requiredApprovals: Math.max(now.requiredApprovals, requiredApprovals(settings, next.risk, effect)),
         ...(changed ? { status: 'PROPOSED' as const, contentHash: null, requestedById: null, requestedAt: null } : {}),
       },
     });

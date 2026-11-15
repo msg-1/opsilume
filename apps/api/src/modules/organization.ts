@@ -249,6 +249,8 @@ settingsRouter.patch('/', requirePermission('settings:manage'), async (req, res)
   await audit(req, 'settings.update', 'organization', organizationId, {
     ...rest,
     ...(name ? { name } : {}),
+    // The address can carry a token in its path or query: only that it changed is recorded.
+    ...(rest.remediationWebhookUrl !== undefined ? { remediationWebhookUrl: rest.remediationWebhookUrl ? '[changed]' : '[removed]' } : {}),
     ...(remediationWebhookSecret !== undefined ? { remediationWebhookSecret: '[changed]' } : {}),
   });
   res.json(await settingsView(organizationId));
