@@ -677,6 +677,18 @@ export interface Remediation {
     detail?: Record<string, unknown>;
     contentHash?: string;
     attempt?: number;
+    /** The process stopped while executing; the worker recorded the outcome as unknown */
+    interrupted?: boolean;
+    /** What people recorded after checking the target system, oldest first */
+    reconciliations?: {
+      outcome: 'applied' | 'not_applied' | 'unknown';
+      by: string;
+      byLabel: string;
+      at: string;
+      notes: string;
+      previousOutcome: string;
+      via?: string;
+    }[];
   }) | null;
   effectReasons: string[] | null;
   /** Hash of exactly what an approver is shown; sent back with the approval */
@@ -760,6 +772,18 @@ export interface RemediationDetail {
     detail?: Record<string, unknown>;
     contentHash?: string;
     attempt?: number;
+    /** The process stopped while executing; the worker recorded the outcome as unknown */
+    interrupted?: boolean;
+    /** What people recorded after checking the target system, oldest first */
+    reconciliations?: {
+      outcome: 'applied' | 'not_applied' | 'unknown';
+      by: string;
+      byLabel: string;
+      at: string;
+      notes: string;
+      previousOutcome: string;
+      via?: string;
+    }[];
   }) | null;
   effectReasons: string[] | null;
   /** Hash of exactly what an approver is shown; sent back with the approval */
@@ -846,6 +870,18 @@ export interface RemediationList {
       detail?: Record<string, unknown>;
       contentHash?: string;
       attempt?: number;
+      /** The process stopped while executing; the worker recorded the outcome as unknown */
+      interrupted?: boolean;
+      /** What people recorded after checking the target system, oldest first */
+      reconciliations?: {
+        outcome: 'applied' | 'not_applied' | 'unknown';
+        by: string;
+        byLabel: string;
+        at: string;
+        notes: string;
+        previousOutcome: string;
+        via?: string;
+      }[];
     }) | null;
     effectReasons: string[] | null;
     /** Hash of exactly what an approver is shown; sent back with the approval */
@@ -913,6 +949,18 @@ export interface ExecutionResult {
   detail?: Record<string, unknown>;
   contentHash?: string;
   attempt?: number;
+  /** The process stopped while executing; the worker recorded the outcome as unknown */
+  interrupted?: boolean;
+  /** What people recorded after checking the target system, oldest first */
+  reconciliations?: {
+    outcome: 'applied' | 'not_applied' | 'unknown';
+    by: string;
+    byLabel: string;
+    at: string;
+    notes: string;
+    previousOutcome: string;
+    via?: string;
+  }[];
 }
 
 export interface Approval {

@@ -12,15 +12,22 @@ export interface ExecutionRecord extends ExecutionResult {
   finishedAt: Date;
 }
 
-/** EXECUTING → EXECUTED or FAILED, with the full record of the attempt. */
-export const recordOutcome = (actionId: string, record: ExecutionRecord) =>
-  prisma.remediationAction.update({ where: { id: actionId }, data: { status: record.success ? 'EXECUTED' : 'FAILED', executedAt: new Date(), executionResult: record as unknown as Prisma.InputJsonValue } });
+/**
+ * EXECUTING → EXECUTED or FAILED, with the full record of the attempt, and only while this attempt
+ * is still the one in progress. An outcome that arrives after the attempt was recorded as
+ * interrupted, reconciled or retried does not overwrite that: it returns false, and the caller
+ * puts it in the audit log for a person to reconcile.
+ */
+export async function recordOutcome(actionId: string, record: ExecutionRecord): Promise<boolean> {
+  const { count } = await prisma.remediationAction.updateMany({ where: { id: actionId, status: 'EXECUTING', attempts: record.attempt }, data: { status: record.success ? 'EXECUTED' : 'FAILED', executedAt: new Date(), executionResult: record as unknown as Prisma.InputJsonValue } });
+  return count > 0;
+}
 
 /** Mirrors an executed action onto the service's history so later investigations can see it. */
-export async function recordEffects(action: RemediationAction, operator: { label: string }, result: ExecutionResult) {
+export async function recordEffects(action: RemediationAction, operator: { label: string }, result: Pick<ExecutionResult, 'mode'> & { reconciled?: boolean }) {
   if (!action.serviceId) return;
   const params = (action.parameters ?? {}) as Record<string, unknown>;
-  const via = result.mode === 'webhook' ? 'via remediation webhook' : 'manually';
+  const via = result.reconciled ? 'as recorded by a person reconciling an interrupted attempt' : result.mode === 'webhook' ? 'via remediation webhook' : 'manually';
   if (action.type === 'rollback_deployment') {
     const target = typeof params.deploymentId === 'string' ? await prisma.deployment.findFirst({ where: { id: params.deploymentId, organizationId: action.organizationId } }) : null;
     const toVersion = typeof params.toVersion === 'string' ? params.toVersion : null;

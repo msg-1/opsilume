@@ -184,6 +184,11 @@ export const ExecutionResult = z.object({
   detail: json.optional(),
   contentHash: z.string().optional(),
   attempt: z.number().optional(),
+  interrupted: z.boolean().optional().describe('The process stopped while executing; the worker recorded the outcome as unknown'),
+  reconciliations: z
+    .array(z.object({ outcome: z.enum(['applied', 'not_applied', 'unknown']), by: z.string(), byLabel: z.string(), at: z.string(), notes: z.string(), previousOutcome: z.string(), via: z.string().optional() }))
+    .optional()
+    .describe('What people recorded after checking the target system, oldest first'),
 });
 
 export const Approval = z.object({

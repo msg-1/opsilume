@@ -21,7 +21,7 @@ registerProcessor('alert-eval', async () => {
 });
 
 // Longer than any job can legitimately take (the AI call itself times out after INVESTIGATION_TIMEOUT_MS).
-const STALE = { runningInvestigation: env.INVESTIGATION_TIMEOUT_MS + 5 * 60_000, queuedInvestigation: 60 * 60_000, orphanedInvestigation: 2 * 60_000, executingRemediation: 5 * 60_000, indexingDocument: 10 * 60_000 };
+const STALE = { runningInvestigation: env.INVESTIGATION_TIMEOUT_MS + 5 * 60_000, queuedInvestigation: 60 * 60_000, orphanedInvestigation: 2 * 60_000, executingRemediation: env.REMEDIATION_EXECUTION_STALE_MINUTES * 60_000, indexingDocument: 10 * 60_000 };
 
 /**
  * A job that dies with its process leaves its row in an in-progress state that no retry will
@@ -46,12 +46,17 @@ export async function reapStranded(now = new Date()) {
   });
   for (const inv of waiting) await enqueueInvestigation(inv.id).catch(() => undefined);
 
-  const unknown = 'Execution was interrupted and its outcome is unknown. Check the target system before retrying: the change may or may not have been applied.';
-  const actions = await prisma.remediationAction.findMany({ where: { status: 'EXECUTING', updatedAt: { lt: before(STALE.executingRemediation) } }, select: { id: true, organizationId: true, incidentId: true, title: true } });
+  // An execution whose process stopped: the request may or may not have been sent, and may or may
+  // not have been applied. Its outcome is recorded as unknown for a person to reconcile; it is
+  // never assumed to have failed and never sent again by itself (remediation/routes.ts, reconcile).
+  const unknown = 'Execution was interrupted and its outcome is unknown. A person must check the target system and record what happened before it can be retried: the change may or may not have been applied.';
+  const actions = await prisma.remediationAction.findMany({ where: { status: 'EXECUTING', updatedAt: { lt: before(STALE.executingRemediation) } }, select: { id: true, organizationId: true, incidentId: true, title: true, attempts: true, contentHash: true, updatedAt: true } });
   for (const action of actions) {
-    const claimed = await prisma.remediationAction.updateMany({ where: { id: action.id, status: 'EXECUTING' }, data: { status: 'FAILED', executedAt: now, executionResult: { mode: 'unknown', success: false, outcome: 'unknown', summary: unknown } } });
+    // Only this attempt, only while still in progress: two workers sweeping at once record it once.
+    const record = { mode: 'unknown', success: false, outcome: 'unknown', summary: unknown, interrupted: true, attempt: action.attempts, contentHash: action.contentHash, startedAt: action.updatedAt.toISOString(), idempotencyKey: action.id };
+    const claimed = await prisma.remediationAction.updateMany({ where: { id: action.id, status: 'EXECUTING', attempts: action.attempts, updatedAt: action.updatedAt }, data: { status: 'FAILED', executedAt: now, executionResult: record } });
     if (!claimed.count) continue;
-    await writeAudit({ organizationId: action.organizationId, actorType: 'system', actorLabel: 'OPSILUME worker', action: 'remediation.execute_interrupted', resourceType: 'remediation_action', resourceId: action.id });
+    await writeAudit({ organizationId: action.organizationId, actorType: 'system', actorLabel: 'OPSILUME worker', action: 'remediation.execute_interrupted', resourceType: 'remediation_action', resourceId: action.id, metadata: { attempt: action.attempts, contentHash: action.contentHash, startedAt: action.updatedAt.toISOString(), staleMinutes: env.REMEDIATION_EXECUTION_STALE_MINUTES } });
     if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Remediation outcome unknown: ${action.title} — ${unknown}`, { kind: 'system', label: 'OPSILUME worker' }, { actionId: action.id });
   }
 

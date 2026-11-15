@@ -44,7 +44,8 @@ export default function RemediationDetailPage() {
   const session = useSession();
   const { data: a, error, isLoading } = useApi<RemediationDetail>(`/remediations/${id}`, { refetchInterval: 10_000 });
   const { run, busy, error: actionError } = useAction();
-  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'retry'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'execute' | 'retry' | 'reconcile'>(null);
+  const [found, setFound] = useState<null | 'applied' | 'not_applied' | 'unknown'>(null);
   const [comment, setComment] = useState('');
   // The person has reviewed an AI proposal whose investigation no longer supports a production change.
   const [acknowledged, setAcknowledged] = useState(false);
@@ -58,6 +59,7 @@ export default function RemediationDetailPage() {
       setDialog(null);
       setComment('');
       setAcknowledged(false);
+      setFound(null);
     }
   };
   const me = session.user.id;
@@ -103,6 +105,7 @@ export default function RemediationDetailPage() {
             )}
             {a.status === 'APPROVED' && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('execute')}>{readOnly ? 'Record as done' : manual ? 'Mark as executed' : 'Execute'}</Button>}
             {a.status === 'FAILED' && !outcomeUnknown && session.can('remediation:execute') && <Button loading={busy === 'retry'} onClick={() => void act('retry', {}, 'retry')}>Retry</Button>}
+            {outcomeUnknown && session.can('remediation:execute') && <Button variant="primary" onClick={() => setDialog('reconcile')}>Record what happened</Button>}
             {outcomeUnknown && session.can('remediation:execute') && <Button variant="danger" onClick={() => setDialog('retry')}>Retry…</Button>}
             {['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(a.status) && session.can('remediation:propose') && <Button variant="ghost" loading={busy === 'cancel'} onClick={() => void act('cancel', {}, 'cancel')}>Cancel action</Button>}
           </>
@@ -165,7 +168,17 @@ export default function RemediationDetailPage() {
           {a.executionResult && (
             <Card title="Execution result">
               <Notice tone={a.executionResult.success ? 'good' : 'warn'}>{a.executionResult.summary}</Notice>
-              <DefinitionList items={[['Outcome', a.executionResult.outcome === 'applied' ? 'Applied' : a.executionResult.outcome === 'not_applied' ? 'Not applied' : 'Unknown: may or may not have been applied'], ['Attempt', String(a.executionResult.attempt ?? a.attempts ?? 1)], ['Mode', a.executionResult.mode === 'diagnostic' ? 'Read-only diagnostic, recorded by a person' : a.executionResult.mode === 'manual' ? 'Carried out manually, attested in OPSILUME' : 'Dispatched to remediation webhook'], ['By', a.executedBy?.name ?? '—'], ['At', dateTime(a.executedAt)]]} />
+              <DefinitionList items={[['Outcome', a.executionResult.outcome === 'applied' ? 'Applied' : a.executionResult.outcome === 'not_applied' ? 'Not applied' : 'Unknown: may or may not have been applied'], ['Attempt', String(a.executionResult.attempt ?? a.attempts ?? 1)], ['Mode', a.executionResult.mode === 'diagnostic' ? 'Read-only diagnostic, recorded by a person' : a.executionResult.mode === 'manual' ? 'Carried out manually, attested in OPSILUME' : a.executionResult.mode === 'unknown' ? 'Interrupted: the process stopped while executing' : 'Dispatched to remediation webhook'], ['By', a.executedBy?.name ?? '—'], ['At', dateTime(a.executedAt)]]} />
+              {a.executionResult.reconciliations && a.executionResult.reconciliations.length > 0 && (
+                <div className="mt-3">
+                  <h3 className="mb-1 text-[12px] font-semibold tracking-wide text-ink-2 uppercase">Reconciled by people</h3>
+                  <ul className="space-y-1 text-[13px]">
+                    {a.executionResult.reconciliations.map((r, i) => (
+                      <li key={i}><span className="font-medium">{r.byLabel}</span> recorded <strong>{r.outcome === 'applied' ? 'applied' : r.outcome === 'not_applied' ? 'not applied' : 'still unknown'}</strong>{r.via === 'retry' ? ' when retrying' : ''}, {dateTime(r.at)}: <span className="text-ink-2">{r.notes}</span></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {a.executionResult.detail && <pre className="mt-3 max-h-48 overflow-auto rounded-md bg-sunken p-3 font-mono text-[12px]">{JSON.stringify(a.executionResult.detail, null, 2)}</pre>}
             </Card>
           )}
@@ -224,6 +237,22 @@ export default function RemediationDetailPage() {
         ) : (
           <p className="text-sm text-ink-2">This sends a signed request to your remediation webhook, which performs the change. The response is recorded here.</p>
         )}
+      </Modal>
+      <Modal
+        open={dialog === 'reconcile'}
+        onClose={() => setDialog(null)}
+        title="Record what happened"
+        footer={<><Button onClick={() => setDialog(null)}>Back</Button><Button variant="primary" loading={busy === 'reconcile'} disabled={!found || comment.trim().length < 3} onClick={() => void act('reconcile', { outcome: found, notes: comment, attempt: a.attempts }, 'reconcile')}>Record</Button></>}
+      >
+        <p className="mb-3 text-sm text-ink-2">Attempt {a.attempts} ended without a clear answer. Check the target system, then record what you found. Nothing is sent anywhere.</p>
+        <FormError error={actionError} />
+        <fieldset className="mb-3 space-y-1 text-sm">
+          <legend className="sr-only">What you found</legend>
+          {([['applied', 'It was applied'], ['not_applied', 'It was not applied'], ['unknown', 'Still unknown']] as const).map(([value, label]) => (
+            <label key={value} className="flex items-center gap-2"><input type="radio" name="found" checked={found === value} onChange={() => setFound(value)} />{label}</label>
+          ))}
+        </fieldset>
+        <Field label="What you checked">{(fid) => <Textarea id={fid} rows={3} value={comment} onChange={(e) => setComment(e.target.value)} />}</Field>
       </Modal>
       <Modal
         open={dialog === 'retry'}

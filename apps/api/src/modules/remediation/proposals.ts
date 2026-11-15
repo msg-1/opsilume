@@ -31,6 +31,9 @@ export const rejectionBody = decisionBody.extend({ comment: z.string().trim().mi
 // expectedHash: the fingerprint the person executing was shown (currentHash). A request from an older view is refused.
 export const executeBody = z.object({ confirmManual: z.boolean().optional(), notes: z.string().trim().max(2000).optional(), expectedHash: z.string().length(64).optional() });
 export const retryBody = z.object({ confirmNotApplied: z.boolean().optional() });
+// What a person found on the target system for the latest attempt whose outcome is unknown.
+// `attempt` is the attempt they looked at, so a decision cannot land on a newer one.
+export const reconcileBody = z.object({ outcome: z.enum(['applied', 'not_applied', 'unknown']), notes: z.string().trim().min(3, 'Say what you checked').max(2000), attempt: z.number().int().min(1) });
 /**
  * An edit changes only the fields it names. The risk is declared without a default on purpose:
  * `remediationInput.risk` defaults to MEDIUM, and a default survives `.partial()`, so an edit that

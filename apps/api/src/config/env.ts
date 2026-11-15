@@ -27,8 +27,12 @@ const schema = z.object({
   REMEDIATION_WEBHOOK_ALLOW_PRIVATE: bool,
   // How long to wait for the remediation webhook before the outcome is recorded as unknown
   REMEDIATION_WEBHOOK_TIMEOUT_MS: z.coerce.number().int().min(100).max(300_000).default(30_000),
-  // How long a remediation approval counts. Older approvals stay on record and no longer count.
+  // How long a remediation approval counts, in whole hours (1 to 720). A security policy chosen by
+  // the operator, not a measured value; the default is 24. Older approvals stay on record and no longer count.
   REMEDIATION_APPROVAL_VALIDITY_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+  // How long an execution may stay in progress before the worker records its outcome as unknown
+  // for a person to reconcile. Must be well above the webhook timeout.
+  REMEDIATION_EXECUTION_STALE_MINUTES: z.coerce.number().int().min(1).max(1440).default(10),
   // Base URL of a Jaeger-compatible trace query API (e.g. http://localhost:16686). Empty: no trace store
   TRACES_URL: z.string().optional().default(''),
   GITHUB_TOKEN: z.string().optional().default(''),
@@ -67,6 +71,11 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data;
+
+// An execution still waiting for its webhook must never be taken for a stopped one.
+if (env.REMEDIATION_EXECUTION_STALE_MINUTES * 60_000 < env.REMEDIATION_WEBHOOK_TIMEOUT_MS + 60_000) {
+  throw new Error(`Invalid environment configuration:\n  - REMEDIATION_EXECUTION_STALE_MINUTES must be at least one minute longer than REMEDIATION_WEBHOOK_TIMEOUT_MS (${env.REMEDIATION_WEBHOOK_TIMEOUT_MS} ms)\nSee .env.example.`);
+}
 
 // The placeholders shipped in .env.example are public knowledge. They are tolerated for
 // local development only; anything else must use real secrets.

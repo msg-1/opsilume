@@ -25,6 +25,25 @@ describe('environment validation', () => {
     expect(loadEnv({ NODE_ENV: 'production' }).status).toBe(0);
   });
 
+  it.each(['0', '-1', '1.5', '721', 'abc', ''])('refuses an approval validity of %j hours', (value) => {
+    // An empty value is refused too, rather than silently replaced by the default.
+    const result = loadEnv({ REMEDIATION_APPROVAL_VALIDITY_HOURS: value });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('REMEDIATION_APPROVAL_VALIDITY_HOURS');
+  });
+
+  it('accepts an approval validity from 1 to 720 hours', () => {
+    for (const value of ['1', '24', '720']) expect(loadEnv({ REMEDIATION_APPROVAL_VALIDITY_HOURS: value }).status).toBe(0);
+  });
+
+  it('refuses a stale-execution threshold that is not well above the webhook timeout', () => {
+    const result = loadEnv({ REMEDIATION_EXECUTION_STALE_MINUTES: '2', REMEDIATION_WEBHOOK_TIMEOUT_MS: '120000' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('REMEDIATION_EXECUTION_STALE_MINUTES must be at least one minute longer than REMEDIATION_WEBHOOK_TIMEOUT_MS');
+    expect(loadEnv({ REMEDIATION_EXECUTION_STALE_MINUTES: '0' }).status).not.toBe(0);
+    expect(loadEnv({ REMEDIATION_EXECUTION_STALE_MINUTES: '3', REMEDIATION_WEBHOOK_TIMEOUT_MS: '120000' }).status).toBe(0);
+  });
+
   it('names the variable that is malformed', () => {
     const result = loadEnv({ ENCRYPTION_KEY: 'too-short' });
     expect(result.status).not.toBe(0);

@@ -581,6 +581,28 @@ describe('approving a remediation', () => {
     await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/request-approval', body: { acknowledgeUnverifiedSource: true } }]));
   });
 
+  it('lets a person record what happened to an attempt whose outcome is unknown', async () => {
+    const unknown = { ...remediation, status: 'FAILED', attempts: 1, executionResult: { mode: 'unknown', success: false, outcome: 'unknown' as const, summary: 'Execution was interrupted and its outcome is unknown.', interrupted: true, attempt: 1 } };
+    const api = fakeApi({ 'GET /remediations/act-1': unknown, 'POST /remediations/act-1/reconcile': unknown });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('Interrupted: the process stopped while executing')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Record what happened' }));
+    const dialog = await screen.findByRole('dialog');
+    const record = within(dialog).getByRole('button', { name: 'Record' });
+    expect(record).toBeDisabled();
+    await userEvent.click(within(dialog).getByRole('radio', { name: 'It was not applied' }));
+    await userEvent.type(within(dialog).getByLabelText('What you checked'), 'No restart in the pod events.');
+    await userEvent.click(record);
+    await waitFor(() => expect(api.writes()).toEqual([{ method: 'POST', path: '/remediations/act-1/reconcile', body: { outcome: 'not_applied', notes: 'No restart in the pod events.', attempt: 1 } }]));
+  });
+
+  it('shows who reconciled an attempt and what they found', async () => {
+    fakeApi({ 'GET /remediations/act-1': { ...remediation, status: 'EXECUTED', attempts: 1, executionResult: { mode: 'webhook', success: true, outcome: 'applied' as const, summary: 'Recorded as applied.', attempt: 1, reconciliations: [{ outcome: 'applied' as const, by: 'user-ada', byLabel: 'Ada Admin', at: '2026-11-10T10:00:00.000Z', notes: 'Pods show the restart.', previousOutcome: 'unknown' }] } } });
+    show(<RemediationDetailPage />, ada);
+    expect(await screen.findByText('Reconciled by people')).toBeInTheDocument();
+    expect(screen.getByText('Pods show the restart.')).toBeInTheDocument();
+  });
+
   it('asks for nothing extra when the investigation still supports the change', async () => {
     fakeApi({ 'GET /remediations/act-1': remediation });
     show(<RemediationDetailPage />, ada);

@@ -3963,6 +3963,54 @@
                 },
                 "attempt": {
                   "type": "number"
+                },
+                "interrupted": {
+                  "description": "The process stopped while executing; the worker recorded the outcome as unknown",
+                  "type": "boolean"
+                },
+                "reconciliations": {
+                  "description": "What people recorded after checking the target system, oldest first",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "not_applied",
+                          "unknown"
+                        ]
+                      },
+                      "by": {
+                        "type": "string"
+                      },
+                      "byLabel": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "notes": {
+                        "type": "string"
+                      },
+                      "previousOutcome": {
+                        "type": "string"
+                      },
+                      "via": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "outcome",
+                      "by",
+                      "byLabel",
+                      "at",
+                      "notes",
+                      "previousOutcome"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -4413,6 +4461,54 @@
                 },
                 "attempt": {
                   "type": "number"
+                },
+                "interrupted": {
+                  "description": "The process stopped while executing; the worker recorded the outcome as unknown",
+                  "type": "boolean"
+                },
+                "reconciliations": {
+                  "description": "What people recorded after checking the target system, oldest first",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "outcome": {
+                        "type": "string",
+                        "enum": [
+                          "applied",
+                          "not_applied",
+                          "unknown"
+                        ]
+                      },
+                      "by": {
+                        "type": "string"
+                      },
+                      "byLabel": {
+                        "type": "string"
+                      },
+                      "at": {
+                        "type": "string"
+                      },
+                      "notes": {
+                        "type": "string"
+                      },
+                      "previousOutcome": {
+                        "type": "string"
+                      },
+                      "via": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "outcome",
+                      "by",
+                      "byLabel",
+                      "at",
+                      "notes",
+                      "previousOutcome"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
@@ -4880,6 +4976,54 @@
                       },
                       "attempt": {
                         "type": "number"
+                      },
+                      "interrupted": {
+                        "description": "The process stopped while executing; the worker recorded the outcome as unknown",
+                        "type": "boolean"
+                      },
+                      "reconciliations": {
+                        "description": "What people recorded after checking the target system, oldest first",
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "outcome": {
+                              "type": "string",
+                              "enum": [
+                                "applied",
+                                "not_applied",
+                                "unknown"
+                              ]
+                            },
+                            "by": {
+                              "type": "string"
+                            },
+                            "byLabel": {
+                              "type": "string"
+                            },
+                            "at": {
+                              "type": "string"
+                            },
+                            "notes": {
+                              "type": "string"
+                            },
+                            "previousOutcome": {
+                              "type": "string"
+                            },
+                            "via": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "outcome",
+                            "by",
+                            "byLabel",
+                            "at",
+                            "notes",
+                            "previousOutcome"
+                          ],
+                          "additionalProperties": false
+                        }
                       }
                     },
                     "required": [
@@ -5231,6 +5375,54 @@
         },
         "attempt": {
           "type": "number"
+        },
+        "interrupted": {
+          "description": "The process stopped while executing; the worker recorded the outcome as unknown",
+          "type": "boolean"
+        },
+        "reconciliations": {
+          "description": "What people recorded after checking the target system, oldest first",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "applied",
+                  "not_applied",
+                  "unknown"
+                ]
+              },
+              "by": {
+                "type": "string"
+              },
+              "byLabel": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "previousOutcome": {
+                "type": "string"
+              },
+              "via": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "by",
+              "byLabel",
+              "at",
+              "notes",
+              "previousOutcome"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

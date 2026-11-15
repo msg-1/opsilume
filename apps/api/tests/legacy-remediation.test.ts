@@ -229,6 +229,8 @@ describe('risk, approvals and execution under the current rules', () => {
     expect(run.body.error.message).toContain(`older than ${env.REMEDIATION_APPROVAL_VALIDITY_HOURS} hours`);
     expect(await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).toMatchObject({ status: 'PENDING_APPROVAL', executedAt: null });
     expect((await auditOf(action.id)).map((a) => a.action)).toEqual(['remediation.approval_expired']);
+    // The audit keeps when the approval was given and the cutoff it fell behind.
+    expect((await auditOf(action.id))[0]!.meta).toMatchObject({ approvedAt: [old.toISOString()], cutoff: expect.any(String), validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'execute' });
 
     await approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: shown.currentHash }).expect(200);
     expect((await org.owner.post(`${path(action.id)}/execute`).send({ confirmManual: true }).expect(200)).body.status).toBe('EXECUTED');
@@ -245,6 +247,16 @@ describe('risk, approvals and execution under the current rules', () => {
     const hash = (await org.owner.get(path(action.id))).body.currentHash;
     await approver.agent.post(`${path(action.id)}/approve`).send({ expectedHash: hash }).expect(200);
     expect((await auditOf(action.id)).map((a) => a.action)).toEqual(['remediation.approval_expired', 'remediation.approve']);
+  });
+
+  it('an approval dated in the future does not count', async () => {
+    const org = await createOrg();
+    const approver = await org.member('ADMIN');
+    const inv = await sourceInvestigation(org, incident());
+    const action = await olderAction(org, { investigationId: inv.id, status: 'APPROVED', approvers: [{ userId: approver.userId, at: new Date(Date.now() + 24 * HOUR) }] });
+    expect((await org.owner.get(path(action.id))).body.approvalsGranted).toBe(0);
+    expect((await org.owner.post(`${path(action.id)}/execute`).send({ confirmManual: true })).status).toBe(409);
+    expect((await prisma.remediationAction.findUniqueOrThrow({ where: { id: action.id } })).executedAt).toBeNull();
   });
 
   it('one person approving twice counts once', async () => {
