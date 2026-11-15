@@ -92,6 +92,8 @@ def test_a_summary_that_contradicts_the_computed_outcome_is_made_consistent_and_
     assert report.assessment.outcome == verified and report.outcome == verified
     assert [o for o in guardrails.stated_outcomes(report.summary) if o != verified] == []
     assert f"Assessed outcome: {verified}." in report.summary
+    # Text written by the service must not itself carry a figure the evidence does not hold.
+    assert [f for f in report.integrity.flagged if f.where == "summary" and f.status == "unsupported"] == []
     correction = report.summary_correction
     assert correction.kind == kind and correction.verified_outcome == verified and correction.original_summary == summary and correction.stated_outcome == claimed
     assert any("The model's original summary is kept with the report." in n for n in notes)
@@ -128,7 +130,9 @@ def test_an_empty_summary_is_replaced_from_the_assessment(summary):
     report = report_with(summary, "HEALTHY", "HEALTHY")
     enforce(report, store_for("HEALTHY"))
     assert report.summary.startswith("Summary written by OPSILUME from the computed assessment, because the model returned no summary.")
-    assert report.summary_correction.kind == "replaced" and report.summary_correction.original_summary == summary
+    correction = report.summary_correction
+    # An empty summary stated nothing; the model's own outcome field is not reported as what it said.
+    assert correction.kind == "replaced" and correction.original_summary == summary and correction.stated_outcome is None
 
 
 def test_control_characters_are_removed_before_the_summary_is_checked():
@@ -191,6 +195,24 @@ def test_the_two_healthy_reports_now_agree_with_their_outcome(name):
     assert [f for f in report.integrity.flagged if f.where == "summary"] == []
     # The model's findings are kept; its fault hypothesis stays capped and unlikely.
     assert report.hypotheses and all(h.status == "unlikely" and h.confidence <= 0.2 for h in report.hypotheses)
+
+
+def test_a_rewrite_under_degraded_carries_only_figures_the_evidence_holds():
+    # The saved live report of degraded_incomplete_evidence, whose assessment rationale and leading
+    # hypothesis carry real figures ("6×", "37%", "2000ms"), with its summary made to contradict.
+    record = json.loads((Path(__file__).parent / "fixtures" / "live_degraded_incomplete_evidence.json").read_text())
+    store = EvidenceStore()
+    store.items = [EvidenceItem.model_validate(e) for e in record["evidence"]]
+    for call in record["toolCalls"]:
+        if call.get("ok"):
+            store.coverage.setdefault(str(call["tool"]), {"calls": 0, "records": 0})["calls"] += 1
+    store.metric_services = set(record["metricServices"])
+    report = InvestigationReport.model_validate(record["reportBeforeGuardrails"])
+    report.summary, report.outcome = "search-api is fine, so the outcome is HEALTHY.", "HEALTHY"
+    guardrails.enforce(report, store, scope=record["scope"], tool_failures=record["toolFailures"], known_times=record["knownTimes"])
+    assert report.assessment.outcome == "DEGRADED" and report.summary_correction.kind == "replaced"
+    assert "6×" in report.summary and "37%" in report.summary and "2000ms" in report.summary
+    assert [f for f in report.integrity.flagged if f.where == "summary"] == []
 
 
 def test_the_upstream_report_keeps_its_narrative_behind_the_computed_outcome():

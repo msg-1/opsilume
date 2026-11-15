@@ -88,7 +88,8 @@ def reconcile_summary(report: InvestigationReport, claimed: str | None) -> str |
         if report.hypotheses:
             top = report.hypotheses[0]
             text += _SUMMARY["leadingHypothesis"].format(title=top.title, status=top.status, refs=_cited(top.evidence_refs))
-        report.summary_correction = SummaryCorrection(kind="replaced", stated_outcome=stated or claimed, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
+        # An empty summary stated nothing: the model's own outcome field is not what it "stated".
+        report.summary_correction = SummaryCorrection(kind="replaced", stated_outcome=stated, verified_outcome=outcome, original_summary=original[:SUMMARY_MAX_LENGTH])  # type: ignore[arg-type]
         report.summary = text[:SUMMARY_MAX_LENGTH]
         return _SUMMARY["note"].format(action="was rewritten from the computed assessment", stated=stated or "nothing", outcome=outcome)
     if claimed and claimed != outcome:

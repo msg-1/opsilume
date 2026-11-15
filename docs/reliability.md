@@ -153,7 +153,7 @@ In every case:
 - **API:** the API pass, including a report without an assessment and a second pass, in `apps/api/tests/contract.test.ts`. Storage and retrieval in `intelligence.test.ts`. A shared case in `contracts/fixtures/guardrail-cases.json`.
 - **Web:** the note on the investigation page and the printable report in `apps/web/src/test/journeys.test.tsx`.
 
-**In the evaluation.** A `summary` criterion fails a final summary that states an outcome other than the computed one. Each scenario is also scored on the report as the model wrote it, held against the computed outcome. A pass that needed a guardrail correction is recorded (`guardrailAssisted`, `unaidedFailures`), and `--rescore` prints all three views.
+**In the evaluation.** The scorer now has 12 criteria; documents that say 11 predate this. A `summary` criterion fails a final summary that states an outcome other than the computed one. Each scenario is also scored on the report as the model wrote it, held against the computed outcome. A pass that needed a guardrail correction is recorded (`guardrailAssisted`, `unaidedFailures`), and `--rescore` prints all three views.
 
 Rescoring the saved first live run (no model call, files unchanged):
 
@@ -167,6 +167,7 @@ The 9 of 14 means four passes needed a guardrail, not two as first reported: `to
 
 **Limits.**
 - **Paraphrases are not recognised.** "Checkout looks fine" does not state an outcome in a recognisable way. Recognition covers explicit statements only.
+- **A prefixed summary may still contain the model's conclusion.** When the model's own outcome differs but its summary states none in a recognised form, the summary is kept behind the added sentence. An unrecognised phrase in the kept text that implies the model's outcome stays visible, framed as the model's superseded view.
 - **Agreement is not correctness.** A summary can agree with the outcome and still be wrong about the cause.
 - **Rewritten summaries are formulaic.** They are built from the assessment, not written for the reader.
 - **Stored reports are unchanged.** Reports stored before this change are not rewritten.

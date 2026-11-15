@@ -272,6 +272,16 @@ describe('viewing an investigation report', () => {
     expect(screen.getByRole('region', { name: 'Assessment' })).toHaveTextContent('Incident');
   });
 
+  it('says plainly when the model returned no summary, rather than claiming it stated an outcome', async () => {
+    const corrected = structuredClone(investigation);
+    corrected.report!.summaryCorrection = { kind: 'replaced', statedOutcome: null, verifiedOutcome: 'INCIDENT', originalSummary: '' };
+    fakeApi({ 'GET /investigations/inv-1': corrected });
+    show(<InvestigationPage />, session('ENGINEER'));
+    const note = await screen.findByRole('note', { name: 'Summary correction' });
+    expect(note).toHaveTextContent('OPSILUME wrote this summary from the computed assessment, because the model returned no summary.');
+    expect(note).not.toHaveTextContent('which the evidence does not support');
+  });
+
   it('marks a figure the evidence does not support where it is read, and counts it in the evidence check', async () => {
     fakeApi({ 'GET /investigations/inv-1': investigation });
     show(<InvestigationPage />, session('ENGINEER'));

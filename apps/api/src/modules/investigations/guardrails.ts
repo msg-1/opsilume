@@ -42,7 +42,8 @@ function reconcileSummary(result: InvestigationReport, claimed: string | null): 
     const top = result.hypotheses[0];
     if (top) text += fill(SUMMARY.leadingHypothesis, { title: top.title, status: top.status, refs: cited(top.evidenceRefs) });
     // A summary already corrected upstream keeps the model's original text, not the corrected one.
-    result.summaryCorrection = { kind: 'replaced', statedOutcome: (statedOutcome ?? claimed) as never, verifiedOutcome: outcome, originalSummary: (result.summaryCorrection?.originalSummary ?? original).slice(0, SUMMARY_MAX_LENGTH) };
+    // An empty summary stated nothing: the author's own outcome field is not what it "stated".
+    result.summaryCorrection = { kind: 'replaced', statedOutcome: statedOutcome as never, verifiedOutcome: outcome, originalSummary: (result.summaryCorrection?.originalSummary ?? original).slice(0, SUMMARY_MAX_LENGTH) };
     result.summary = text.slice(0, SUMMARY_MAX_LENGTH);
     return fill(SUMMARY.note, { action: 'was rewritten from the computed assessment', stated: statedOutcome ?? 'nothing', outcome });
   }

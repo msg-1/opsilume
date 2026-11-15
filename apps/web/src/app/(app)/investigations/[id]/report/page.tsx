@@ -127,7 +127,7 @@ export default function InvestigationReportPage() {
             )}
             {assessment?.rationale && <p>{assessment.rationale} <Refs refs={assessment.supportingRefs} known={known} /></p>}
             {report.summaryCorrection && report.summaryCorrection.kind !== 'unverified' && (
-              <p className="text-[13px] text-ink-2">The model&apos;s own summary concluded {report.summaryCorrection.statedOutcome ?? 'a different outcome'}. This conclusion is the computed assessment of the evidence.</p>
+              <p className="text-[13px] text-ink-2">{report.summaryCorrection.statedOutcome ? `The model's own summary concluded ${report.summaryCorrection.statedOutcome}.` : 'The model returned no summary.'} This conclusion is the computed assessment of the evidence.</p>
             )}
             <dl className="grid grid-cols-[minmax(150px,auto)_1fr] gap-x-4 gap-y-1.5 text-[14px]">
               {data.plan?.services?.length ? <><dt className="text-ink-2">Services examined</dt><dd>{data.plan.services.join(', ')}</dd></> : null}

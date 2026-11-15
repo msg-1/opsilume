@@ -2,7 +2,7 @@ import clsx from 'clsx';
 import { AlertTriangle, CheckCircle2, CircleHelp, HelpCircle, Info } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { OutcomeBadge } from '@/components/badges';
-import type { Assessment, Integrity, Verification } from '@/lib/types';
+import type { Assessment, Integrity, SummaryCorrection, Verification } from '@/lib/types';
 
 const STATUS_WORD: Record<string, string> = {
   exact: 'matches the evidence',
@@ -41,22 +41,17 @@ export function VerificationMark({ verification }: { verification?: Verification
 }
 
 /** The verdict on whether there is a fault at all, with what it rests on and what was not examined. */
-/** How the summary was made to agree with the computed outcome (InvestigationReport.summaryCorrection). */
-export interface SummaryCorrectionInfo {
-  kind: 'replaced' | 'prefixed' | 'unverified';
-  statedOutcome?: string | null;
-  verifiedOutcome?: string | null;
-  originalSummary: string;
-}
-
 /**
  * Says, next to the summary, that OPSILUME changed it and why, and keeps the model's own words
  * one click away. The summary must never be read as the model's when the service wrote it.
  */
-export function SummaryCorrectionNote({ correction }: { correction: SummaryCorrectionInfo }) {
+export function SummaryCorrectionNote({ correction }: { correction: SummaryCorrection }) {
   const said =
     correction.kind === 'replaced'
-      ? `OPSILUME wrote this summary from the computed assessment. The model's summary stated ${correction.statedOutcome ?? 'a different outcome'}, which the evidence does not support (assessed ${correction.verifiedOutcome}).`
+      ? correction.statedOutcome
+        ? `OPSILUME wrote this summary from the computed assessment. The model's summary stated ${correction.statedOutcome}, which the evidence does not support (assessed ${correction.verifiedOutcome}).`
+        : 'OPSILUME wrote this summary from the computed assessment, because the model returned no summary.'
+
       : correction.kind === 'prefixed'
         ? `The first sentences were added by OPSILUME: the model concluded ${correction.statedOutcome}, and the computed assessment is ${correction.verifiedOutcome}.`
         : 'This report carries no assessment of the evidence, so any outcome its summary states is not verified.';

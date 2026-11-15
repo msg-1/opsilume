@@ -342,7 +342,8 @@ def score(scenario: Scenario, report: InvestigationReport, raw: InvestigationRep
     elif conflicting:
         s["summary"] = _fail(f"The summary states {', '.join(conflicting)}; the computed outcome is {verified}.")
     elif correction:
-        s["summary"] = _pass(f"The summary agrees with {verified} only because OPSILUME {'rewrote it' if correction.kind == 'replaced' else 'put the computed outcome in front of it'}; the model's summary stated {correction.stated_outcome}.")
+        said = f"the model's summary stated {correction.stated_outcome}" if correction.stated_outcome else "the model returned no summary"
+        s["summary"] = _pass(f"The summary agrees with {verified} only because OPSILUME {'rewrote it' if correction.kind == 'replaced' else 'put the computed outcome in front of it'}; {said}.")
     else:
         s["summary"] = _pass(f"The summary states no outcome other than {verified}.")
 
