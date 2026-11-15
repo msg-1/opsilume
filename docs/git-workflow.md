@@ -123,6 +123,7 @@ Never rebase or force-push `main` or `develop`. Rebasing your own unpublished fe
 |---|---|---|
 | `ci.yml` | Pull requests into `develop` and `main`; pushes to `develop`, `main`, `release/**`, `hotfix/**` | Commit messages · Frontend (lint, typecheck, unit tests) · Backend (lint, typecheck) · Database integration tests (PostgreSQL + pgvector) · AI service (lint, tests, agent evaluations) · Build verification (builds, dependency audit, container images) |
 | `e2e.yml` | Pull requests into `develop` and `main`; pushes to `release/**`, `hotfix/**`; manual | Builds a throwaway copy of the whole stack (its own Compose project, generated secrets, rule-based engine, no provider key), runs the browser tests against it, then the failure drills, the backup and restore drill and a reduced load test. Uploads screenshots, Playwright traces and service logs when it fails. Not a required check |
+| `security.yml` | Pull requests into `develop` and `main` that change dependencies, Dockerfiles, `docker-compose.yml` or the workflow itself; pushes to `develop`; weekly (Monday 04:17 UTC); manual | Python dependency audit (`pip-audit` 2.9.0 on the AI service's locked production dependencies) and a container image scan (Trivy 0.76.1, pinned by digest; HIGH and CRITICAL with a fix; report only) of the api, ai and web images. Not a required check |
 | `release.yml` | Push of a `vX.Y.Z` tag | Checks the tag is on `main` and matches `package.json`, then publishes a GitHub release |
 
 The repository is published at https://github.com/msg-1/opspilot. `ci.yml` runs on every pull request and has passed on `develop`; `e2e.yml` has passed on `release/0.1.0` and, since Milestone 6, runs on every pull request. `release.yml` has never run, because no version tag has been pushed.
@@ -140,6 +141,8 @@ Reviewed on 15 November 2026 against the workflow files and the branch protectio
 | Contract drift: generated frontend types, shared contracts in both languages, the Python export | `ci.yml` → Backend and AI service (`git diff --exit-code` after regenerating), and `contract.test.ts`, `api-contract.test.ts` | Required |
 | Builds, container images, the demo's build | `ci.yml` → Build verification | Required |
 | Dependency advisories | `npm audit --omit=dev --audit-level=high` in Build verification | Required. Covers shipped Node dependencies of the workspaces only |
+| Python dependency advisories | `security.yml` → Python dependency audit (pip-audit) | **Not required.** Fails on any known advisory |
+| Container image vulnerabilities (api, ai, web) | `security.yml` → Container image scan (Trivy, report only) | **Not required.** Reports HIGH and CRITICAL findings with a fix; fails on none |
 | Commit message rules and no tool attribution | `ci.yml` → Commit messages | Runs on pull requests; **not a required check** on either branch |
 | Browser journeys (12) on a stack built from nothing | `e2e.yml` → Browser end-to-end tests | Required on `main`; **not required on `develop`** |
 | Failure drills (11) | same job | as above |
@@ -148,9 +151,20 @@ Reviewed on 15 November 2026 against the workflow files and the branch protectio
 
 Not covered by any job:
 
-- **Python dependency advisories** (`pip-audit` or equivalent), **container image scanning**, **static security analysis**. The only automated security check is `npm audit`.
+- **Static security analysis.** Python dependency advisories and container images are scanned by `security.yml`, which is not a required check. The image scan only reports: it fails on nothing until its findings have been reviewed and a threshold agreed.
+- **Five moderate advisories in shipped Node dependencies are open**, reviewed on 15 November 2026. `npm audit --omit=dev` fails only at high, and passes. They are two advisories and the packages that depend on them, all reached through one chain: `@opentelemetry/auto-instrumentations-node` → `@opentelemetry/resource-detector-gcp` → `gcp-metadata` 8.1.4 → `gaxios` 7.1.3 → `rimraf` 5 → `glob` 10 → `minimatch` 9.
+  - `glob` >=9.0.0 <=14.0.1: GHSA-3g3m-2fjr-6pw4.
+  - `minimatch` >=7.0.0 <11.0.1: GHSA-g3hv-75wg-m249.
+
+  **Exposure:** none is a direct dependency. `gaxios` 7.1.3 declares `rimraf` but its built code never loads it, and the API never runs the GCP detector (`autoDetectResources: false` in `apps/api/src/telemetry.ts`). Nothing in our code uses `glob` or `minimatch`.
+
+  **No compatible update exists:** `gcp-metadata` 8.1.4, the newest 8.x, pins `gaxios` to exactly 7.1.3; the fixed `gcp-metadata` is 9.x, a major version the detector does not accept; and the newest OpenTelemetry release (0.83.1) has the same chain.
+
+  **Remediation options, each an owner decision:**
+  - an npm `overrides` entry forcing `gaxios` 7.1.4, a patch release whose only relevant change is that it no longer depends on `rimraf`, against `gcp-metadata`'s exact pin;
+  - wait for an OpenTelemetry release that moves to `gcp-metadata` 9.
 - **Development dependencies and the `demo/` packages** are outside `npm audit --omit=dev`.
-- **Dependabot alerts** are not enabled on the repository. Secret scanning and push protection are.
+- **Dependabot alerts and automatic security updates** are repository settings and are not enabled. Secret scanning and push protection are. Dependabot *version* updates are configured in `.github/dependabot.yml`: weekly for npm, uv, the Dockerfiles and the GitHub Actions; majors ignored, because they are pinned in `docs/decisions.md`; commit messages `chore(deps): …`. They take effect once the file is on `develop`, the default branch. To enable alerts, the owner can run `gh api -X PUT repos/msg-1/opspilot/vulnerability-alerts`, or use Settings → Code security.
 - **Performance regressions.** The full load test and `scripts/perf-probe.mjs` are run by hand; their numbers depend on the machine, so CI asserts none. A query that became ten times slower would pass CI.
 - **The demo end to end** (about 25 minutes) and **anything involving a model or github.com**.
 - **Post-merge end-to-end**: `e2e.yml` does not run on pushes to `develop`. A merge is covered by the run on its pull request, which, because the branch must be up to date, is the same tree.

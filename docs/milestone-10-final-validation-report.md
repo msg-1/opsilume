@@ -319,3 +319,20 @@ The run labelled `20261115T074819Z-anthropic-claude-haiku-5-5` holds rule-based 
 | CI | Post-merge run 43700870978 on `8be2789`; PR #28 end-to-end run 43699554688 on `558d5aa` |
 
 `services/ai/eval-runs/` is ignored by git, so the run directories and the ledger exist only on the machine that produced them. Keep a copy if this evidence must outlive that machine.
+
+## Addendum, 15 November 2026: corrections found while aligning the other documents
+
+These points are missing from the audit above. The text above is left as it was merged; this section corrects it.
+
+1. **Two passes in the original run needed guardrail repair.** In `healthy_no_signal` and `healthy_misleading_signals`, the model concluded DEGRADED with a fault hypothesis rated `possible` at 0.30. The assessment recomputed HEALTHY, and the guardrails capped the hypothesis at 0.20, `unlikely`. They count among the 13 passes because the scorer judges the report the product shows. As the model wrote them, they would have failed the healthy-state question. Guardrail notes appear in 5 of the 14 reports: these two, `upstream_dependency_down` (outcome raised from DEGRADED to INCIDENT by the assessment, and two figure flags), `red_herring_closer_in_time` and `historical_health_not_on_record` (one figure flag each).
+2. **Figures flagged by the claim checker.** 595 figures checked in the original run, 574 supported, 21 flagged: 15 uncited, 1 stated as an estimate, 5 unsupported.
+   - One unsupported figure sits in a stated fact: "13.33 ERROR" against evidence of "13.33 /min" in `red_herring_closer_in_time`. That looks like a checker false positive on the unit, not yet confirmed.
+   - The others are in summaries and one action, including "09:30Z" in `upstream_dependency_down`, which no evidence carries.
+   - The repeat: 35 checked, 35 supported.
+3. **The pre-set acceptance criteria** of `docs/ai-validation.md` are therefore not all met:
+   - question 6 is not met as written;
+   - question 4 is met only after guardrail repair.
+
+   Section 11's "Validated with limitations" for model-backed investigations describes the evidence that exists. It is not a pilot go-ahead. For a pilot, model-backed investigations are **not validated** (`docs/pilot-acceptance-report.md`).
+4. **Section 12, item 1 is done:** `docs/ai-validation.md`, `docs/claude-live-verification.md` and `docs/pilot-acceptance-report.md` now carry the Milestone 10 results.
+5. **Security scanning** has since been configured (`.github/workflows/security.yml`, `.github/dependabot.yml`). See `docs/git-workflow.md` for what has executed and what remains unconfigured. The 5 moderate npm advisories are analysed there.

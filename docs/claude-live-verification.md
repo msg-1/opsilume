@@ -227,6 +227,43 @@ No paid API call was made in Milestone 4, and none was authorised. What was done
 
 What this does **not** show: how a model behaves with the instructions and report schema as changed in Milestone 4 (the `outcome` and `observations` fields, the instruction to give no hypothesis for a healthy service and to quote figures exactly), with the new `get_traces` tool, or against the demo environment's real telemetry. Those need a live run and a budget.
 
+## Milestone 10: 14 scenarios on the current code
+
+Run on 15 November 2026 with `claude-haiku-5-5`, effort `medium`, 8,000 output tokens per call, no retries. The key was read from one named variable, and every call was reserved against a ledger with an approved ceiling of $0.87 (`services/ai/eval-runs/m10-ledger.json`). The full audit record, with per-scenario scores, is [milestone-10-final-validation-report.md](milestone-10-final-validation-report.md); the results against the questions of [ai-validation.md](ai-validation.md) are there too.
+
+| Run | Directory under `services/ai/eval-runs/` | Requests | Estimated cost | Result |
+|---|---|---|---|---|
+| A first attempt whose key was rejected (401) | `20261115T074819Z-anthropic-claude-haiku-5-5` | 14, all refused before processing, so none billed | $0.000000 | **Not a model result.** Every report is rule-based. This run exposed the silent-fallback defect fixed in PR #27 |
+| Original live evaluation, before PR #28 | `20261115T082338Z-anthropic-claude-haiku-5-5` | 83 | **$0.100903** | **13 of 14.** `degraded_incomplete_evidence` failed root cause and calibration |
+| Repeat of `degraded_incomplete_evidence`, after PR #28 | `20261115T095633Z-anthropic-claude-haiku-5-5` | 7 | **$0.007128** | 1 of 1 |
+
+Applying the PR #28 guardrails to the saved output of the original run (`--rescore`, no model) gives 14 of 14. That is post-processing, not a model result.
+
+Tokens:
+
+| | Original run | Repeat |
+|---|---|---|
+| Input | 122,658 | 9,032 |
+| Output | 122,747 | 8,451 |
+| Cache reads | 414,816 | 39,728 |
+| Cache writes | 184,930 | 12,814 |
+
+The ledger, as read on 15 November 2026:
+
+| | |
+|---|---|
+| Committed | $0.108031 (= $0.100903 + $0.007128) |
+| Ceiling | $0.87 |
+| Remaining | $0.761969 |
+| Repeats used | 1 of 1 |
+| Calls of unknown outcome | 0 |
+| Overruns | 0 |
+
+Two observations carried over from earlier runs:
+
+- **Open issue 1 above recurs.** In `healthy_no_signal` the model again led with a speculative fault, `possible` at 0.30, and concluded DEGRADED. So did `healthy_misleading_signals`. Both pass only because the assessment recomputed HEALTHY and the guardrails capped the hypotheses at 0.20.
+- **Single samples still.** One run per scenario, two for one scenario. These are not rates.
+
 ## Total API spend to date
 
 | Activity | Estimated cost |
@@ -235,6 +272,13 @@ What this does **not** show: how a model behaves with the instructions and repor
 | Five-scenario evaluation (30 requests) | $0.0355 |
 | Six-scenario evaluation, run 1 (37 requests) | $0.0414 |
 | Confirmation of three scenarios, run 2 (18 requests) | $0.0201 |
-| **Total** | **$0.1181** |
+| *Subtotal, Milestones 3 and 4* | *$0.1181* |
+| Milestone 10: rejected-key attempt (14 requests, refused before processing) | $0.000000 |
+| Milestone 10: original live evaluation (83 requests) | $0.100903 |
+| Milestone 10: repeat of one scenario (7 requests) | $0.007128 |
+| *Subtotal, Milestone 10 (the ledger's committed total)* | *$0.108031* |
+| **Total** | **$0.226131** |
 
-These are estimates from list prices. The Anthropic Console shows what was actually billed.
+Each run is counted once. The Milestone 3 and 4 rows come from the runs recorded above. The Milestone 10 rows come from the ledger, which was started for Milestone 10 and holds no earlier run.
+
+These are estimates at the list prices in `services/ai/app/config.py`. The Milestone 10 prices were checked against Anthropic's published Haiku 5.5 prices on 15 November 2026. **The actual bill was not verified independently.** The Anthropic Console shows what was billed, and its figures were not available when this was written.
