@@ -176,6 +176,7 @@
    "flagged": [],
    "supported": 26
   },
+  "narrative": null,
   "nextSteps": [
    "Confirm by comparing error rate per version, or by rolling back in a controlled way.",
    "Review the diff of the linked change for the suspected mechanism.",
@@ -236,6 +237,7 @@
   ],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"failed to deserialize cache entry for key order:<n>: unexpected schema version\" in orders-api, seen 420 times since 2026-06-01T11:30:00Z. The leading hypothesis is: Regression introduced by Deployment of orders-api v4.2.0 (succeeded) (64% confidence, likely). The error signal began about 8 minutes after this deployment. The shipped change touches cache, matching the failure mode in the logs. No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "PR #77 in acme/orders-api: Bump cache schema version and config",
@@ -462,6 +464,7 @@
    "flagged": [],
    "supported": 20
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern f61 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -490,6 +493,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). There are measurable anomalies but no clear failure: 6\u00d7 ERROR in search-api (new pattern); p95 latency for search-api up 37%. Nothing in the evidence explains them.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "6\u00d7 ERROR in search-api (new pattern)",
@@ -753,6 +757,7 @@
    "flagged": [],
    "supported": 36
   },
+  "narrative": null,
   "nextSteps": [
    "Confirm by comparing error rate per version, or by rolling back in a controlled way.",
    "Review the diff of the linked change for the suspected mechanism.",
@@ -812,6 +817,7 @@
   ],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"timeout acquiring connection from pool after <n>ms (pool size 10, <n> waiting)\" in checkout-api, seen 640 times since 2026-06-01T11:41:00Z. The leading hypothesis is: Regression introduced by Deployment of checkout-api v2.8.0 (succeeded) (71% confidence, likely). The error signal began about 5 minutes after this deployment. The shipped change touches connection, pool, matching the failure mode in the logs. No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "PR #412 in acme/checkout-api: Reduce DB pool size to cut idle connections",
@@ -871,6 +877,7 @@
    "flagged": [],
    "supported": 0
   },
+  "narrative": null,
   "nextSteps": [
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
   ],
@@ -879,6 +886,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [],
   "uncertainties": [
    "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
@@ -956,6 +964,7 @@
    "flagged": [],
    "supported": 14
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern f41 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -1016,6 +1025,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. The most frequent error pattern is \"provider rate limit at <n>% of quota\" in notifications-api, seen 14 times since 2026-06-01T10:10:00Z. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "14\u00d7 WARN in notifications-api (9.0x above baseline)",
@@ -1099,6 +1109,7 @@
    "flagged": [],
    "supported": 12
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern f51 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -1152,6 +1163,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. The most frequent error pattern is \"slow query took <n>ms: monthly_summary\" in reports-api, seen 8 times since 2026-06-01T11:51:00Z. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "Deployment of reports-api v6.3.0 (succeeded)",
@@ -1242,6 +1254,7 @@
    "flagged": [],
    "supported": 9
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern f3 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -1295,6 +1308,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. The most frequent error pattern is \"invoice email retry scheduled attempt=<n>\" in billing-service, seen 6 times since 2026-06-01T10:30:00Z. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "6\u00d7 WARN in billing-service (new pattern)",
@@ -1336,6 +1350,7 @@
    "flagged": [],
    "supported": 2
   },
+  "narrative": null,
   "nextSteps": [
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
   ],
@@ -1370,6 +1385,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [],
   "uncertainties": [
    "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
@@ -1551,6 +1567,7 @@
    "flagged": [],
    "supported": 21
   },
+  "narrative": null,
   "nextSteps": [
    "Check whether cache-redis errors started before or after the errors in its callers.",
    "Check cache-redis itself: is it running, reachable and within its limits?",
@@ -1561,6 +1578,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"cache lookup failed: connection refused\" in web-app, seen 240 times since 2026-05-29T11:00:00Z. The leading hypothesis is: Failure of upstream dependency cache-redis (45% confidence, possible). web-app depends on Cache Redis (datastore), which was DOWN between 2026-05-29T10:00:00Z and 2026-05-29T13:00:00Z: Critical alert \"Redis unavailable\" was firing from 2026-05-29T10:30:00Z to 2026-05-29T12:30:00Z. Taken from what was recorded at the time, not from its state now. Failures there could surface as errors in the services that call it. Nothing it depends on was recorded as unhealthy in the window, so the chain of failures appears to start here. No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "240\u00d7 ERROR in web-app (new pattern)",
@@ -1721,6 +1739,7 @@
    "flagged": [],
    "supported": 12
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern h2 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -1730,6 +1749,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The collected evidence does not point to a specific cause: error patterns were found but no deployment, configuration change, dependency problem or similar past incident could be linked to them.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "240\u00d7 ERROR in web-app (new pattern)",
@@ -1892,6 +1912,7 @@
    "flagged": [],
    "supported": 12
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern h3 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -1901,6 +1922,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The collected evidence does not point to a specific cause: error patterns were found but no deployment, configuration change, dependency problem or similar past incident could be linked to them.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "240\u00d7 ERROR in web-app (new pattern)",
@@ -2201,6 +2223,7 @@
    "flagged": [],
    "supported": 36
   },
+  "narrative": null,
   "nextSteps": [
    "Confirm by comparing error rate per version, or by rolling back in a controlled way.",
    "Review the diff of the linked change for the suspected mechanism.",
@@ -2260,6 +2283,7 @@
   ],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"tls handshake failed: certificate signed by unknown authority\" in payments-api, seen 510 times since 2026-06-01T11:20:00Z. The leading hypothesis is: Regression introduced by Deployment of payments-api v3.1.0 (succeeded) (64% confidence, likely). The error signal began about 12 minutes after this deployment. The shipped change touches certificate, matching the failure mode in the logs. 1 alternative hypothesis was considered. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "PR #301 in acme/payments-api: Rotate mTLS certificate bundle",
@@ -2450,6 +2474,7 @@
    "flagged": [],
    "supported": 11
   },
+  "narrative": null,
   "nextSteps": [
    "Open the log explorer filtered to pattern f1 and follow a trace id across services.",
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
@@ -2459,6 +2484,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The collected evidence does not point to a specific cause: error patterns were found but no deployment, configuration change, dependency problem or similar past incident could be linked to them.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "420\u00d7 ERROR in orders-api (new pattern)",
@@ -2656,6 +2682,7 @@
    "flagged": [],
    "supported": 13
   },
+  "narrative": null,
   "nextSteps": [
    "Check whether auth-service errors started before or after the errors in its callers.",
    "Check auth-service itself: is it running, reachable and within its limits?",
@@ -2666,6 +2693,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"upstream auth-service request failed: connection refused\" in web-app, seen 300 times since 2026-06-01T11:35:00Z. The leading hypothesis is: Failure of upstream dependency auth-service (45% confidence, possible). web-app depends on Auth Service (sync), which is DOWN: Critical alert firing: Auth error rate Failures there could surface as errors in the services that call it. Nothing it depends on is recorded as unhealthy, so the chain of failures appears to start here. No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "300\u00d7 ERROR in web-app (new pattern)",
@@ -2962,6 +2990,7 @@
    "flagged": [],
    "supported": 14
   },
+  "narrative": null,
   "nextSteps": [
    "Check whether shop-redis errors started before or after the errors in its callers.",
    "Check shop-redis itself: is it running, reachable and within its limits?",
@@ -2972,6 +3001,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"upstream shop-orders returned 502\" in shop-gateway, seen 240 times since 2026-06-01T11:54:00Z. The leading hypothesis is: Failure of upstream dependency shop-redis (57% confidence, likely). shop-payments depends on shop-redis (sync), which is DOWN: alert firing on shop-redis Failures there could surface as errors in the services that call it. Nothing it depends on is recorded as unhealthy, so the chain of failures appears to start here. The path from the service in question is shop-gateway \u2192 shop-orders \u2192 shop-payments \u2192 shop-redis. Sampled traces agree: requests fail in shop-payments, which calls shop-redis directly. 3 alternative hypotheses were considered. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "240\u00d7 ERROR in shop-gateway (new pattern)",
@@ -3010,6 +3040,7 @@
    "flagged": [],
    "supported": 0
   },
+  "narrative": null,
   "nextSteps": [
    "Re-run the investigation with a wider time window or with the affected service named explicitly."
   ],
@@ -3018,6 +3049,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). No significant problem signal was found in the window examined: no high-volume error pattern, no sharp metric shift and no firing alert. Nothing links the observations to a recent change.",
+  "summarySource": "rule_based",
   "timeline": [],
   "uncertainties": [
    "This analysis used rule-based correlation without a language model; it cannot read code diffs or reason about mechanisms beyond keyword overlap.",
@@ -3198,6 +3230,7 @@
    "flagged": [],
    "supported": 15
   },
+  "narrative": null,
   "nextSteps": [
    "Check whether the trigger of the past incident (see its root cause) is present now.",
    "Open the log explorer filtered to pattern f1 and follow a trace id across services."
@@ -3207,6 +3240,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"timeout acquiring connection from database pool\" in orders-api, seen 420 times since 2026-06-01T11:30:00Z. The leading hypothesis is: Recurrence of the failure mode from INC-7 (50% confidence, possible). A past incident had a similar signature (connection, database, pool, timeout). Its recorded root cause: Database pool size lowered; connections timed out No alternative hypotheses met the evidence bar. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "420\u00d7 ERROR in orders-api (new pattern)",
@@ -3408,6 +3442,7 @@
    ],
    "supported": 27
   },
+  "narrative": null,
   "nextSteps": [
    "Check the load, locks and health of demo-postgres at the same time.",
    "Compare with a trace from before the slowdown."
@@ -3443,6 +3478,7 @@
   "recommendedActions": [],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). p95 latency for shop-orders up 2500%: latency_p95_ms averaged 780ms (max 1014ms) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 30ms in the preceding window The leading hypothesis is: Time is being lost in shop-orders's calls to demo-postgres (50% confidence, possible). In 5 sampled traces, a single span in shop-orders (pg.query:SELECT) accounts for most of the request time: 403 to 403 ms of requests lasting 846 to 850 ms. This locates the delay; it does not say why demo-postgres is slow. 2 alternative hypotheses were considered. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "Deployment of shop-orders v1.5.0 (rolled_back)",
@@ -3655,6 +3691,7 @@
    "flagged": [],
    "supported": 27
   },
+  "narrative": null,
   "nextSteps": [
    "Confirm by comparing error rate per version, or by rolling back in a controlled way.",
    "Review the diff of the linked change for the suspected mechanism.",
@@ -3714,6 +3751,7 @@
   ],
   "rootCauseConfirmed": false,
   "summary": "Rule-based analysis (no language model wrote these conclusions). The most frequent error pattern is \"failed to compute order total: Cannot read properties of null\" in shop-orders, seen 300 times since 2026-06-01T11:58:00Z. The leading hypothesis is: Regression introduced by Deployment of shop-orders v1.5.0 (succeeded) (57% confidence, likely). The error signal began about 1 minutes after this deployment. The link is based on timing and service match. 1 alternative hypothesis was considered. The cause has not been verified.",
+  "summarySource": "rule_based",
   "timeline": [
    {
     "description": "Deployment of shop-orders v1.4.0 (succeeded)",

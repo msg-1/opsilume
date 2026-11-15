@@ -32,6 +32,9 @@ CLAIM_KINDS: tuple[str, ...] = ("number", "timestamp", "version", "commit", "pul
 VerificationStatus = Literal["verified", "partly", "unsupported", "no_claims"]
 VERIFICATION_STATUSES: tuple[str, ...] = ("verified", "partly", "unsupported", "no_claims")
 
+SummarySource = Literal["assessment", "unverified", "rule_based"]
+SUMMARY_SOURCES: tuple[str, ...] = ("assessment", "unverified", "rule_based")
+
 GUARDRAIL_LIMITS: dict[str, Any] = {
     "maxConfidence": {
         "llm": 0.9,
@@ -45,6 +48,11 @@ GUARDRAIL_LIMITS: dict[str, Any] = {
     "unestablishedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the outcome is DEGRADED, so the cause is not established.",
     "unverifiedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the report carries no assessment of the evidence, so no cause is verified.",
     "unverifiedOutcomeNote": "The report states the outcome {claimed}, but it carries no assessment of the evidence, so that outcome is not verified and is not recorded.",
+    "reportSummary": {
+        "verified": "Assessed outcome: {outcome}. {rationale}",
+        "unverified": "Outcome not verified: this report carries no assessment of the evidence, so no outcome is stated here. The narrative is its author's own and has not been verified.",
+        "narrativeMaxLength": 6000
+    },
     "maxRecommendedActions": 4,
     "outcomeAllowingProductionChanges": "INCIDENT",
     "withdrawalReasons": {

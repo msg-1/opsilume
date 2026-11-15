@@ -2,7 +2,7 @@
 // (apps/api/src/contracts/api.ts) by `npm run contracts`; CI fails when the generated file is
 // stale, and the API's own tests check real responses against the same contracts. Nothing
 // here is written by hand except a few names for parts of the generated types.
-import type { Assessment, Verification } from './generated/api';
+import type { Assessment, Report, Verification } from './generated/api';
 
 export type {
   Approval,
@@ -41,5 +41,7 @@ export type {
 
 /** Whether the evidence shows a fault at all. */
 export type Outcome = Assessment['outcome'];
+/** Where a report's summary comes from (assessment, unverified, rule_based); absent on older reports. */
+export type SummarySource = NonNullable<Report['summarySource']>;
 /** One figure in a statement, and whether the cited evidence holds it. */
 export type ClaimCheck = Verification['checks'][number];

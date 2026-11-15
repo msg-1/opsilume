@@ -19,10 +19,11 @@ from .generated.contracts import (
     RemediationType,
     RiskLevel,
     SignalLevel,
+    SummarySource,
     VerificationStatus,
 )
 
-__all__ = ["ActionEffect", "AnalysisMode", "ClaimKind", "ClaimStatus", "HypothesisStatus", "Outcome", "RemediationType", "RiskLevel", "SignalLevel", "VerificationStatus"]
+__all__ = ["ActionEffect", "AnalysisMode", "ClaimKind", "ClaimStatus", "HypothesisStatus", "Outcome", "RemediationType", "RiskLevel", "SignalLevel", "SummarySource", "VerificationStatus"]
 
 
 class CamelModel(BaseModel):
@@ -237,13 +238,21 @@ class Integrity(CamelModel):
 
 
 class InvestigationReport(CamelModel):
-    summary: str = Field(description="3-6 sentences: what happened, the leading explanation, and how sure we are")
+    summary: str = Field(description="What the reader is told first. For model and mock reports it is built from the computed assessment only (guardrails.py); for rule-based reports it is the rule-based engine's own")
     confidence: float = Field(ge=0, le=1, description="Overall confidence in the leading hypothesis")
     analysis_mode: AnalysisMode = "llm"
     root_cause_confirmed: Literal[False] = False
     #: What the engine concluded before the evidence check; the assessment is authoritative
     outcome: Outcome | None = None
     assessment: Assessment | None = None
+    #: Where `summary` comes from: assessment (built from the computed assessment, nothing else),
+    #: unverified (no assessment: the API says so and states no outcome), rule_based (the
+    #: rule-based engine's own text). None on reports stored before this field existed.
+    summary_source: SummarySource | None = None
+    #: What the model (or the scripted mock) wrote as its summary, unchanged apart from the
+    #: guardrails that apply to all report text. Unverified: shown only as such. None for
+    #: rule-based reports and for reports stored before this field existed.
+    narrative: str | None = Field(default=None, max_length=6000)
     #: Things worth knowing that are not evidence of a fault (an old deployment, routine warnings)
     observations: list[Fact] = Field(default_factory=list)
     integrity: Integrity | None = None

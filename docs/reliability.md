@@ -123,6 +123,92 @@ A service's health in the catalogue is its state now. An investigation of someth
 
 Tests: `apps/api/tests/historical-health.test.ts` (the tool API and the incident context, against a database), `services/ai/tests/test_historical_health.py` (a dependency that was down then, one that is down only today, missing history, a healthy past window, and a caller that gives no window).
 
+## 4b. Assessment, verified summary and unverified narrative
+
+**The defect.** Found by the Milestone 10 audit. In two healthy-state scenarios of the first live evaluation (`healthy_no_signal`, `healthy_misleading_signals`), the report a user saw showed two things that contradict each other:
+- a computed outcome of HEALTHY;
+- a model summary saying "I rate the outcome DEGRADED rather than HEALTHY" and "so the outcome is DEGRADED".
+
+**The cause.** The model writes its summary in the report step, before the outcome is computed. The guardrails then compute the outcome (section 1) and correct the structured fields: outcome, hypothesis statuses, confidence. They never touched the summary. The API stored whatever summary it received, and the investigation page, the investigation list, the incident page and the remediation page show it. The printable report was not affected: it shows the assessment's rationale, not the summary.
+
+**The design.** A report now carries three separate things:
+
+| | What it is | Where it comes from | Shown as |
+|---|---|---|---|
+| **Authoritative assessment** | The outcome (HEALTHY, DEGRADED, INCIDENT, UNDETERMINED), its rationale and the evidence it rests on | Computed from the evidence by `services/ai/app/assessment.py`, for every engine (section 1) | The Assessment panel, and the Conclusion of the printable report |
+| **Verified summary** | The text the reader is told first: `report.summary` | Built only from the assessment: "Assessed outcome: {outcome}. {rationale} ({refs})." (`contracts/guardrails.json`, `reportSummary`) | The investigation page, the investigation list, the incident page, the remediation page, the timeline event and the notification |
+| **Unverified model narrative** | What the model wrote as its summary: `report.narrative` | The model, unchanged apart from the sanitiser, the overclaim rewrite and the figure checker | Its own section, "Unverified model narrative", on the investigation page and the printable report only |
+
+`report.summarySource` records which one the summary is: `assessment`, `unverified` (the report carries no assessment) or `rule_based` (the rule-based engine's own summary, which is written from the same evidence and kept as it is).
+
+**How it is enforced.** `present_summary` in `services/ai/app/guardrails.py` runs after the outcome and the hypotheses are final. The API builds the summary again in `apps/api/src/modules/investigations/guardrails.ts` and never trusts a summary it receives. The text of both comes from the shared contract, and a shared case in `contracts/fixtures/guardrail-cases.json` checks that the Python and TypeScript passes produce the same full string.
+
+**Where the API's trust in the assessment comes from.** The API does not recompute the assessment and cannot prove how one was computed. Its trust rests on three things:
+- **The service boundary.** A report reaches the API only as the final event of the API's own request to `AI_SERVICE_URL`. No route accepts a report from a client. The `x-internal-token` header authenticates the API to the AI service, not the response to the API: the API trusts the answer because it asked the configured service.
+- **The AI service's code.** The model's answer has no field for an assessment, and `guardrails.enforce` replaces any assessment a report carries with the one `assessment.py` computes (`services/ai/tests/test_summary_consistency.py` pins this).
+- **A consistency check at the API** (`trustedAssessment` in `guardrails.ts`). An assessment is used only if every reference it cites is evidence the API itself recorded for that run, and an INCIDENT, the only outcome that allows production changes, cites at least one. Otherwise it is dropped: the outcome is not verified, no production change is offered, and a guardrail note says why. Every INCIDENT assessment in the golden snapshot and in every saved evaluation run cites at least one reference, and every evidence item the AI service cites is sent to the API before the report, so a genuine report is not dropped: `services/ai/tests/test_agent.py` checks this for every scenario on the rule-based engine and the mock, and the browser test of a real rule-based investigation needs a trusted INCIDENT to propose its rollback. This check catches an assessment that does not fit the evidence. It does not catch one that fits the evidence but was not computed by `assessment.py`.
+
+Signing the assessment would add a key to manage and rotate, and would protect only against something that can already answer as the AI service. It was not added.
+
+**Reports stored before this change.** They are not migrated and nothing stored is changed. When one is read, `apps/api/src/modules/investigations/legacy.ts` presents it as a new report would be:
+
+| Stored report | Shown as |
+|---|---|
+| Carries `summarySource` (every report from this change on) | Exactly as stored |
+| Rule-based (from the report's `analysisMode`, else the row's, else a `heuristic` provider) | Exactly as stored |
+| Model or mock, engine unknown included, with a trusted assessment (well-formed outcome, rationale and references; the same consistency check against the evidence stored for it) | The summary built from that assessment; the stored text as the unverified narrative; the outcome is the assessment's |
+| Model or mock without one (absent, malformed, citing unrecorded evidence, or an INCIDENT citing nothing) | "Outcome not verified"; the stored text as the unverified narrative; no outcome, and no assessment, shown |
+
+The layer applies in every response that carries the summary: the investigation detail (and so the printable report), the list, the incident page and its timeline entry (both completion-message formats), the remediation actions, and a postmortem drafted from now on.
+
+
+**Guarantees.**
+- **No model text in the verified summary.** It is built from the assessment alone, so what the model wrote cannot change it: a contradiction in a later paragraph, a paraphrase ("checkout looks fine"), a claimed recovery and a confident claim under UNDETERMINED all leave it the same. This does not rely on recognising what the model said.
+- **No assessment, no outcome.** When a report carries no assessment (API only; the AI service always computes one), the summary says the outcome is not verified and names no classification. The narrative is kept, marked unverified, and no action that changes production is offered.
+- **The narrative is kept for audit,** with its own label, on the investigation page and the printable report. It is not sent with the investigation list, the incident or the remediation action. An empty narrative is shown as "The model returned no narrative."
+- **The narrative is still checked:** secrets are removed, wording that presents a cause as confirmed is rephrased, and its figures are checked against the evidence. A narrative that fails these checks is flagged, not hidden.
+- **Idempotent.** Running the guardrails again gives the same summary and narrative, with no repeated prefix.
+- **The model's findings are untouched:** hypotheses, evidence references, confidence after the guardrails, contradictions, missing evidence and uncertainties.
+- **Older reports are presented, not rewritten.** A stored model or mock report without `summarySource` is shown with a summary derived from its trusted assessment, or as unverified, everywhere it appears (see above). The stored row is unchanged.
+
+**Tests.**
+- **Python:** `services/ai/tests/test_summary_consistency.py`, including HEALTHY with a contradicting paraphrase, HEALTHY with an explicit DEGRADED claim, DEGRADED with a positive narrative, INCIDENT with a claimed recovery, UNDETERMINED with confident claims, an empty narrative, a contradiction in a later paragraph, repeated processing, and the live reports copied unedited into `tests/fixtures/live_summary_contradictions.json`.
+- **API:** the API pass, including a missing assessment and assessments that cite unrecorded evidence or, for an incident, none, in `apps/api/tests/contract.test.ts`. Through the real path (a scripted AI service stream, the guardrails, storage, then every response) in `intelligence.test.ts`: a contradictory model report with a verified assessment, a missing assessment, an assessment citing unrecorded evidence, a rule-based report, and stored older reports with a trusted, absent, unrecorded-evidence or malformed assessment and a rule-based one. Every case checks the detail, the list and the incident. The contradictory, rule-based and stored older reports also check the remediation actions; every stored older report also checks the timeline entry, and that reading leaves the stored row unchanged; the trusted older report also checks a new postmortem. The view rules alone are in `legacy.test.ts`.
+- **Web:** the investigation page (model, empty narrative, no assessment, older report, mock), the printable report, the list, the incident page and the remediation page in `apps/web/src/test/journeys.test.tsx`.
+
+**In the evaluation.** The scorer now has 12 criteria; documents that say 11 predate this. The `summary` criterion passes a summary built from the assessment, which agrees by construction. The narrative is scored separately, on the report as the model wrote it. Each scenario is scored in three views, and a pass that needed a guardrail is recorded (`guardrailAssisted`, `unaidedFailures`). `--rescore` prints all three views.
+
+Rescoring the saved first live run (no model call; the saved files are unchanged byte for byte):
+
+| View | Result |
+|---|---|
+| As shown at the time, scored with the new criterion | 11 of 14 |
+| With the current guardrails (the final user-visible report) | 14 of 14 |
+| As the model wrote it (raw model output) | 9 of 14 |
+
+Five scenarios fail as the model wrote them. Four of them passed at the time only because a guardrail corrected the report, not two as first reported:
+
+| Scenario | What the model wrote | What the guardrail did |
+|---|---|---|
+| `healthy_no_signal` | A summary stating the outcome DEGRADED | The summary is built from the HEALTHY assessment; the model's text is the narrative |
+| `healthy_misleading_signals` | A summary stating the outcome DEGRADED | The same |
+| `upstream_dependency_down` | An outcome of DEGRADED where the scenario is INCIDENT | The computed assessment, not the model, sets the outcome |
+| `tool_failures_degrade_gracefully` | A cause rated `likely` at 0.45, below the 0.5 threshold, that the data cannot establish | The existing rule rated it `possible` |
+
+The fifth, `degraded_incomplete_evidence`, is the scenario that failed at the time. It passes with the current guardrails only because of the DEGRADED cap added afterwards (section 1, `unestablishedCauseCap`), so it is a guardrail-dependent pass too, not a model improvement. The result recorded at the time, 13 of 14 under the criteria then in force, is unchanged; the run is not described as 14 of 14. The repeat run of `degraded_incomplete_evidence` passes 1 of 1 in all three views. No rule-based scenario needed a correction.
+
+**Limits.**
+- **Consistency is not correctness.** The summary agrees with the assessment by construction. That says nothing about whether the assessment, or the leading hypothesis, is right about the cause.
+- **The verified summary is formulaic.** It is built from the assessment's rationale, not written for the reader.
+- **The narrative can still contradict the assessment.** It is labelled as unverified rather than corrected. The evaluation recognises a stated outcome in it with three patterns (`services/ai/app/evals/scoring.py`), which catch explicit statements only and undercount paraphrases. The patterns are an evaluation measure, not a guarantee.
+- **Rule-based summaries are kept as written** (`summarySource: rule_based`). The API relies on `analysisMode` to recognise them. A report that arrives labelled rule-based keeps its own summary: the label comes from the same trusted service.
+- **The API's trust in the assessment is a boundary and a consistency check, not proof.** An assessment that fits the recorded evidence is used whoever produced it. See above.
+- **Copies made before this change keep the old text.** The read-time view changes what is shown, not what was copied: notifications already sent, postmortems already drafted, and remediation actions already proposed from an older report. An older report without a trusted assessment may have proposed a production change at the time; the action remains, and still needs a person to submit, another to approve, and one to execute it. A fresh install has no older rows: the seed creates no investigations and the demo uses the rule-based engine.
+- **An older report's hypotheses are shown as stored.** The read-time view changes the summary, narrative, outcome and assessment only. An older report shown as unverified may still show a hypothesis rated likely, at its stored confidence, which a new report without a trusted assessment would have capped.
+- **An older report shown as verified is verified now, not then.** Its summary is derived when it is read, from the assessment it stored.
+- **The evaluation scores the AI service's output.** It does not run the API pass or the read-time view, which are tested separately, and its outcome patterns undercount paraphrases (above).
+- **The model is not told the computed outcome before it writes.** The outcome depends on the hypotheses, which come in the same answer. The prompt is unchanged.
+
 ## 5. Figures and identifiers
 
 `services/ai/app/claims.py`. A citation that resolves is not enough: "error rate rose to 14% (E3)" has to be compared with what E3 says.

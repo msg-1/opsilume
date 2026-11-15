@@ -1,0 +1,1493 @@
+{
+ "$comment": "Model output saved by the first live evaluation of Milestone 10 (15 November 2026, claude-haiku-5-5, run 20261115T082338Z). Synthetic scenario data only. Copied, not edited: each report is exactly as the model wrote it, before any guardrail. In the first two the model's summary states DEGRADED while the computed outcome is HEALTHY; in the third the model concluded DEGRADED, the computed outcome is INCIDENT, and the summary states no outcome.",
+ "reports": {
+  "healthy_no_signal": {
+   "reportBeforeGuardrails": {
+    "summary": "billing-service is recorded as HEALTHY with no alert firing, and its error rate (0.2%, unchanged) and p95 latency (180ms, up from 176ms, about 2.3%) show no material change (E1, E3). A new WARN pattern, \"invoice email retry scheduled attempt=<n>\", first appeared at 2026-06-01T10:30:00Z with 6 occurrences through 2026-06-01T11:59:00Z and no baseline (E2, E5). Because a new warning has appeared without an established cause, I rate the outcome DEGRADED rather than HEALTHY, which differs from the working notes. The leading explanation is that the invoice-email provider is slow or rejecting sends, causing retries, but no provider health or retry-outcome data is on record, so confidence is low at 0.3. No deployment or configuration change in the window is implicated; v2.0.0 was released on 2026-05-25 (E4).",
+    "confidence": 0.3,
+    "analysisMode": "llm",
+    "rootCauseConfirmed": false,
+    "outcome": "DEGRADED",
+    "assessment": null,
+    "observations": [
+     {
+      "statement": "billing-service is recorded as HEALTHY with no alert firing.",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "Error rate averaged 0.2%, the same as the 0.2% before; p95 latency averaged 180ms against 176ms before.",
+      "evidenceRefs": [
+       "E3"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "The only recorded billing-service deployment, v2.0.0, succeeded on 2026-05-25T12:00:00Z and was a routine release by deploy-bot.",
+      "evidenceRefs": [
+       "E4"
+      ],
+      "verification": null
+     }
+    ],
+    "integrity": null,
+    "timeline": [
+     {
+      "timestamp": "2026-05-25T12:00:00Z",
+      "description": "billing-service v2.0.0 deployed to production (succeeded, routine release).",
+      "evidenceRefs": [
+       "E4"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T10:00:00Z",
+      "description": "Metric baseline window begins; error rate averaged 0.2% and p95 latency 180ms, showing no notable change.",
+      "evidenceRefs": [
+       "E3"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T10:30:00Z",
+      "description": "First occurrence of the new WARN pattern \"invoice email retry scheduled attempt=<n>\" (baseline count 0).",
+      "evidenceRefs": [
+       "E2"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:20:00Z",
+      "description": "Sample WARN log: invoice email retry scheduled attempt=2.",
+      "evidenceRefs": [
+       "E5"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:59:00Z",
+      "description": "Last occurrence of the retry WARN pattern in the window (6 occurrences in total).",
+      "evidenceRefs": [
+       "E2"
+      ]
+     }
+    ],
+    "facts": [
+     {
+      "statement": "billing-service is recorded as HEALTHY, and no alert is firing.",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "A new WARN pattern \"invoice email retry scheduled attempt=<n>\" was recorded 6 times, first seen 2026-06-01T10:30:00Z and last seen 2026-06-01T11:59:00Z, with a baseline count of 0.",
+      "evidenceRefs": [
+       "E2"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "A WARN log at 2026-06-01T11:20:00Z reads \"invoice email retry scheduled attempt=2\".",
+      "evidenceRefs": [
+       "E5"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "error_rate averaged 0.2% (0.2% before) and latency_p95_ms averaged 180ms (176ms before).",
+      "evidenceRefs": [
+       "E3"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "billing-service v2.0.0 deployment succeeded on 2026-05-25T12:00:00Z, by deploy-bot, in production.",
+      "evidenceRefs": [
+       "E4"
+      ],
+      "verification": null
+     }
+    ],
+    "assumptions": [
+     "The retry WARN lines relate to the invoice-email feature, as their wording suggests.",
+     "The metric baseline of 0.2% error rate and 180ms latency is representative of the window."
+    ],
+    "uncertainties": [
+     "The occurrence count is uncertain: the anomaly and pattern tools count 6, but a direct log search returned only 1 matching line, and this discrepancy is not reconciled.",
+     "Logs and histograms before 10:00Z were not available, so the baseline comes from metrics only.",
+     "No health or status data for the invoice-email provider or any other upstream dependency is on record.",
+     "The knowledge base returned no runbook or past incident for this message.",
+     "The cause of the retries and whether they succeed or fail is not shown by the evidence."
+    ],
+    "hypotheses": [
+     {
+      "title": "Invoice email provider is slow or rejecting sends, so the invoice-email path retries",
+      "description": "The mechanism is that the external email provider is slow or returning rejections, so the invoice-email feature schedules retries, which surface as the new WARN pattern. Timing fits: the first retry WARN appears at 10:30Z and recurs through 11:59Z, and the message describes a retry schedule. The error rate did not rise, which suggests the retries are being absorbed rather than failing requests.",
+      "confidence": 0.3,
+      "status": "possible",
+      "evidenceRefs": [
+       "E2",
+       "E5"
+      ],
+      "contradictingEvidenceRefs": [
+       "E3",
+       "E1"
+      ],
+      "contradictions": [
+       "The error rate and latency are unchanged, and the service is recorded as HEALTHY, so the retries do not appear to cause visible failures.",
+       "The count discrepancy (6 pattern occurrences against 1 direct log match) means the volume is not confirmed."
+      ],
+      "facts": [],
+      "assumptions": [
+       "The retry messages come from the invoice-email path and not from another retry mechanism.",
+       "The email provider, not billing-service itself, is the source of delay or rejection."
+      ],
+      "gaps": [
+       "Email provider status and error logs for the same window.",
+       "Retry logs for trace abc123 and its siblings showing whether the retries eventually succeed.",
+       "Logs from 06:00 to 10:00Z to confirm whether the pattern is truly new.",
+       "An explanation of the count discrepancy."
+      ]
+     },
+     {
+      "title": "A recent deployment introduced the retry behaviour",
+      "description": "A change in billing-service v2.0.0 could have added the invoice-email retry logic, with the effect appearing later. This was checked and fits poorly: the deployment was released about a week before the new pattern, and the error rate and latency did not move around the time the warnings began.",
+      "confidence": 0.1,
+      "status": "unlikely",
+      "evidenceRefs": [
+       "E4"
+      ],
+      "contradictingEvidenceRefs": [
+       "E3",
+       "E2"
+      ],
+      "contradictions": [
+       "The deployment was on 2026-05-25, about a week before the first retry WARN at 2026-06-01T10:30:00Z, and no deployment is recorded in the window.",
+       "The error rate and latency show no change at the time the warnings appeared.",
+       "Deployment content and rollback target were not retrieved, so the code change is unverified."
+      ],
+      "facts": [],
+      "assumptions": [
+       "The retry logic may have been introduced by v2.0.0 and only activated later."
+      ],
+      "gaps": [
+       "get_deployment_context output for v2.0.0, showing what it shipped and the version it replaced.",
+       "Whether the retry feature is behind a flag that was enabled in the window."
+      ]
+     }
+    ],
+    "nextSteps": [
+     "Check the status and error logs of the invoice-email provider for 2026-06-01T10:00:00Z to 12:00:00Z.",
+     "Pull the retry logs for trace abc123 and related traces to see whether the retries succeed or exhaust.",
+     "Reconcile the count discrepancy between the pattern tool (6) and the direct log search (1 line).",
+     "Retrieve logs from 06:00 to 10:00Z to confirm the pattern is new.",
+     "Confirm with the owner of the invoice-email feature whether scheduled retries are expected behaviour."
+    ],
+    "recommendedActions": []
+   },
+   "evidence": [
+    {
+     "ref": "E1",
+     "kind": "service_health",
+     "title": "billing-service is recorded as HEALTHY",
+     "summary": "Health status of Billing Service in the service catalogue. No alert is firing.",
+     "sourceType": "service_health",
+     "sourceId": "svc_billing-service",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "billing-service",
+     "data": {
+      "health": "HEALTHY",
+      "firingAlerts": 0,
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E2",
+     "kind": "log_pattern",
+     "title": "6× WARN in billing-service (new pattern)",
+     "summary": "\"invoice email retry scheduled attempt=<n>\" — first seen 2026-06-01T10:30:00Z, last seen 2026-06-01T11:59:00Z; baseline count 0",
+     "sourceType": "log_pattern",
+     "sourceId": "f3:svc_billing-service",
+     "occurredAt": "2026-06-01T10:30:00Z",
+     "relevance": null,
+     "service": "billing-service",
+     "data": {
+      "fingerprint": "f3",
+      "count": 6,
+      "level": "WARN",
+      "firstSeen": "2026-06-01T10:30:00Z",
+      "lastSeen": "2026-06-01T11:59:00Z",
+      "kind": "new",
+      "ratio": null,
+      "baselineCount": 0,
+      "sample": "invoice email retry scheduled attempt=<n>",
+      "serviceId": "svc_billing-service"
+     }
+    },
+    {
+     "ref": "E3",
+     "kind": "metric_baseline",
+     "title": "2 metric(s) for billing-service show no notable change",
+     "summary": "error_rate averaged 0.2% (0.2% before); latency_p95_ms averaged 180ms (176ms before)",
+     "sourceType": "metric_baseline",
+     "sourceId": "billing-service:2026-06-01T10:00:00Z",
+     "occurredAt": "2026-06-01T10:00:00Z",
+     "relevance": null,
+     "service": "billing-service",
+     "data": {
+      "metrics": [
+       {
+        "metric": "error_rate",
+        "label": "Error rate",
+        "unit": "%",
+        "avg": 0.2,
+        "max": 0.26,
+        "baselineAvg": 0.2,
+        "changePercent": 0.0
+       },
+       {
+        "metric": "latency_p95_ms",
+        "label": "p95 latency",
+        "unit": "ms",
+        "avg": 180,
+        "max": 234.0,
+        "baselineAvg": 176,
+        "changePercent": 2.3
+       }
+      ]
+     }
+    },
+    {
+     "ref": "E4",
+     "kind": "deployment",
+     "title": "Deployment of billing-service v2.0.0 (succeeded)",
+     "summary": "Routine release — by deploy-bot, commit dddddddddddd, environment production",
+     "sourceType": "deployment",
+     "sourceId": "d5",
+     "occurredAt": "2026-05-25T12:00:00Z",
+     "relevance": null,
+     "service": "billing-service",
+     "data": {
+      "version": "v2.0.0",
+      "status": "SUCCEEDED",
+      "commitSha": "dddddddddddd4444",
+      "environment": "production",
+      "deployedBy": "deploy-bot",
+      "isRollback": false,
+      "startedAt": "2026-05-25T12:00:00Z"
+     }
+    },
+    {
+     "ref": "E5",
+     "kind": "log",
+     "title": "WARN log from billing-service",
+     "summary": "invoice email retry scheduled attempt=2",
+     "sourceType": "log",
+     "sourceId": "l3",
+     "occurredAt": "2026-06-01T11:20:00Z",
+     "relevance": null,
+     "service": "billing-service",
+     "data": {
+      "traceId": "abc123",
+      "attributes": null,
+      "fingerprint": "fp"
+     }
+    }
+   ],
+   "toolCalls": [
+    {
+     "tool": "list_services",
+     "input": {},
+     "ok": true
+    },
+    {
+     "tool": "get_service",
+     "input": {
+      "service": "billing-service",
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "find_log_anomalies",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_metrics",
+     "input": {
+      "service": "billing-service",
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "list_deployments",
+     "input": {
+      "from_time": "2026-06-01T00:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "list_service_events",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_logs",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR",
+       "FATAL"
+      ],
+      "limit": 50
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_histogram",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR",
+       "FATAL"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_patterns",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "billing-service"
+      ],
+      "levels": [
+       "INFO",
+       "WARN",
+       "ERROR",
+       "FATAL"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_knowledge_base",
+     "input": {
+      "query": "invoice email retry scheduled warning billing service",
+      "service": "billing-service"
+     },
+     "ok": true
+    }
+   ],
+   "knownTimes": [
+    "2026-06-01T06:00:00Z",
+    "2026-06-01T12:00:00Z",
+    "2026-06-01T12:00:00Z"
+   ],
+   "scope": [
+    "billing-service"
+   ],
+   "toolFailures": [],
+   "metricServices": [
+    "billing-service"
+   ],
+   "healthGaps": []
+  },
+  "healthy_misleading_signals": {
+   "reportBeforeGuardrails": {
+    "summary": "reports-api v6.3.0 ('Add CSV export') was deployed at 2026-06-01T11:48:00Z, and a new 'slow query took <n>ms: monthly_summary' WARN first appeared at 11:51:00Z, 8 times in total with the last at 11:59:00Z (E1, E3). The leading explanation is that v6.3.0 changed or added load on the monthly_summary query path, but no evidence shows the code change, so this rests on timing alone. Error rate (0.2%) and throughput (12rps) were flat across the window, and p95 latency rose from 280ms to 330ms (about 18%, calculated) though the window includes roughly 1h48m before the deploy (E7). The evidence shows warnings but no material failure, so the outcome is DEGRADED with confidence about 0.3 in the deploy-related explanation, and reports-db could not be assessed.",
+    "confidence": 0.3,
+    "analysisMode": "llm",
+    "rootCauseConfirmed": false,
+    "outcome": "DEGRADED",
+    "assessment": null,
+    "observations": [
+     {
+      "statement": "v6.2.9 (d50) and v6.3.0 (d51) both list commit abcabcabcabc in their evidence summaries, which is inconsistent with two different releases and needs checking against the deployment record.",
+      "evidenceRefs": [
+       "E1",
+       "E2"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "The metric baseline shows error_rate and throughput_rps unchanged, and no reports-api alert is firing.",
+      "evidenceRefs": [
+       "E7",
+       "E4"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "reports-api and reports-db are recorded as HEALTHY, but the health entries carry no time basis, so they do not show the state during the window.",
+      "evidenceRefs": [
+       "E4",
+       "E5"
+      ],
+      "verification": null
+     }
+    ],
+    "integrity": null,
+    "timeline": [
+     {
+      "timestamp": "2026-05-29T12:00:00Z",
+      "description": "reports-api v6.2.9 (d50) deployed to production, succeeded.",
+      "evidenceRefs": [
+       "E2"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T10:00:00Z",
+      "description": "Investigation window opens; metric baseline covers reports-api from this time.",
+      "evidenceRefs": [
+       "E7"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:48:00Z",
+      "description": "reports-api v6.3.0 (d51) 'Add CSV export' deployed to production, succeeded, replacing v6.2.9.",
+      "evidenceRefs": [
+       "E1"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:51:00Z",
+      "description": "First 'slow query took <n>ms: monthly_summary' WARN seen in reports-api.",
+      "evidenceRefs": [
+       "E3"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:54:00Z",
+      "description": "Sample WARN logged: slow query took 1840ms: monthly_summary.",
+      "evidenceRefs": [
+       "E6"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:59:00Z",
+      "description": "Last of the 8 slow-query WARNs seen.",
+      "evidenceRefs": [
+       "E3"
+      ]
+     }
+    ],
+    "facts": [
+     {
+      "statement": "reports-api v6.3.0 ('Add CSV export') deployment succeeded in production at 2026-06-01T11:48:00Z.",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "v6.3.0 replaced v6.2.9, which was deployed 2026-05-29T12:00:00Z.",
+      "evidenceRefs": [
+       "E2"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "The pattern 'slow query took <n>ms: monthly_summary' appeared 8 times in reports-api, first seen 2026-06-01T11:51:00Z and last seen 2026-06-01T11:59:00Z.",
+      "evidenceRefs": [
+       "E3"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "A sample WARN read 'slow query took 1840ms: monthly_summary' at 2026-06-01T11:54:00Z.",
+      "evidenceRefs": [
+       "E6"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "error_rate averaged 0.2% (0.2% before) over the window for reports-api.",
+      "evidenceRefs": [
+       "E7"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "throughput_rps averaged 12rps (12rps before) over the window for reports-api.",
+      "evidenceRefs": [
+       "E7"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "latency_p95_ms averaged 330ms (280ms before) for reports-api.",
+      "evidenceRefs": [
+       "E7"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "reports-api and reports-db are recorded as HEALTHY in the service catalogue with no alert firing.",
+      "evidenceRefs": [
+       "E4",
+       "E5"
+      ],
+      "verification": null
+     }
+    ],
+    "assumptions": [
+     "The 'before' figures in the metric baseline refer to the period before v6.3.0 and are comparable to the window average.",
+     "The slow-query WARN pattern did not exist before the deployment, as the pattern is reported as first seen at 11:51Z."
+    ],
+    "uncertainties": [
+     "No commits, pull requests or changed files were returned, so it is not known whether v6.3.0 touched the monthly_summary query.",
+     "No reports-db metrics, query timings or traces were returned, so database impact cannot be assessed.",
+     "No baseline count of the slow-query WARN exists before the deployment, so its frequency change is unknown.",
+     "The knowledge base returned nothing on this warning, so it is not known whether it is benign or previously seen.",
+     "Health entries for reports-api and reports-db do not show whether they describe the investigation window or the current state.",
+     "The per-minute warning histogram is not in the evidence catalogue and cannot be cited."
+    ],
+    "hypotheses": [
+     {
+      "title": "v6.3.0 introduced or increased load on the monthly_summary query, making it slow",
+      "description": "The mechanism is that the CSV export change in v6.3.0 altered the monthly_summary query path (for example a new query, a changed join, or added calls) and it now runs slower. Timing fits: the deploy at 11:48Z precedes the first WARN at 11:51Z (E1, E3). The sample shows a 1840ms query (E6), and p95 latency rose from 280ms to 330ms (E7). Supporting mechanism is unverified because no code change was retrieved.",
+      "confidence": 0.3,
+      "status": "possible",
+      "evidenceRefs": [
+       "E1",
+       "E3",
+       "E6",
+       "E7"
+      ],
+      "contradictingEvidenceRefs": [
+       "E7"
+      ],
+      "contradictions": [
+       "error_rate and throughput_rps are flat, so no user-facing failure is visible (E7).",
+       "p95 latency rise is measured across a window that includes about 1h48m before the deploy, so it cannot be attributed to v6.3.0 from E7 alone."
+      ],
+      "facts": [],
+      "assumptions": [
+       "The monthly_summary query is part of the v6.3.0 change path.",
+       "The WARN pattern reflects a real query slowdown rather than a logging change."
+      ],
+      "gaps": [
+       "Diff or changed files for v6.3.0 showing whether monthly_summary was touched.",
+       "Baseline count of the slow-query WARN before 11:51Z to confirm it is new.",
+       "Latency of monthly_summary before and after 11:48Z, measured per query.",
+       "Whether the WARN frequency keeps rising after 12:00Z."
+      ]
+     },
+     {
+      "title": "Slow monthly_summary is driven by reports-db or data volume, not by the release",
+      "description": "The mechanism is that the database side (reports-db) or growing data volume slowed the monthly_summary query during the window, and the deploy only coincided with it. Nothing retrieved rules this out, because reports-db has no metrics or traces in the evidence.",
+      "confidence": 0.15,
+      "status": "unlikely",
+      "evidenceRefs": [
+       "E3",
+       "E6",
+       "E5"
+      ],
+      "contradictingEvidenceRefs": [
+       "E7"
+      ],
+      "contradictions": [
+       "The timing of the first WARN immediately after the deploy is a coincidence in this view, which is not impossible but is less likely than a direct link (E1, E3).",
+       "reports-db is recorded HEALTHY (E5), but without a time basis that does not show it was healthy during the window."
+      ],
+      "facts": [],
+      "assumptions": [
+       "reports-db performance changed independently of the deployment during 11:51Z to 11:59Z.",
+       "The 1840ms sample reflects database time rather than application time."
+      ],
+      "gaps": [
+       "reports-db query timings for monthly_summary and its CPU, IO and lock metrics for the window.",
+       "Data volume trend for the monthly summary source tables before and after 11:48Z."
+      ]
+     }
+    ],
+    "nextSteps": [
+     "Review the v6.3.0 diff (commit abcabcabcabc or the d51 deployment) to see whether the monthly_summary query path changed, since no code changes were returned.",
+     "Get reports-db query timings and metrics for monthly_summary across 10:00Z to 12:00Z to see if the database slowed or only the application path did.",
+     "Establish a baseline count of the 'slow query took' WARN for the 7 days before 2026-06-01 to confirm it is new.",
+     "Watch whether the slow-query WARN continues after 12:00Z and whether reports-api p95 latency keeps rising above 330ms.",
+     "Check the knowledge base or the team for whether monthly_summary slowness is already known or benign.",
+     "If latency or errors rise, consider rolling back to v6.2.9 (deployment d50); on current evidence a rollback is not recommended."
+    ],
+    "recommendedActions": []
+   },
+   "evidence": [
+    {
+     "ref": "E1",
+     "kind": "deployment",
+     "title": "Deployment of reports-api v6.3.0 (succeeded)",
+     "summary": "Add CSV export — by deploy-bot, commit abcabcabcabc, environment production",
+     "sourceType": "deployment",
+     "sourceId": "d51",
+     "occurredAt": "2026-06-01T11:48:00Z",
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "version": "v6.3.0",
+      "status": "SUCCEEDED",
+      "commitSha": "abcabcabcabc5151",
+      "environment": "production",
+      "deployedBy": "deploy-bot",
+      "isRollback": false,
+      "startedAt": "2026-06-01T11:48:00Z"
+     }
+    },
+    {
+     "ref": "E2",
+     "kind": "deployment",
+     "title": "Deployment of reports-api v6.2.9 (succeeded)",
+     "summary": "No description — by deploy-bot, commit abcabcabcabc, environment production",
+     "sourceType": "deployment",
+     "sourceId": "d50",
+     "occurredAt": "2026-05-29T12:00:00Z",
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "version": "v6.2.9",
+      "status": "SUCCEEDED",
+      "commitSha": "abcabcabcabc5050",
+      "environment": "production",
+      "deployedBy": "deploy-bot",
+      "isRollback": false,
+      "startedAt": "2026-05-29T12:00:00Z"
+     }
+    },
+    {
+     "ref": "E3",
+     "kind": "log_pattern",
+     "title": "8× WARN in reports-api",
+     "summary": "\"slow query took <n>ms: monthly_summary\" — first seen 2026-06-01T11:51:00Z, last seen 2026-06-01T11:59:00Z",
+     "sourceType": "log_pattern",
+     "sourceId": "f51:svc_reports-api",
+     "occurredAt": "2026-06-01T11:51:00Z",
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "fingerprint": "f51",
+      "count": 8,
+      "level": "WARN",
+      "firstSeen": "2026-06-01T11:51:00Z",
+      "lastSeen": "2026-06-01T11:59:00Z",
+      "kind": "new",
+      "ratio": null,
+      "baselineCount": 0,
+      "sample": "slow query took <n>ms: monthly_summary",
+      "serviceId": "svc_reports-api"
+     }
+    },
+    {
+     "ref": "E4",
+     "kind": "service_health",
+     "title": "reports-api is recorded as HEALTHY",
+     "summary": "Health status of Reports Api in the service catalogue. No alert is firing.",
+     "sourceType": "service_health",
+     "sourceId": "svc_reports-api",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "health": "HEALTHY",
+      "firingAlerts": 0,
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E5",
+     "kind": "service_health",
+     "title": "reports-db is recorded as HEALTHY",
+     "summary": "Health status of Reports Db in the service catalogue. No alert is firing.",
+     "sourceType": "service_health",
+     "sourceId": "svc_reports-db",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "reports-db",
+     "data": {
+      "health": "HEALTHY",
+      "firingAlerts": 0,
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E6",
+     "kind": "log",
+     "title": "WARN log from reports-api",
+     "summary": "slow query took 1840ms: monthly_summary",
+     "sourceType": "log",
+     "sourceId": "l51",
+     "occurredAt": "2026-06-01T11:54:00Z",
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "traceId": "abc123",
+      "attributes": null,
+      "fingerprint": "fp"
+     }
+    },
+    {
+     "ref": "E7",
+     "kind": "metric_baseline",
+     "title": "3 metric(s) for reports-api show no notable change",
+     "summary": "error_rate averaged 0.2% (0.2% before); latency_p95_ms averaged 330ms (280ms before); throughput_rps averaged 12rps (12rps before)",
+     "sourceType": "metric_baseline",
+     "sourceId": "reports-api:2026-06-01T10:00:00Z",
+     "occurredAt": "2026-06-01T10:00:00Z",
+     "relevance": null,
+     "service": "reports-api",
+     "data": {
+      "metrics": [
+       {
+        "metric": "error_rate",
+        "label": "Error rate",
+        "unit": "%",
+        "avg": 0.2,
+        "max": 0.26,
+        "baselineAvg": 0.2,
+        "changePercent": 0.0
+       },
+       {
+        "metric": "latency_p95_ms",
+        "label": "p95 latency",
+        "unit": "ms",
+        "avg": 330,
+        "max": 429.0,
+        "baselineAvg": 280,
+        "changePercent": 17.9
+       },
+       {
+        "metric": "throughput_rps",
+        "label": "Throughput",
+        "unit": "rps",
+        "avg": 12,
+        "max": 15.600000000000001,
+        "baselineAvg": 12,
+        "changePercent": 0.0
+       }
+      ]
+     }
+    }
+   ],
+   "toolCalls": [
+    {
+     "tool": "list_services",
+     "input": {},
+     "ok": true
+    },
+    {
+     "tool": "list_deployments",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "services": [
+       "reports-api",
+       "reports-db"
+      ],
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_deployment_context",
+     "input": {
+      "service": "reports-api"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_patterns",
+     "input": {
+      "from_time": "2026-06-01T06:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "reports-api",
+       "reports-db"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_service",
+     "input": {
+      "service": "reports-api",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_service",
+     "input": {
+      "service": "reports-db",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_histogram",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "reports-api",
+       "reports-db"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_logs",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "reports-api",
+       "reports-db"
+      ],
+      "query": "monthly_summary",
+      "limit": 15
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_code_changes",
+     "input": {
+      "from_time": "2026-05-30T12:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "reports-api"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_metrics",
+     "input": {
+      "service": "reports-api",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_knowledge_base",
+     "input": {
+      "query": "slow query monthly_summary reports-api warning",
+      "service": "reports-api"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_traces",
+     "input": {
+      "service": "reports-api",
+      "from_time": "2026-06-01T11:40:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "limit": 6
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_metrics",
+     "input": {
+      "service": "reports-db",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "find_log_anomalies",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "reports-api",
+       "reports-db"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR",
+       "FATAL"
+      ]
+     },
+     "ok": true
+    }
+   ],
+   "knownTimes": [
+    "2026-06-01T10:00:00Z",
+    "2026-06-01T12:00:00Z",
+    "2026-06-01T12:00:00Z"
+   ],
+   "scope": [
+    "reports-api",
+    "reports-db"
+   ],
+   "toolFailures": [],
+   "metricServices": [
+    "reports-api"
+   ],
+   "healthGaps": []
+  },
+  "upstream_dependency_down": {
+   "reportBeforeGuardrails": {
+    "summary": "web-app's error rate rose from a 0.5% baseline to an average of 9% (max 11.7%) from 10:00Z to 12:00Z (E1), and it is recorded as DEGRADED with no alert firing on it (E2). From 11:35Z, web-app logged 300 'upstream auth-service request failed: connection refused' errors, a pattern with zero baseline (E5, E6), and auth-service is recorded as DOWN with a critical auth error-rate alert noted from web-app's view (E3). The leading explanation is that auth-service is down or unreachable and web-app's synchronous dependency on it is failing, but this explains only the later part of the window, since the error rate was already elevated at 10:00Z before any refusals were logged. Confidence in this explanation is about 0.5, and the auth-service catalogue status conflicts with E3 and has no window evidence behind it, so a human should verify auth-service's real state for 09:30Z to 12:00Z.",
+    "confidence": 0.5,
+    "analysisMode": "llm",
+    "rootCauseConfirmed": false,
+    "outcome": "DEGRADED",
+    "assessment": null,
+    "observations": [
+     {
+      "statement": "web-app is recorded as DEGRADED in the service catalogue while no alert is firing on it.",
+      "evidenceRefs": [
+       "E2"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "The error-rate increase is reported as up 1700% against the preceding window.",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "verification": null
+     }
+    ],
+    "integrity": null,
+    "timeline": [
+     {
+      "timestamp": "2026-06-01T10:00:00Z",
+      "description": "Error rate for web-app begins the elevated period; the window average is 9% (max 11.7%) through 12:00Z, against 0.5% in the preceding window.",
+      "evidenceRefs": [
+       "E1"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:35:00Z",
+      "description": "First occurrence of 'upstream auth-service request failed: connection refused' in web-app logs.",
+      "evidenceRefs": [
+       "E5"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:50:00Z",
+      "description": "ERROR log from web-app records 'upstream auth-service request failed: connection refused'.",
+      "evidenceRefs": [
+       "E6"
+      ]
+     },
+     {
+      "timestamp": "2026-06-01T11:59:00Z",
+      "description": "Last occurrence of the connection-refused pattern in web-app logs, after 300 occurrences in total.",
+      "evidenceRefs": [
+       "E5"
+      ]
+     }
+    ],
+    "facts": [
+     {
+      "statement": "web-app error rate averaged 9% (max 11.7%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.5% in the preceding window.",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "web-app is recorded as DEGRADED in the service catalogue, and no alert is firing on it.",
+      "evidenceRefs": [
+       "E2"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "web-app depends on Auth Service (sync), which is recorded as DOWN, with a critical alert firing for auth error rate.",
+      "evidenceRefs": [
+       "E3"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "auth-service is recorded as DOWN in the service catalogue, and the catalogue states that no alert is firing.",
+      "evidenceRefs": [
+       "E4"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "web-app logged the new pattern 'upstream auth-service request failed: connection refused' 300 times, first seen 2026-06-01T11:35:00Z and last seen 2026-06-01T11:59:00Z, against a baseline count of 0.",
+      "evidenceRefs": [
+       "E5"
+      ],
+      "verification": null
+     },
+     {
+      "statement": "An ERROR log from web-app at 2026-06-01T11:50:00Z reads 'upstream auth-service request failed: connection refused'.",
+      "evidenceRefs": [
+       "E6"
+      ],
+      "verification": null
+     }
+    ],
+    "assumptions": [
+     "The recorded DOWN status of auth-service reflects its state during the investigation window.",
+     "The connection-refused errors in web-app are caused by auth-service and not by a local network or configuration issue.",
+     "The 10:00Z rise in errors is related to the same incident as the later auth refusals."
+    ],
+    "uncertainties": [
+     "auth-service has no telemetry in the evidence for 08:00Z to 12:00Z, so its state during the window is unknown, and the time it went DOWN is not established.",
+     "E3 reports a critical auth error-rate alert, but E4 states that no alert is firing for auth-service. These conflict and have not been resolved.",
+     "The cause of the elevated errors between 10:00Z and 11:35Z is not explained by the evidence, because the connection-refused pattern only starts at 11:35Z.",
+     "No deployment, configuration or feature-flag change records for web-app or auth-service appear in the evidence catalogue, so change-related causes could not be examined.",
+     "No trace data is available in the evidence, so the point where latency or errors enter the web-app to auth-service call chain is not known.",
+     "No prior incidents or runbooks matching this symptom appear in the evidence."
+    ],
+    "hypotheses": [
+     {
+      "title": "auth-service is down or unreachable, and web-app's synchronous dependency on it is failing",
+      "description": "auth-service stopped accepting connections, so web-app's calls to it are refused. That failure is logged from 11:35Z and matches the DOWN status and the critical auth alert noted from web-app's view. This explains part of the window but not the errors from 10:00Z.",
+      "confidence": 0.5,
+      "status": "likely",
+      "evidenceRefs": [
+       "E3",
+       "E5",
+       "E6"
+      ],
+      "contradictingEvidenceRefs": [
+       "E1",
+       "E4"
+      ],
+      "contradictions": [
+       "The web-app error rate was already elevated at 10:00Z (E1), which is about 95 minutes before the first connection-refused log at 11:35Z (E5).",
+       "auth-service's own catalogue entry records DOWN with no alert firing (E4), which conflicts with the critical alert noted in E3.",
+       "No auth-service telemetry for the window is available, so it cannot be confirmed when the service went down."
+      ],
+      "facts": [],
+      "assumptions": [
+       "auth-service's DOWN status is accurate for the time of the refusals.",
+       "The connection-refused errors are not caused by web-app's own networking or configuration."
+      ],
+      "gaps": [
+       "auth-service metrics, logs and lifecycle events for 09:30Z to 12:00Z, from its host or orchestrator.",
+       "Confirmation of whether auth-service went DOWN during the window and at what time.",
+       "Breakdown of web-app errors by type before 11:35Z."
+      ]
+     },
+     {
+      "title": "An unidentified fault in web-app or its wider environment began at about 10:00Z",
+      "description": "A problem independent of auth-service started near 10:00Z and produced the early error rise. The later auth refusals may be a separate effect or a coincidence.",
+      "confidence": 0.25,
+      "status": "possible",
+      "evidenceRefs": [
+       "E1",
+       "E2"
+      ],
+      "contradictingEvidenceRefs": [],
+      "contradictions": [
+       "No evidence in the catalogue identifies a specific cause for the 10:00Z onset."
+      ],
+      "facts": [],
+      "assumptions": [
+       "The 10:00Z onset is part of the same incident and is not a separate event."
+      ],
+      "gaps": [
+       "Error breakdown by type and endpoint for 10:00Z to 11:35Z.",
+       "Infrastructure and host health for web-app across the window.",
+       "Traces showing where errors begin in the request path."
+      ]
+     },
+     {
+      "title": "A recent deployment or configuration change caused the failure",
+      "description": "A change to web-app or auth-service shipped near the start of the window and caused the errors. No such change appears in the evidence catalogue, so this is ruled down as unlikely, though it is not excluded if change records are incomplete.",
+      "confidence": 0.1,
+      "status": "unlikely",
+      "evidenceRefs": [
+       "E1"
+      ],
+      "contradictingEvidenceRefs": [],
+      "contradictions": [
+       "No deployment, configuration or flag change for web-app or auth-service appears in the evidence catalogue."
+      ],
+      "facts": [],
+      "assumptions": [
+       "Change records for the window are complete."
+      ],
+      "gaps": [
+       "Deployment and configuration history for web-app and auth-service for 2026-05-30 to 2026-06-01."
+      ]
+     }
+    ],
+    "nextSteps": [
+     "Verify auth-service's actual state, restart history and listening status for 09:30Z to 12:00Z directly on its host or orchestrator, and resolve the conflict between E3 and E4.",
+     "Break down web-app errors by type, endpoint and dependency for 10:00Z to 11:35Z to identify what failed before the auth refusals began.",
+     "Check whether a degraded path in web-app avoids the auth-service dependency, and if one exists, consider approving failover while auth-service is verified.",
+     "Connect a trace store so the web-app to auth-service call chain can be examined.",
+     "Check change and deployment records for web-app and auth-service over the previous 48 hours, because the evidence does not show them."
+    ],
+    "recommendedActions": [
+     {
+      "type": "manual",
+      "title": "Verify auth-service state and listening status on its host",
+      "description": "Have an engineer check auth-service's process, port, restart history and recent errors directly on its host or orchestrator for 09:30Z to 12:00Z.",
+      "rationale": "auth-service is the leading suspect, and its state during the window is not established by any evidence in the catalogue.",
+      "risk": "LOW",
+      "effect": "state_changing",
+      "effectReasons": [],
+      "serviceSlug": "auth-service",
+      "parameters": null,
+      "evidenceRefs": [
+       "E3",
+       "E4",
+       "E5"
+      ]
+     }
+    ]
+   },
+   "evidence": [
+    {
+     "ref": "E1",
+     "kind": "metric",
+     "title": "Error rate for web-app up 1700%",
+     "summary": "error_rate averaged 9% (max 11.7%) between 2026-06-01T10:00:00Z and 2026-06-01T12:00:00Z, versus 0.5% in the preceding window",
+     "sourceType": "metric",
+     "sourceId": "web-app:error_rate:2026-06-01T10:00:00Z",
+     "occurredAt": "2026-06-01T10:00:00Z",
+     "relevance": null,
+     "service": "web-app",
+     "data": {
+      "metric": "error_rate",
+      "unit": "%",
+      "changePercent": 1700.0,
+      "fromZero": false,
+      "avg": 9.0,
+      "max": 11.700000000000001,
+      "min": 5.3999999999999995,
+      "baselineAvg": 0.5
+     }
+    },
+    {
+     "ref": "E2",
+     "kind": "service_health",
+     "title": "web-app is recorded as DEGRADED",
+     "summary": "Health status of Web App in the service catalogue. No alert is firing.",
+     "sourceType": "service_health",
+     "sourceId": "svc_web-app",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "web-app",
+     "data": {
+      "health": "DEGRADED",
+      "firingAlerts": 0,
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E3",
+     "kind": "dependency",
+     "title": "Upstream dependency auth-service is DOWN",
+     "summary": "web-app depends on Auth Service (sync), which is DOWN: Critical alert firing: Auth error rate",
+     "sourceType": "service",
+     "sourceId": "dep:auth-service",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "auth-service",
+     "data": {
+      "health": "DOWN",
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E4",
+     "kind": "service_health",
+     "title": "auth-service is recorded as DOWN",
+     "summary": "Health status of Auth Service in the service catalogue. No alert is firing.",
+     "sourceType": "service_health",
+     "sourceId": "svc_auth-service",
+     "occurredAt": null,
+     "relevance": null,
+     "service": "auth-service",
+     "data": {
+      "health": "DOWN",
+      "firingAlerts": 0,
+      "asOf": "current"
+     }
+    },
+    {
+     "ref": "E5",
+     "kind": "log_pattern",
+     "title": "300× ERROR in web-app (new pattern)",
+     "summary": "\"upstream auth-service request failed: connection refused\" — first seen 2026-06-01T11:35:00Z, last seen 2026-06-01T11:59:00Z; baseline count 0",
+     "sourceType": "log_pattern",
+     "sourceId": "f2:svc_web-app",
+     "occurredAt": "2026-06-01T11:35:00Z",
+     "relevance": null,
+     "service": "web-app",
+     "data": {
+      "fingerprint": "f2",
+      "count": 300,
+      "level": "ERROR",
+      "firstSeen": "2026-06-01T11:35:00Z",
+      "lastSeen": "2026-06-01T11:59:00Z",
+      "kind": "new",
+      "ratio": null,
+      "baselineCount": 0,
+      "sample": "upstream auth-service request failed: connection refused",
+      "serviceId": "svc_web-app"
+     }
+    },
+    {
+     "ref": "E6",
+     "kind": "log",
+     "title": "ERROR log from web-app",
+     "summary": "upstream auth-service request failed: connection refused",
+     "sourceType": "log",
+     "sourceId": "l2",
+     "occurredAt": "2026-06-01T11:50:00Z",
+     "relevance": null,
+     "service": "web-app",
+     "data": {
+      "traceId": "abc123",
+      "attributes": null,
+      "fingerprint": "fp"
+     }
+    }
+   ],
+   "toolCalls": [
+    {
+     "tool": "list_services",
+     "input": {},
+     "ok": true
+    },
+    {
+     "tool": "get_metrics",
+     "input": {
+      "service": "web-app",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_service",
+     "input": {
+      "service": "web-app",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_service",
+     "input": {
+      "service": "auth-service",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "find_log_anomalies",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app",
+       "auth-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "list_service_events",
+     "input": {
+      "from_time": "2026-06-01T08:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app",
+       "auth-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "list_deployments",
+     "input": {
+      "from_time": "2026-05-31T12:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app",
+       "auth-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_metrics",
+     "input": {
+      "service": "auth-service",
+      "from_time": "2026-06-01T08:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z"
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_histogram",
+     "input": {
+      "from_time": "2026-06-01T08:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app",
+       "auth-service"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_traces",
+     "input": {
+      "service": "web-app",
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "errors_only": true
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_patterns",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app",
+       "auth-service"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR",
+       "FATAL"
+      ]
+     },
+     "ok": true
+    },
+    {
+     "tool": "list_deployments",
+     "input": {
+      "from_time": "2026-05-30T12:00:00Z",
+      "limit": 50
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_logs",
+     "input": {
+      "from_time": "2026-06-01T10:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app"
+      ],
+      "levels": [
+       "WARN",
+       "ERROR"
+      ],
+      "limit": 40
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_logs",
+     "input": {
+      "from_time": "2026-06-01T08:00:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "auth-service"
+      ],
+      "limit": 40
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_knowledge_base",
+     "input": {
+      "query": "web-app errors upstream auth-service connection refused",
+      "service": "auth-service"
+     },
+     "ok": true
+    },
+    {
+     "tool": "search_incidents",
+     "input": {
+      "service": "auth-service",
+      "limit": 5
+     },
+     "ok": true
+    },
+    {
+     "tool": "get_log_histogram",
+     "input": {
+      "from_time": "2026-06-01T09:30:00Z",
+      "to_time": "2026-06-01T12:00:00Z",
+      "services": [
+       "web-app"
+      ],
+      "levels": [
+       "ERROR",
+       "WARN"
+      ]
+     },
+     "ok": true
+    }
+   ],
+   "knownTimes": [
+    "2026-06-01T10:00:00Z",
+    "2026-06-01T12:00:00Z",
+    "2026-06-01T12:00:00Z"
+   ],
+   "scope": [
+    "web-app",
+    "auth-service"
+   ],
+   "toolFailures": [],
+   "metricServices": [
+    "web-app"
+   ],
+   "healthGaps": []
+  }
+ }
+}

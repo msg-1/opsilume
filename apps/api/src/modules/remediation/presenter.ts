@@ -3,6 +3,7 @@ import { notFound } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
 import { countsFor } from './approvals';
 import { contentHash } from './content';
+import { type LegacyView, legacyViews } from '../investigations/legacy';
 
 /** Loading an action with its approvals, and the shape in which the API returns it. */
 
@@ -32,8 +33,14 @@ export async function presentMany(rows: Detailed[]) {
     userNames(rows.flatMap((r) => [r.proposedById, r.requestedById, r.executedById, ...r.approvals.map((a) => a.approverId)])),
   ]);
   const person = (id: string | null) => (id ? { id, name: users.get(id) ?? 'Unknown user' } : null);
+  // An older stored report's summary is shown as a new one's would be (investigations/legacy.ts).
+  const byOrganization = new Map<string, string[]>();
+  for (const r of rows) if (r.investigation) (byOrganization.get(r.organizationId) ?? byOrganization.set(r.organizationId, []).get(r.organizationId)!).push(r.investigation.id);
+  const views = new Map<string, LegacyView>();
+  for (const [organizationId, ids] of byOrganization) for (const [id, view] of await legacyViews(organizationId, ids)) views.set(id, view);
   return rows.map((r) => ({
     ...r,
+    investigation: r.investigation && views.has(r.investigation.id) ? { ...r.investigation, summary: views.get(r.investigation.id)!.summary } : r.investigation,
     service: r.serviceId ? (services.get(r.serviceId) ?? null) : null,
     proposedBy: r.proposedByType === 'ai_agent' ? { id: null, name: 'OPSILUME AI' } : person(r.proposedById),
     requestedBy: person(r.requestedById),

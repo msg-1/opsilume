@@ -30,6 +30,9 @@ export type ClaimKind = (typeof CLAIM_KINDS)[number];
 export const VERIFICATION_STATUSES = ["verified","partly","unsupported","no_claims"] as const;
 export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 
+export const SUMMARY_SOURCES = ["assessment","unverified","rule_based"] as const;
+export type SummarySource = (typeof SUMMARY_SOURCES)[number];
+
 export const GUARDRAIL_LIMITS = {
   "maxConfidence": {
     "llm": 0.9,
@@ -43,6 +46,11 @@ export const GUARDRAIL_LIMITS = {
   "unestablishedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the outcome is DEGRADED, so the cause is not established.",
   "unverifiedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the report carries no assessment of the evidence, so no cause is verified.",
   "unverifiedOutcomeNote": "The report states the outcome {claimed}, but it carries no assessment of the evidence, so that outcome is not verified and is not recorded.",
+  "reportSummary": {
+    "verified": "Assessed outcome: {outcome}. {rationale}",
+    "unverified": "Outcome not verified: this report carries no assessment of the evidence, so no outcome is stated here. The narrative is its author's own and has not been verified.",
+    "narrativeMaxLength": 6000
+  },
   "maxRecommendedActions": 4,
   "outcomeAllowingProductionChanges": "INCIDENT",
   "withdrawalReasons": {

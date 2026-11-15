@@ -428,7 +428,7 @@ def test_a_report_is_labelled_fact_by_fact_and_the_tally_reaches_the_reader():
     assert [f.verification.status for f in report.facts] == ["verified", "partly", "unsupported", "no_claims"]
     assert report.facts[2].verification.checks[0].text == "44%"
     flagged = {(f.where, f.text): f.status for f in report.integrity.flagged}
-    assert flagged == {("fact 2", "5000 ms"): "estimate", ("fact 3", "44%"): "unsupported", ("summary", "9000 requests"): "unsupported"}
+    assert flagged == {("fact 2", "5000 ms"): "estimate", ("fact 3", "44%"): "unsupported", ("narrative", "9000 requests"): "unsupported"}
     assert report.integrity.checked == report.integrity.supported + 3
     # Nothing is deleted or corrected: the claims are kept and marked, and the report says so.
     assert any("could not be matched to evidence" in n and '"44%" in fact 3' in n for n in notes)

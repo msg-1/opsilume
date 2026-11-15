@@ -1630,6 +1630,32 @@
                     }
                   ]
                 },
+                "summarySource": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "assessment",
+                        "unverified",
+                        "rule_based"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "narrative": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 6000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "observations": {
                   "default": [],
                   "type": "array",
@@ -2815,6 +2841,32 @@
                 "missingTelemetry"
               ],
               "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summarySource": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "assessment",
+                "unverified",
+                "rule_based"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "narrative": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 6000
             },
             {
               "type": "null"

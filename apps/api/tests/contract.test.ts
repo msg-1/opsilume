@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { GUARDRAIL_LIMITS as LIMITS, OUTCOMES } from '../src/generated/contracts';
 import { applyGuardrails, reportSchema } from '../src/modules/investigations';
 
 /** Every key path in a JSON value, with list items collapsed. */
@@ -118,6 +119,9 @@ describe('shared contracts', () => {
       maxConfidence?: number;
       facts?: string[];
       assumptionsContain?: string[];
+      summary?: string;
+      narrative?: string;
+      summarySource?: string;
     };
   }
   const { cases } = readContract('fixtures/guardrail-cases.json') as { cases: GuardrailCase[] };
@@ -146,6 +150,67 @@ describe('shared contracts', () => {
     if (e.maxConfidence !== undefined) expect(result.confidence).toBeLessThanOrEqual(e.maxConfidence);
     if (e.facts) expect(result.facts.map((f) => f.statement)).toEqual(e.facts);
     for (const text of e.assumptionsContain ?? []) expect(result.assumptions).toContain(text);
+    // The same full text as the AI service builds from the same assessment.
+    if (e.summary !== undefined) expect(result.summary).toBe(e.summary);
+    if (e.narrative !== undefined) expect(result.narrative).toBe(e.narrative);
+    if (e.summarySource !== undefined) expect(result.summarySource).toBe(e.summarySource);
+  });
+
+  // The summary at the API boundary, beyond the shared case. The incoming summary is never trusted.
+  describe('verified summary and unverified narrative', () => {
+    const base = cases.find((c) => c.name.startsWith('the summary of a model report is built from the assessment'))!;
+    const knownRefs = new Set(base.evidence.map((e) => e.ref));
+    const expected = base.expect.summary!;
+    const guard = async (change: (r: Record<string, unknown>) => void) => {
+      const report = structuredClone(base.report) as Record<string, unknown>;
+      change(report);
+      return applyGuardrails(reportSchema.parse(report), knownRefs, async () => undefined);
+    };
+
+    it.each([
+      ['a paraphrase that contradicts', 'Checkout looks fine and nothing needs attention.'],
+      ['a claimed recovery', 'The service has fully recovered and is operating normally.'],
+      ['a contradiction in a later paragraph', 'All good.\n\nOn closer reading the outcome is HEALTHY.'],
+      ['an empty narrative', ' '],
+    ])('rebuilds the summary from the assessment whatever the model wrote: %s', async (_label, narrative) => {
+      const result = await guard((r) => { r.summary = narrative; });
+      expect(result.summary).toBe(expected);
+      expect(result.narrative).toBe(narrative);
+      expect(result.summarySource).toBe('assessment');
+    });
+
+    it('rebuilds a summary that arrives already set, keeping the narrative it came with', async () => {
+      const result = await guard((r) => { r.summary = 'Anything at all.'; r.narrative = 'What the model wrote.'; r.summarySource = 'assessment'; });
+      expect(result.summary).toBe(expected);
+      expect(result.narrative).toBe('What the model wrote.');
+    });
+
+    it('states no outcome when there is no assessment, and keeps the narrative as unverified', async () => {
+      const result = await guard((r) => { delete r.assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down, so the outcome is INCIDENT.'; });
+      expect(result.outcome).toBeNull();
+      expect(result.summarySource).toBe('unverified');
+      expect(result.summary).toBe(LIMITS.reportSummary.unverified);
+      for (const label of OUTCOMES) expect(result.summary).not.toContain(label);
+      expect(result.narrative).toBe('Checkout is down, so the outcome is INCIDENT.');
+      expect(result.recommendedActions.filter((a) => a.effect === 'state_changing')).toEqual([]);
+    });
+
+    it('leaves a rule-based summary as the rule-based engine wrote it', async () => {
+      const result = await guard((r) => { r.analysisMode = 'heuristic'; r.summary = 'Errors began after v1.5.0 (E1, E2).'; });
+      expect(result.summary).toBe('Errors began after v1.5.0 (E1, E2).');
+      expect(result.summarySource).toBe('rule_based');
+      expect(result.narrative ?? null).toBeNull();
+    });
+
+    it('changes nothing when applied a second time', async () => {
+      for (const change of [(r: Record<string, unknown>) => void r, (r: Record<string, unknown>) => { delete r.assessment; }, (r: Record<string, unknown>) => { r.narrative = ''; }]) {
+        const once = await guard(change);
+        const twice = await applyGuardrails(reportSchema.parse(structuredClone(once)), knownRefs, async () => undefined);
+        expect(twice.summary).toBe(once.summary);
+        expect(twice.narrative).toBe(once.narrative);
+        expect(twice.summarySource).toBe(once.summarySource);
+      }
+    });
   });
 
   // The outcome rules at the API boundary, beyond the shared case. Only the assessment counts as a
@@ -154,7 +219,7 @@ describe('shared contracts', () => {
   // the evidence, so a report without one cannot arise there.
   const degraded = cases.find((c) => c.name.startsWith('under DEGRADED'))!;
   const known = new Set(degraded.evidence.map((e) => e.ref));
-  const assessed = (outcome: string) => ({ outcome, confidence: 0.9, rationale: 'r', supportingRefs: [], signals: [], missingTelemetry: [] });
+  const assessed = (outcome: string, supportingRefs: string[] = ['E1']) => ({ outcome, confidence: 0.9, rationale: 'r', supportingRefs, signals: [], missingTelemetry: [] });
   const restart = { type: 'restart_service', title: 'Restart orders', description: 'Restart the pods.', risk: 'LOW', serviceSlug: 'orders', evidenceRefs: ['E1'] };
   const run = async (change: (r: Record<string, unknown>) => void) => {
     const report = structuredClone(degraded.report) as Record<string, unknown>;
@@ -205,6 +270,31 @@ describe('shared contracts', () => {
     expect(result.recommendedActions).toEqual([]);
     expect(notes).toContain('the outcome is DEGRADED, so the cause is not established');
     expect(result.uncertainties).not.toContain('This report arrived without an assessment of the evidence, so its outcome is not verified.');
+  });
+
+  // Whether an assessment is used: consistency with the evidence the API recorded, not proof of
+  // where it came from (docs/reliability.md §4b). API-only: the AI service computes the assessment
+  // from that same evidence, so it cannot cite anything else.
+  it.each([
+    ['cites evidence this run did not record', assessed('INCIDENT', ['E1', 'E99'])],
+    ['claims an incident but cites no evidence', assessed('INCIDENT', [])],
+  ])('an assessment that %s is not used: no outcome, no production change', async (_label, assessment) => {
+    const { result, notes } = await run((r) => { r.assessment = assessment; r.outcome = 'INCIDENT'; r.summary = 'Checkout is down.'; });
+    expect(result.assessment ?? null).toBeNull();
+    expect(result.outcome).toBeNull();
+    expect(result.summarySource).toBe('unverified');
+    expect(result.summary).toBe(LIMITS.reportSummary.unverified);
+    expect(result.narrative).toBe('Checkout is down.');
+    expect(result.recommendedActions.filter((a) => a.effect === 'state_changing')).toEqual([]);
+    expect(result.hypotheses.every((h) => h.status !== 'likely')).toBe(true);
+    expect(notes).toContain('The assessment (INCIDENT) is not used');
+  });
+
+  it.each(['HEALTHY', 'UNDETERMINED'])('a %s assessment citing no evidence is used', async (outcome) => {
+    const { result, notes } = await run((r) => { r.assessment = assessed(outcome, []); });
+    expect(result.outcome).toBe(outcome);
+    expect(result.summarySource).toBe('assessment');
+    expect(notes).not.toContain('is not used');
   });
 });
 

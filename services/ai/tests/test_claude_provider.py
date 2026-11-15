@@ -237,7 +237,9 @@ async def test_provider_selection_from_environment():
 
 async def test_mock_provider_runs_the_model_path_and_is_labelled_as_mock():
     report, events, ctx = await investigate(MockProvider(Settings(_env_file=None)))
-    assert report.analysis_mode == "mock" and report.confidence <= 0.1 and "No language model was called" in report.summary
+    # The mock's own words are its narrative; the summary is built from the assessment.
+    assert report.analysis_mode == "mock" and report.confidence <= 0.1 and "No language model was called" in report.narrative
+    assert report.summary_source == "assessment" and report.summary.startswith("Assessed outcome: ")
     assert events[0]["provider"] == "mock" and events[-1]["engine"]["mode"] == "mock"
     assert ctx.tool_calls >= 4 and report.recommended_actions == []
     assert events[-1]["usage"]["estimatedCostUsd"] == 0

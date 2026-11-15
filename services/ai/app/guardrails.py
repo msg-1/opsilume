@@ -14,7 +14,7 @@ from . import claims
 from .effects import action_effect
 from .evidence import EvidenceStore
 from .generated.contracts import GUARDRAIL_LIMITS as LIMITS
-from .schemas import InvestigationReport
+from .schemas import Assessment, InvestigationReport
 
 # Limits are defined once, in contracts/guardrails.json, and generated for the API as well.
 MAX_LLM_CONFIDENCE: float = LIMITS["maxConfidence"]["llm"]
@@ -47,6 +47,39 @@ NO_FAULT_HYPOTHESIS_CAP: float = LIMITS["noFaultHypothesisCap"]
 #: Highest confidence any hypothesis may carry when the outcome is DEGRADED: anomalies are
 #: present but the cause is not established, so no hypothesis may reach "likely".
 UNESTABLISHED_CAUSE_CAP: float = LIMITS["unestablishedCauseCap"]
+# What the reader is told first, and where the engine's own words go. Defined once in
+# contracts/guardrails.json and built the same way by the API.
+_SUMMARY = LIMITS["reportSummary"]
+NARRATIVE_MAX_LENGTH: int = _SUMMARY["narrativeMaxLength"]
+
+
+def verified_summary(assessment: Assessment) -> str:
+    """The summary of a model or mock report: the computed outcome and the assessment's own
+    rationale, with the evidence it rests on. Built from the assessment and nothing else, so no
+    model-written word can reach it and no narrative can change it. It says what the evidence
+    shows about the outcome; it does not say the cause is known."""
+    rationale = assessment.rationale.rstrip(". ") + (f" ({', '.join(assessment.supporting_refs)})" if assessment.supporting_refs else "") + "."
+    return _SUMMARY["verified"].format(outcome=assessment.outcome, rationale=rationale)
+
+
+def present_summary(report: InvestigationReport) -> None:
+    """Separates what is verified from what the model wrote.
+
+    For a model or mock report the model's summary becomes the `narrative`, kept as written
+    (apart from the guardrails that apply to all report text) and shown only as unverified, and
+    the summary is rebuilt from the assessment. A rule-based report keeps its own summary: it is
+    not a model's narrative. Idempotent: the narrative is taken once, and the summary is a
+    function of the assessment alone."""
+    if report.analysis_mode == "heuristic":
+        report.summary_source = "rule_based"
+        return
+    if report.narrative is None:
+        report.narrative = (report.summary or "")[:NARRATIVE_MAX_LENGTH]
+    if report.assessment is not None:
+        report.summary = verified_summary(report.assessment)
+        report.summary_source = "assessment"
+
+
 assert UNESTABLISHED_CAUSE_CAP < LIMITS["likelyMinimumConfidence"], "contracts/guardrails.json: unestablishedCauseCap must be below likelyMinimumConfidence"
 
 
@@ -106,7 +139,7 @@ def _sanitise(report: InvestigationReport) -> bool:
                 setattr(obj, name, cleaned)
                 changed = True
 
-    fix(report, "summary", "assumptions", "uncertainties", "next_steps")
+    fix(report, "summary", "narrative", "assumptions", "uncertainties", "next_steps")
     for h in report.hypotheses:
         fix(h, "title", "description", "facts", "assumptions", "gaps", "contradictions")
     for item in [*report.facts, *report.observations]:
@@ -256,9 +289,14 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
         notes.append(f"Overall confidence reduced from {report.confidence:.2f} to {ceiling:.2f} to match the strongest hypothesis.")
         report.confidence = ceiling
 
-    if _OVERCLAIM.search(report.summary):
-        report.summary = _OVERCLAIM.sub("leading hypothesis", report.summary) + " This is a hypothesis; the root cause has not been confirmed."
-        notes.append("Rephrased wording in the summary that presented the cause as confirmed.")
+    # After the outcome is final, and before the text is checked: the text that is checked is the
+    # text that is shown, and the model's words stay under every rule that applied to them.
+    present_summary(report)
+    written = "narrative" if report.narrative is not None else "summary"
+    text = getattr(report, written) or ""
+    if _OVERCLAIM.search(text):
+        setattr(report, written, _OVERCLAIM.sub("leading hypothesis", text) + " This is a hypothesis; the root cause has not been confirmed.")
+        notes.append(f"Rephrased wording in the {written} that presented the cause as confirmed.")
     if not report.uncertainties:
         report.uncertainties.append("The analysis is based only on the records available in OpsPilot for the examined time window.")
         notes.append("Added a missing statement of uncertainty.")

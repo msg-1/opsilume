@@ -299,6 +299,8 @@ export interface InvestigationDetail {
       }[];
       missingTelemetry: string[];
     }) | null;
+    summarySource?: ('assessment' | 'unverified' | 'rule_based') | null;
+    narrative?: string | null;
     observations: {
       statement: string;
       evidenceRefs: string[];
@@ -490,6 +492,8 @@ export interface Report {
     }[];
     missingTelemetry: string[];
   }) | null;
+  summarySource?: ('assessment' | 'unverified' | 'rule_based') | null;
+  narrative?: string | null;
   observations: {
     statement: string;
     evidenceRefs: string[];

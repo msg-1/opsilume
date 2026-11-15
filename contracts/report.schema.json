@@ -604,7 +604,7 @@
   },
   "properties": {
     "summary": {
-      "description": "3-6 sentences: what happened, the leading explanation, and how sure we are",
+      "description": "What the reader is told first. For model and mock reports it is built from the computed assessment only (guardrails.py); for rule-based reports it is the rule-based engine's own",
       "title": "Summary",
       "type": "string"
     },
@@ -659,6 +659,36 @@
         }
       ],
       "default": null
+    },
+    "summarySource": {
+      "anyOf": [
+        {
+          "enum": [
+            "assessment",
+            "unverified",
+            "rule_based"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Summarysource"
+    },
+    "narrative": {
+      "anyOf": [
+        {
+          "maxLength": 6000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Narrative"
     },
     "observations": {
       "items": {

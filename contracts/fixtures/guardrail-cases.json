@@ -60,7 +60,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -222,7 +222,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -375,7 +375,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -524,7 +524,7 @@
           "outcome": "INCIDENT",
           "confidence": 0.9,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E3"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -733,7 +733,7 @@
           "outcome": "DEGRADED",
           "confidence": 0.61,
           "rationale": "r",
-          "supportingRefs": [],
+          "supportingRefs": ["E1", "E2"],
           "signals": [],
           "missingTelemetry": []
         },
@@ -802,6 +802,105 @@
           }
         ],
         "maxConfidence": 0.45
+      }
+    },
+    {
+      "name": "the summary of a model report is built from the assessment, and the model's text is kept as an unverified narrative",
+      "evidence": [
+        {
+          "ref": "E1",
+          "kind": "deployment",
+          "title": "Deployment of orders v1.5.0 (succeeded)",
+          "summary": "Deployment of orders v1.5.0 (succeeded)",
+          "sourceType": "deployment",
+          "sourceId": "d-new",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:27:00Z",
+          "data": {
+            "version": "v1.5.0",
+            "status": "SUCCEEDED",
+            "isRollback": false
+          }
+        },
+        {
+          "ref": "E2",
+          "kind": "log_pattern",
+          "title": "300\u00d7 ERROR in orders (new pattern)",
+          "summary": "300\u00d7 ERROR in orders (new pattern)",
+          "sourceType": "log_pattern",
+          "sourceId": "fp:orders",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:30:00Z",
+          "data": {
+            "level": "ERROR",
+            "count": 300,
+            "kind": "new",
+            "firstSeen": "2026-06-01T11:30:00Z"
+          }
+        }
+      ],
+      "report": {
+        "summary": "Nothing is materially wrong with orders, so the outcome is HEALTHY.",
+        "confidence": 0.8,
+        "analysisMode": "llm",
+        "outcome": "HEALTHY",
+        "assessment": {
+          "outcome": "INCIDENT",
+          "confidence": 0.82,
+          "rationale": "A failure is evident (300\u00d7 ERROR in orders (new pattern)) and at least one explanation is supported by evidence.",
+          "supportingRefs": [
+            "E2"
+          ],
+          "signals": [
+            {
+              "level": "strong",
+              "kind": "logs",
+              "text": "300\u00d7 ERROR in orders (new pattern)",
+              "evidenceRefs": [
+                "E2"
+              ]
+            }
+          ],
+          "missingTelemetry": [
+            "Logs were not searched.",
+            "No metric samples exist in the window for: orders.",
+            "Traces were not examined.",
+            "Deployment history was not examined."
+          ]
+        },
+        "observations": [],
+        "timeline": [],
+        "facts": [],
+        "assumptions": [],
+        "uncertainties": [
+          "The diff was not reviewed."
+        ],
+        "hypotheses": [
+          {
+            "title": "v1.5.0 broke orders",
+            "description": "Errors began after the deployment.",
+            "confidence": 0.8,
+            "status": "likely",
+            "evidenceRefs": [
+              "E1",
+              "E2"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "assumptions": [],
+            "gaps": []
+          }
+        ],
+        "nextSteps": [
+          "Review the diff"
+        ],
+        "recommendedActions": []
+      },
+      "expect": {
+        "actions": [],
+        "summary": "Assessed outcome: INCIDENT. A failure is evident (300\u00d7 ERROR in orders (new pattern)) and at least one explanation is supported by evidence (E2).",
+        "narrative": "Nothing is materially wrong with orders, so the outcome is HEALTHY.",
+        "summarySource": "assessment"
       }
     }
   ]

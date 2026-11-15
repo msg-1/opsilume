@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ACTION_EFFECTS, ANALYSIS_MODES, CLAIM_KINDS, CLAIM_STATUSES, HYPOTHESIS_STATUSES, OUTCOMES, REMEDIATION_TYPES, RISK_LEVELS, SIGNAL_LEVELS, VERIFICATION_STATUSES } from '../../generated/contracts';
+import { ACTION_EFFECTS, ANALYSIS_MODES, CLAIM_KINDS, CLAIM_STATUSES, HYPOTHESIS_STATUSES, OUTCOMES, REMEDIATION_TYPES, RISK_LEVELS, SIGNAL_LEVELS, SUMMARY_SOURCES, VERIFICATION_STATUSES } from '../../generated/contracts';
 
 /**
  * The investigation report as the API accepts it from the AI service. The authoritative
@@ -54,6 +54,10 @@ export const reportSchema = z.object({
   // Whether the evidence shows a fault at all. Computed by the AI service from the evidence.
   outcome: z.enum(OUTCOMES).nullable().optional(),
   assessment: assessmentObject.nullable().optional(),
+  // Where `summary` comes from (assessment, unverified or rule_based); absent on older reports.
+  summarySource: z.enum(SUMMARY_SOURCES).nullable().optional(),
+  // What a model or the scripted mock wrote as its summary, kept as written: never verified.
+  narrative: z.string().max(6000).nullable().optional(),
   observations: z.array(statementSchema).default([]),
   integrity: integrityObject.nullable().optional(),
   // The agent never confirms a root cause; a human does that on the incident.

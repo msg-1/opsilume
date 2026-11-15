@@ -8,6 +8,7 @@ import { notifyUsers } from '../lib/notify';
 import { prisma } from '../lib/prisma';
 import { type AuthContext, authOf, requirePermission } from '../middleware/auth';
 import { healthDuring, isPastWindow } from './healthHistory';
+import { applyTimelineViews, applyViews, legacyViews } from './investigations/legacy';
 
 const severity = z.enum(['SEV1', 'SEV2', 'SEV3', 'SEV4']);
 const status = z.enum(['OPEN', 'INVESTIGATING', 'IDENTIFIED', 'MITIGATED', 'RESOLVED', 'CLOSED']);
@@ -226,7 +227,9 @@ incidentsRouter.get('/:id', requirePermission('read'), async (req, res) => {
     prisma.knowledgeDocument.findUnique({ where: { incidentId: incident.id }, select: { id: true, title: true, updatedAt: true } }),
   ]);
   const names = await userNames([incident.assigneeId, incident.commanderId, incident.createdById]);
-  res.json({ ...present(incident, names), timeline: events, investigations, remediations, alerts, postmortem });
+  // Older stored reports are shown as new ones would be; nothing stored changes (investigations/legacy.ts).
+  const views = await legacyViews(organizationId, investigations.map((i) => i.id));
+  res.json({ ...present(incident, names), timeline: applyTimelineViews(events, views), investigations: applyViews(investigations, views), remediations, alerts, postmortem });
 });
 
 incidentsRouter.patch('/:id', requirePermission('incident:write'), async (req, res) => {

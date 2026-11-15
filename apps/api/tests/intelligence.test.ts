@@ -238,6 +238,29 @@ describe('investigations', () => {
     expect(guardrail).toContain('moved to next steps');
   });
 
+  it('stores the summary built from the assessment everywhere it is shown, and the model text only as its narrative', async () => {
+    const org = await createOrg();
+    const service = await createService(org.owner, 'Checkout');
+    const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing', serviceIds: [service.id] })).body;
+    const narrative = 'Checkout looks fine and has fully recovered; nothing needs attention.';
+    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: report({ outcome: 'HEALTHY', summary: narrative }) }];
+    const started = await org.owner.post('/api/v1/investigations').send({ question: 'Why is checkout failing?', incidentId: incident.id });
+    const inv = (await org.owner.get(`/api/v1/investigations/${started.body.id}`)).body;
+    const verified = 'Assessed outcome: INCIDENT. A failure is evident and an explanation is supported (E1).';
+    expect(inv).toMatchObject({ status: 'COMPLETED', outcome: 'INCIDENT', summary: verified });
+    expect(inv.report).toMatchObject({ summary: verified, summarySource: 'assessment', narrative });
+    // Every other place that shows the summary shows the verified one, and never the narrative.
+    const listed = (await org.owner.get('/api/v1/investigations')).body.data.find((i: { id: string }) => i.id === started.body.id);
+    expect(listed.summary).toBe(verified);
+    const onIncident = (await org.owner.get(`/api/v1/incidents/${incident.id}`)).body;
+    expect(onIncident.investigations.find((i: { id: string }) => i.id === started.body.id).summary).toBe(verified);
+    const event = onIncident.timeline.find((t: { type: string; message: string }) => t.type === 'investigation' && t.message.startsWith('AI investigation completed'));
+    expect(event.message).toBe(`AI investigation completed: ${verified}`);
+    const action = (await org.owner.get(`/api/v1/remediations/${inv.remediations[0].id}`)).body;
+    expect(action.investigation.summary).toBe(verified);
+    for (const shown of [JSON.stringify(listed), JSON.stringify(onIncident), JSON.stringify(action)]) expect(shown).not.toContain(narrative);
+  });
+
   it('stores no outcome, and offers no production change, for a report that claims an incident without an assessment', async () => {
     const org = await createOrg();
     const service = await createService(org.owner, 'Checkout');
@@ -599,5 +622,125 @@ describe('analytics, dashboard and postmortems', () => {
     expect(doc.content).toContain('Bad deploy');
     expect((await org.owner.post(`/api/v1/incidents/${incident.id}/postmortem`)).body).toEqual({ id: pm.body.id, created: false });
     expect((await org.owner.get('/api/v1/system/status')).body).toMatchObject({ database: true, ai: { reachable: true } });
+  });
+});
+
+// ── The summary through the real path: stream → guardrails → storage → every response ──
+
+describe('what each response says the summary is', () => {
+  const modelText = 'Checkout looks fine and has fully recovered; nothing needs attention.';
+  const verified = 'Assessed outcome: INCIDENT. A failure is evident and an explanation is supported (E1).';
+  const unverified = 'Outcome not verified: this report carries no assessment of the evidence, so no outcome is stated here. The narrative is its author\'s own and has not been verified.';
+
+  /** Runs one report through the API as the AI service would send it, then reads it everywhere it is shown. */
+  const runAndRead = async (sent: Record<string, unknown>) => {
+    const org = await createOrg();
+    const service = await createService(org.owner, 'Checkout');
+    const incident = (await org.owner.post('/api/v1/incidents').send({ title: 'Checkout is failing', serviceIds: [service.id] })).body;
+    ai.events = [evidence('E1', 'deployment', 'Deployment of checkout v2'), evidence('E2', 'log_pattern', '300× ERROR in checkout'), { type: 'final', report: sent }];
+    const id = (await org.owner.post('/api/v1/investigations').send({ question: 'Why is checkout failing?', incidentId: incident.id })).body.id as string;
+    return { org, incident, id, ...(await readEverywhere(org, incident.id, id)) };
+  };
+  const readEverywhere = async (org: Awaited<ReturnType<typeof createOrg>>, incidentId: string, id: string) => {
+    const detail = (await org.owner.get(`/api/v1/investigations/${id}`)).body;
+    const listed = (await org.owner.get('/api/v1/investigations')).body.data.find((i: { id: string }) => i.id === id);
+    const onIncident = (await org.owner.get(`/api/v1/incidents/${incidentId}`)).body;
+    const event = onIncident.timeline.find((t: { type: string; message: string }) => t.type === 'investigation' && t.message.startsWith('AI investigation completed'));
+    const actions = (await org.owner.get(`/api/v1/remediations?investigationId=${id}`)).body.data as { investigation: { id: string; summary: string } | null }[];
+    const action = detail.remediations[0] ? (await org.owner.get(`/api/v1/remediations/${detail.remediations[0].id}`)).body : null;
+    return { detail, listed, onIncident, inIncident: onIncident.investigations.find((i: { id: string }) => i.id === id), event, actions, action };
+  };
+
+  it('a contradictory model report with a verified assessment: the API builds the summary, stores it and shows it everywhere', async () => {
+    const r = await runAndRead(report({ summary: modelText, outcome: 'HEALTHY' }));
+    const row = await prisma.investigation.findUniqueOrThrow({ where: { id: r.id } });
+    expect(row.summary).toBe(verified);
+    expect(row.report).toMatchObject({ summary: verified, summarySource: 'assessment', narrative: modelText });
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([verified, verified, verified, verified]);
+    expect(r.listed.outcome).toBe('INCIDENT');
+    for (const shown of [r.listed, r.onIncident, r.action]) expect(JSON.stringify(shown)).not.toContain(modelText);
+  });
+
+  it('a report without an assessment: the outcome is unverified everywhere and no production change is proposed', async () => {
+    const r = await runAndRead(report({ summary: modelText, assessment: undefined }));
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary]).toEqual([unverified, unverified, unverified]);
+    expect(r.detail.report).toMatchObject({ summarySource: 'unverified', narrative: modelText, outcome: null });
+    expect([r.detail.outcome, r.listed.outcome]).toEqual([null, null]);
+    expect(r.detail.remediations.filter((a: { effect: string }) => a.effect === 'state_changing')).toEqual([]);
+    expect(r.event.message).toBe(`AI investigation completed: ${unverified}`);
+  });
+
+  it('an assessment citing evidence the run did not record is not used', async () => {
+    const r = await runAndRead(report({ summary: modelText, assessment: { outcome: 'INCIDENT', confidence: 0.9, rationale: 'Forged.', supportingRefs: ['E1', 'E99'], signals: [], missingTelemetry: [] } }));
+    expect(r.detail).toMatchObject({ outcome: null, summary: unverified });
+    expect(r.detail.report.assessment ?? null).toBeNull();
+    expect([r.listed.summary, r.listed.outcome, r.inIncident.summary]).toEqual([unverified, null, unverified]);
+    expect(r.detail.remediations.filter((a: { effect: string }) => a.effect === 'state_changing')).toEqual([]);
+    expect(r.detail.steps.find((s: { type: string }) => s.type === 'guardrail').detail).toContain('The assessment (INCIDENT) is not used');
+  });
+
+  it('a rule-based report keeps its own summary everywhere', async () => {
+    const own = 'Errors began two minutes after checkout v2 was deployed (E1, E2).';
+    const r = await runAndRead(report({ summary: own, analysisMode: 'heuristic' }));
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([own, own, own, own]);
+    expect(r.detail.report.summarySource).toBe('rule_based');
+    expect(r.detail.report.narrative ?? null).toBeNull();
+  });
+
+  // ── Rows stored before summaries were built from the assessment ──
+  // Each is produced by the real path and then rewritten exactly as the code before this change
+  // stored it: the model's text as the summary, no summarySource or narrative, the outcome column
+  // as an older version may have written it, and the completion event in its old format.
+  const storeLegacy = async (change: (stored: Record<string, unknown>) => void, mode = 'llm') => {
+    const r = await runAndRead(report({ summary: modelText }));
+    const row = await prisma.investigation.findUniqueOrThrow({ where: { id: r.id } });
+    const stored: Record<string, unknown> = { ...(row.report as Record<string, unknown>), summary: modelText, analysisMode: mode, outcome: 'HEALTHY' };
+    delete stored.summarySource;
+    delete stored.narrative;
+    change(stored);
+    await prisma.investigation.update({ where: { id: r.id }, data: { report: stored as never, summary: modelText, analysisMode: mode, outcome: 'HEALTHY' } });
+    await prisma.incidentEvent.updateMany({ where: { incidentId: r.incident.id, type: 'investigation', message: { startsWith: 'AI investigation completed' } }, data: { message: `AI investigation completed (95% confidence): ${modelText}` } });
+    const before = await prisma.investigation.findUniqueOrThrow({ where: { id: r.id } });
+    const read = await readEverywhere(r.org, r.incident.id, r.id);
+    // Reading changes nothing that is stored.
+    expect(await prisma.investigation.findUniqueOrThrow({ where: { id: r.id } })).toEqual(before);
+    expect((await prisma.incidentEvent.findMany({ where: { incidentId: r.incident.id, type: 'investigation', message: { startsWith: 'AI investigation completed (95% confidence)' } } })).length).toBe(1);
+    return { ...r, ...read };
+  };
+
+  it('an older model report with a trusted assessment is shown with the summary built from it, and its text as the narrative', async () => {
+    const r = await storeLegacy(() => {});
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([verified, verified, verified, verified]);
+    expect(r.detail.report).toMatchObject({ summary: verified, summarySource: 'assessment', narrative: modelText, outcome: 'INCIDENT' });
+    expect([r.detail.outcome, r.listed.outcome]).toEqual(['INCIDENT', 'INCIDENT']);
+    expect(r.event.message).toBe(`AI investigation completed: ${verified}`);
+    expect(r.actions.map((a) => a.investigation?.summary)).toEqual(r.actions.map(() => verified));
+    expect(r.actions.length).toBeGreaterThan(0);
+    for (const shown of [r.listed, r.onIncident, r.action]) expect(JSON.stringify(shown)).not.toContain(modelText);
+    // A postmortem drafted now uses the same summary.
+    const doc = (await r.org.owner.post(`/api/v1/incidents/${r.incident.id}/postmortem`)).body;
+    const content = (await r.org.owner.get(`/api/v1/knowledge/documents/${doc.id}`)).body.content as string;
+    expect(content).toContain(verified);
+    expect(content).not.toContain(modelText);
+  });
+
+  it.each([
+    ['carries no assessment', (s: Record<string, unknown>) => { delete s.assessment; }],
+    ['carries an assessment citing evidence that was never recorded', (s: Record<string, unknown>) => { (s.assessment as { supportingRefs: string[] }).supportingRefs = ['E99']; }],
+    ['carries a malformed assessment', (s: Record<string, unknown>) => { s.assessment = { outcome: 'FINE' }; }],
+  ])('an older model report that %s is shown as unverified, with no outcome', async (_label, change) => {
+    const r = await storeLegacy(change);
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([unverified, unverified, unverified, unverified]);
+    expect(r.detail.report).toMatchObject({ summarySource: 'unverified', narrative: modelText, outcome: null, assessment: null });
+    expect([r.detail.outcome, r.listed.outcome]).toEqual([null, null]);
+    expect(r.event.message).toBe(`AI investigation completed: ${unverified}`);
+    for (const shown of [r.listed, r.onIncident, r.action]) expect(JSON.stringify(shown)).not.toContain(modelText);
+  });
+
+  it('an older rule-based report is shown exactly as stored', async () => {
+    const r = await storeLegacy(() => {}, 'heuristic');
+    expect([r.detail.summary, r.listed.summary, r.inIncident.summary, r.action.investigation.summary]).toEqual([modelText, modelText, modelText, modelText]);
+    expect(r.detail.report.summarySource).toBeUndefined();
+    expect(r.event.message).toBe(`AI investigation completed (95% confidence): ${modelText}`);
   });
 });

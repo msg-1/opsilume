@@ -9,5 +9,6 @@
   "signalLevels": ["strong", "moderate", "weak"],
   "claimStatuses": ["exact", "rounded", "calculated", "estimate", "uncited", "unsupported"],
   "claimKinds": ["number", "timestamp", "version", "commit", "pull_request", "incident"],
-  "verificationStatuses": ["verified", "partly", "unsupported", "no_claims"]
+  "verificationStatuses": ["verified", "partly", "unsupported", "no_claims"],
+  "summarySources": ["assessment", "unverified", "rule_based"]
 }

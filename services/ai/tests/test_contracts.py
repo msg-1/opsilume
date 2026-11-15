@@ -86,3 +86,9 @@ def test_guardrail_case_shared_with_the_api(case):
         assert [f.statement for f in report.facts] == expect["facts"]
     for text in expect.get("assumptionsContain", []):
         assert text in report.assumptions
+    if "summary" in expect:
+        assert report.summary == expect["summary"]
+    if "narrative" in expect:
+        assert report.narrative == expect["narrative"]
+    if "summarySource" in expect:
+        assert report.summary_source == expect["summarySource"]
