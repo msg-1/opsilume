@@ -44,6 +44,10 @@ def wrap_untrusted(label: str, content: str) -> str:
 
 #: Highest confidence a fault hypothesis may carry when the evidence shows no fault
 NO_FAULT_HYPOTHESIS_CAP: float = LIMITS["noFaultHypothesisCap"]
+#: Highest confidence any hypothesis may carry when the outcome is DEGRADED: anomalies are
+#: present but the cause is not established, so no hypothesis may reach "likely".
+UNESTABLISHED_CAUSE_CAP: float = LIMITS["unestablishedCauseCap"]
+assert UNESTABLISHED_CAUSE_CAP < LIMITS["likelyMinimumConfidence"], "contracts/guardrails.json: unestablishedCauseCap must be below likelyMinimumConfidence"
 
 
 def _valid_rollback(action, store: EvidenceStore) -> str | None:
@@ -228,6 +232,16 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
                 notes.append(f'Hypothesis "{h.title[:60]}" limited to {NO_FAULT_HYPOTHESIS_CAP} and marked unlikely: the evidence shows no material fault for it to explain.')
                 h.confidence = min(h.confidence, NO_FAULT_HYPOTHESIS_CAP)
                 h.status = "unlikely"
+    if verdict.outcome == "DEGRADED":
+        # DEGRADED is defined as "cause not established", and "likely" claims that it is. Each
+        # hypothesis is kept, rated no higher than possible and capped; the order cannot change,
+        # because capping preserves it.
+        for h in report.hypotheses:
+            if h.confidence > UNESTABLISHED_CAUSE_CAP or h.status == "likely":
+                notes.append(LIMITS["unestablishedCauseNote"].format(title=h.title[:60], cap=UNESTABLISHED_CAUSE_CAP))
+                h.confidence = min(h.confidence, UNESTABLISHED_CAUSE_CAP)
+                if h.status == "likely":
+                    h.status = "possible"
     if verdict.outcome != LIMITS["outcomeAllowingProductionChanges"]:
         # Without an evident failure and a supported cause, nothing justifies changing production.
         withdrawn.clear()

@@ -128,7 +128,8 @@ export async function persistFinal(
         report: report as unknown as Prisma.InputJsonValue,
         summary: report.summary,
         confidence: report.confidence,
-        outcome: report.assessment?.outcome ?? report.outcome ?? null,
+        // The assessed outcome only: a report's own claim is not a verified outcome (guardrails.ts).
+        outcome: report.assessment?.outcome ?? null,
         completedAt: new Date(),
         // The report itself says which engine wrote it; that is what the UI labels it with.
         analysisMode: report.analysisMode,

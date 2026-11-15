@@ -39,11 +39,16 @@ export const GUARDRAIL_LIMITS = {
   "unsupportedHypothesisCap": 0.3,
   "noFaultHypothesisCap": 0.2,
   "likelyMinimumConfidence": 0.5,
+  "unestablishedCauseCap": 0.45,
+  "unestablishedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the outcome is DEGRADED, so the cause is not established.",
+  "unverifiedCauseNote": "Hypothesis \"{title}\" limited to {cap} and rated possible: the report carries no assessment of the evidence, so no cause is verified.",
+  "unverifiedOutcomeNote": "The report states the outcome {claimed}, but it carries no assessment of the evidence, so that outcome is not verified and is not recorded.",
   "maxRecommendedActions": 4,
   "outcomeAllowingProductionChanges": "INCIDENT",
   "withdrawalReasons": {
     "unlikelyHypothesis": "it would change production on the strength of a hypothesis rated unlikely",
-    "noIncident": "it would change production, and the evidence supports {outcome}, not an incident with an established cause"
+    "noIncident": "it would change production, and the evidence supports {outcome}, not an incident with an established cause",
+    "noAssessment": "it would change production, and the report carries no assessment of the evidence, so no incident with an established cause is verified"
   },
   "nextStepPrefixes": {
     "withdrawn": "Considered and not recommended ({reason}): {title}",

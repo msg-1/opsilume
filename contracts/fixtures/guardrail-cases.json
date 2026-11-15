@@ -682,6 +682,127 @@
           "Read the warning lines": "read_only"
         }
       }
+    },
+    {
+      "name": "under DEGRADED the cause is not established: no hypothesis stays likely, each is capped, none is removed",
+      "evidence": [
+        {
+          "ref": "E1",
+          "kind": "log_pattern",
+          "title": "6\u00d7 ERROR in orders (new pattern)",
+          "summary": "\"upstream timeout after <n>ms calling stock\" \u2014 first seen 2026-06-01T11:25:00Z; baseline count 0",
+          "sourceType": "log_pattern",
+          "sourceId": "fp:orders-timeout",
+          "service": "orders",
+          "occurredAt": "2026-06-01T11:25:00Z",
+          "data": {
+            "level": "ERROR",
+            "count": 6,
+            "kind": "new",
+            "firstSeen": "2026-06-01T11:25:00Z",
+            "baselineCount": 0
+          }
+        },
+        {
+          "ref": "E2",
+          "kind": "metric",
+          "title": "p95 latency for orders up 37%",
+          "summary": "latency_p95_ms averaged 540ms, versus 395ms in the preceding window",
+          "sourceType": "metric",
+          "sourceId": "orders:latency_p95_ms:2026-06-01T10:00:00Z",
+          "service": "orders",
+          "occurredAt": "2026-06-01T10:00:00Z",
+          "data": {
+            "metric": "latency_p95_ms",
+            "unit": "ms",
+            "changePercent": 36.7,
+            "fromZero": false,
+            "avg": 540,
+            "max": 702.0,
+            "min": 324.0,
+            "baselineAvg": 395
+          }
+        }
+      ],
+      "report": {
+        "summary": "orders is slower, and its calls to stock time out.",
+        "confidence": 0.5,
+        "analysisMode": "llm",
+        "outcome": "DEGRADED",
+        "assessment": {
+          "outcome": "DEGRADED",
+          "confidence": 0.61,
+          "rationale": "r",
+          "supportingRefs": [],
+          "signals": [],
+          "missingTelemetry": []
+        },
+        "observations": [],
+        "timeline": [],
+        "facts": [],
+        "assumptions": [],
+        "uncertainties": [
+          "No telemetry from stock."
+        ],
+        "hypotheses": [
+          {
+            "title": "stock is slow, so calls to it time out",
+            "description": "d",
+            "confidence": 0.5,
+            "status": "likely",
+            "evidenceRefs": [
+              "E1",
+              "E2"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "assumptions": [],
+            "gaps": [
+              "stock latency"
+            ]
+          },
+          {
+            "title": "A traffic shift on orders",
+            "description": "d",
+            "confidence": 0.3,
+            "status": "possible",
+            "evidenceRefs": [
+              "E2"
+            ],
+            "contradictingEvidenceRefs": [],
+            "contradictions": [],
+            "assumptions": [],
+            "gaps": []
+          }
+        ],
+        "nextSteps": [
+          "Read stock's latency"
+        ],
+        "recommendedActions": []
+      },
+      "expect": {
+        "actions": [],
+        "hypotheses": [
+          {
+            "title": "stock is slow, so calls to it time out",
+            "status": "possible",
+            "evidenceRefs": [
+              "E1",
+              "E2"
+            ],
+            "maxConfidence": 0.45
+          },
+          {
+            "title": "A traffic shift on orders",
+            "status": "possible",
+            "evidenceRefs": [
+              "E2"
+            ],
+            "maxConfidence": 0.3
+          }
+        ],
+        "maxConfidence": 0.45
+      }
     }
   ]
 }

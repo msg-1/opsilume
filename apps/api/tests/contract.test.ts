@@ -85,6 +85,13 @@ describe('shared contracts', () => {
     expect(generated.ACTION_EFFECT_RULES).toEqual(readContract('action-effects.json'));
   });
 
+  it('the unestablished-cause cap is shared and sits strictly below the likely threshold', async () => {
+    const { GUARDRAIL_LIMITS } = await import('../src/generated/contracts');
+    const json = readContract('guardrails.json') as { unestablishedCauseCap: number; likelyMinimumConfidence: number };
+    expect(GUARDRAIL_LIMITS.unestablishedCauseCap).toBe(json.unestablishedCauseCap);
+    expect(GUARDRAIL_LIMITS.unestablishedCauseCap).toBeLessThan(GUARDRAIL_LIMITS.likelyMinimumConfidence);
+  });
+
   it("the API's report schema describes the same report as the AI service's", () => {
     const theirs = describeSchema(readContract('report.schema.json'));
     const ours = describeSchema(z.toJSONSchema(reportSchema, { io: 'input' }) as Json);
@@ -139,6 +146,65 @@ describe('shared contracts', () => {
     if (e.maxConfidence !== undefined) expect(result.confidence).toBeLessThanOrEqual(e.maxConfidence);
     if (e.facts) expect(result.facts.map((f) => f.statement)).toEqual(e.facts);
     for (const text of e.assumptionsContain ?? []) expect(result.assumptions).toContain(text);
+  });
+
+  // The outcome rules at the API boundary, beyond the shared case. Only the assessment counts as a
+  // verified outcome: it is computed by the AI service's code, while the report's own `outcome` is
+  // its author's claim. These cases are API-only: the AI service recomputes the assessment from
+  // the evidence, so a report without one cannot arise there.
+  const degraded = cases.find((c) => c.name.startsWith('under DEGRADED'))!;
+  const known = new Set(degraded.evidence.map((e) => e.ref));
+  const assessed = (outcome: string) => ({ outcome, confidence: 0.9, rationale: 'r', supportingRefs: [], signals: [], missingTelemetry: [] });
+  const restart = { type: 'restart_service', title: 'Restart orders', description: 'Restart the pods.', risk: 'LOW', serviceSlug: 'orders', evidenceRefs: ['E1'] };
+  const run = async (change: (r: Record<string, unknown>) => void) => {
+    const report = structuredClone(degraded.report) as Record<string, unknown>;
+    report.hypotheses = (report.hypotheses as Record<string, unknown>[]).map((h, i) => (i === 0 ? { ...h, confidence: 0.8, status: 'likely' } : h));
+    report.confidence = 0.8;
+    report.recommendedActions = [restart];
+    change(report);
+    const steps: { detail?: string | null }[] = [];
+    const result = await applyGuardrails(reportSchema.parse(report), known, async (s) => steps.push(s));
+    return { result, notes: steps.map((s) => s.detail).join('\n') };
+  };
+
+  it('no assessment, claimed INCIDENT: the claim is not trusted, the likely cause is capped and no production change is offered', async () => {
+    const { result, notes } = await run((r) => { delete r.assessment; r.outcome = 'INCIDENT'; });
+    expect(result.hypotheses.map((h) => [h.status, h.confidence])).toEqual([['possible', 0.45], ['possible', 0.3]]);
+    expect(result.confidence).toBe(0.45);
+    expect(result.outcome).toBeNull();
+    expect(result.recommendedActions).toEqual([]);
+    expect(result.nextSteps.some((s) => s.includes('the report carries no assessment of the evidence') && s.includes('Restart orders'))).toBe(true);
+    expect(notes).toContain('The report states the outcome INCIDENT, but it carries no assessment of the evidence');
+    expect(notes).toContain('the report carries no assessment of the evidence, so no cause is verified');
+    expect(result.uncertainties).toContain('This report arrived without an assessment of the evidence, so its outcome is not verified.');
+  });
+
+  it('no assessment, claimed DEGRADED: capped the same way, and said to be unverified rather than DEGRADED', async () => {
+    const { result, notes } = await run((r) => { delete r.assessment; r.outcome = 'DEGRADED'; });
+    expect(result.hypotheses[0]).toMatchObject({ status: 'possible', confidence: 0.45 });
+    expect(result.outcome).toBeNull();
+    expect(result.recommendedActions).toEqual([]);
+    expect(notes).toContain('no cause is verified');
+    expect(notes).not.toContain('the outcome is DEGRADED, so the cause is not established');
+  });
+
+  it('verified INCIDENT: a likely hypothesis and its production change stand, whatever the report claims', async () => {
+    const { result, notes } = await run((r) => { r.assessment = assessed('INCIDENT'); r.outcome = 'DEGRADED'; });
+    expect(result.hypotheses[0]).toMatchObject({ status: 'likely', confidence: 0.8 });
+    expect(result.confidence).toBe(0.8);
+    expect(result.outcome).toBe('INCIDENT');
+    expect(result.recommendedActions.map((a) => a.title)).toEqual(['Restart orders']);
+    expect(notes).not.toContain('no assessment');
+  });
+
+  it('verified DEGRADED: capped with the DEGRADED reason, even when the report claims an incident', async () => {
+    const { result, notes } = await run((r) => { r.assessment = assessed('DEGRADED'); r.outcome = 'INCIDENT'; });
+    expect(result.hypotheses.map((h) => [h.status, h.confidence])).toEqual([['possible', 0.45], ['possible', 0.3]]);
+    expect(result.confidence).toBe(0.45);
+    expect(result.outcome).toBe('DEGRADED');
+    expect(result.recommendedActions).toEqual([]);
+    expect(notes).toContain('the outcome is DEGRADED, so the cause is not established');
+    expect(result.uncertainties).not.toContain('This report arrived without an assessment of the evidence, so its outcome is not verified.');
   });
 });
 
