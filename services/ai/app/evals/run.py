@@ -128,17 +128,32 @@ class Result:
     served_model: str | None = None
     #: Set when a bill contradicted the bound reserved for it. The run stops.
     bound_exceeded: str | None = None
+    #: Why the model stopped being used in this scenario, if it did (our own wording)
+    model_stopped: str | None = None
+
+    @property
+    def fell_back(self) -> bool:
+        """A model was configured, but the report was written by the rule-based engine."""
+        return self.provider != "heuristic" and self.mode == "heuristic"
+
+    @property
+    def answered_calls(self) -> int:
+        """Model calls that returned an answer (calls of unknown outcome excluded)."""
+        return self.llm_calls - self.unknown_calls
 
     @property
     def passed(self) -> bool:
-        return all(s.ok for s in self.scores.values())
+        # A fallback is not a result of the model being evaluated, however well the rule-based
+        # report scores. The scores themselves are unchanged.
+        return all(s.ok for s in self.scores.values()) and not self.fell_back
 
     @property
     def failures(self) -> list[str]:
-        return [f"{name}: {s.why}" for name, s in self.scores.items() if not s.ok]
+        engine = [f"engine: the model was configured but the report was written by the rule-based engine ({self.model_stopped or 'reason not recorded'})"] if self.fell_back else []
+        return engine + [f"{name}: {s.why}" for name, s in self.scores.items() if not s.ok]
 
     def wire(self) -> dict[str, Any]:
-        return {**asdict(self), "passed": self.passed}
+        return {**asdict(self), "passed": self.passed, "fellBack": self.fell_back}
 
 
 async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: Settings | None = None, save_to: Path | None = None) -> Result:
@@ -210,6 +225,7 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
         wall_seconds=round(time.perf_counter() - began, 1),
         served_model=provider.served_model if provider else None,
         bound_exceeded=getattr(provider, "bound_exceeded", None),
+        model_stopped=ctx.llm_stopped or None,
     )
     if save_to is not None:
         save_to.mkdir(parents=True, exist_ok=True)
@@ -283,6 +299,14 @@ async def run_all(resolution: Resolution | None, settings: Settings, max_cost: f
             + f" · in {result.input_tokens:,} / out {result.output_tokens:,} / cache read {result.cache_read_tokens:,} / cache write {result.cache_write_tokens:,} tokens · "
             f"model {result.seconds}s, total {result.wall_seconds}s · ${result.cost_usd:.4f} · cumulative ${(ledger.committed() if ledger else spent):.4f}"
         )
+        if result.fell_back:
+            log(f"  FELL BACK TO RULE-BASED in {scenario.name}: {result.model_stopped or 'the model could not be used'}. This scenario counts as failed.")
+        if paid and result.fell_back and result.answered_calls == 0:
+            # The model never answered: the key, the model or the account is not usable. Running
+            # the other scenarios would only produce rule-based reports under a model's name.
+            skipped.extend(s.name for s in scenarios[index + 1 :])
+            log(f"  STOPPED: the model did not answer a single call in {scenario.name}. No further scenario was started.")
+            break
         if result.bound_exceeded or overrun:
             # The ceiling is only as good as the bounds behind it. When one fails, nothing more runs.
             skipped.extend(s.name for s in scenarios[index + 1 :])
@@ -413,6 +437,16 @@ def main() -> None:
             ledger.check_allowed(names, args.repeat)
         except LedgerError as exc:
             print(f"Refusing to run: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if ledger.void_entries():
+            print(f"{len(ledger.void_entries())} earlier attempt(s) in {args.ledger} made no model call and cost nothing; they stay in the ledger and do not count as attempts.")
+        # Before anything is reserved: ask the Models API (free, no inference) whether this key
+        # can use this model. A key that is rejected here would only produce rule-based reports.
+        probe = build_provider(resolution, live_settings(settings, str(resolution.model), settings.ai_max_cost_usd_per_investigation))
+        ok, detail = asyncio.run(probe.verify()) if probe else (False, "no provider could be built")
+        if not ok:
+            why = f"the key in {args.key_env} was rejected (401): it is revoked, mistyped, or not an API key" if "(401)" in detail else detail
+            print(f"Refusing to run: Anthropic could not be used: {why}. Nothing was reserved or spent.", file=sys.stderr)
             sys.exit(2)
     log = (lambda *_a, **_k: None) if args.json else print
     if paid:
