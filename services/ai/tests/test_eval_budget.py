@@ -379,3 +379,99 @@ def test_the_key_is_read_only_from_the_named_variable(monkeypatch, capsys):
     monkeypatch.setenv("OPSILUME_TEST_KEY", FAKE_KEY)
     code, out, _ = run_main(monkeypatch, capsys, "--estimate", "--key-env", "OPSILUME_TEST_KEY")
     assert code == 0 and "OPSILUME_TEST_KEY is set" in out and FAKE_KEY not in out
+
+
+# Provider selection in a requested live run (Milestone 10): never a silent rule-based run.
+
+MODEL_INFO = httpx2.Response(200, json={"id": HAIKU, "type": "model", "display_name": "Claude Haiku 5.5", "created_at": "2026-10-07T00:00:00Z"})
+
+
+def live_main(monkeypatch, capsys, api: FakeAnthropic, ledger: Path, *extra: str) -> tuple[int, str, str]:
+    """main() as the approved command runs it, with every client pointed at the mocked API."""
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPSILUME_TEST_KEY", FAKE_KEY)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def mocked(resolution, settings):
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(api.handler)), max_retries=settings.ai_max_retries)
+        return AnthropicProvider(settings, client=client)
+
+    monkeypatch.setattr(evals, "build_provider", mocked)
+    return run_main(monkeypatch, capsys, "--model", HAIKU, "--key-env", "OPSILUME_TEST_KEY", "--max-cost", "0.87", "--ledger", str(ledger), "--no-save", *extra)
+
+
+def test_with_the_approved_variable_set_the_run_uses_anthropic(monkeypatch, capsys, tmp_path):
+    from .test_claude_provider import PLAN, REPORT
+
+    api = FakeAnthropic([MODEL_INFO, message([text(json.dumps(PLAN))]), message([text("Enough evidence.")]), message([text(json.dumps(REPORT))])])
+    code, out, err = live_main(monkeypatch, capsys, api, tmp_path / "ledger.json", "--only", "bad_deploy_matching_change")
+    assert [r["path"] for r in api.requests] == ["/v1/models/claude-haiku-5-5"] + ["/v1/messages"] * 3
+    assert "· llm · claude-haiku-5-5 · 3 requests" in out and "FELL BACK" not in out
+    entry = json.loads((tmp_path / "ledger.json").read_text())["entries"][0]
+    assert entry["calls"] == 3 and entry["costUsd"] > 0 and not Ledger.is_void(entry)
+    assert FAKE_KEY not in out + err
+
+
+@pytest.mark.parametrize(("response", "said"), [
+    (api_error(401, "authentication_error", "invalid x-api-key"), "the key in OPSILUME_TEST_KEY was rejected (401)"),
+    (api_error(404, "not_found_error", "model: claude-haiku-5-5"), "model was not found"),
+    (api_error(403, "permission_error", "not allowed"), "not permitted"),
+])
+def test_if_anthropic_cannot_be_used_the_run_stops_before_anything_is_reserved(monkeypatch, capsys, tmp_path, response, said):
+    path = tmp_path / "ledger.json"
+    api = FakeAnthropic([response])
+    code, out, err = live_main(monkeypatch, capsys, api, path)
+    assert code == 2 and said in err and "Nothing was reserved or spent" in err
+    assert [r["path"] for r in api.requests] == ["/v1/models/claude-haiku-5-5"]  # no inference request was sent
+    assert json.loads(path.read_text())["entries"] == []  # the ledger holds no reservation
+    assert FAKE_KEY not in out + err
+
+
+def test_a_key_rejected_after_the_check_stops_the_run_and_counts_as_failed(monkeypatch, capsys, tmp_path):
+    # The Models API accepted the key, the Messages API did not (a limit, a revoked key).
+    api = FakeAnthropic([MODEL_INFO, api_error(401, "authentication_error", "invalid x-api-key")])
+    code, out, err = live_main(monkeypatch, capsys, api, tmp_path / "ledger.json")
+    assert code == 1 and "FELL BACK TO RULE-BASED in bad_deploy_matching_change" in out and "STOPPED: the model did not answer" in out
+    assert len(api.requests) == 2  # one check, one refused call; not one per scenario
+    entries = json.loads((tmp_path / "ledger.json").read_text())["entries"]
+    assert len(entries) == 1 and entries[0]["passed"] is False and Ledger.is_void(entries[0])
+    assert FAKE_KEY not in out + err
+
+
+def test_attempts_that_made_no_model_call_do_not_count_and_stay_recorded(tmp_path):
+    # The shape of the Milestone 10 ledger after a run whose key was rejected: 14 finished
+    # attempts, each with no call and no cost.
+    path = tmp_path / "ledger.json"
+    ledger = Ledger.open(path, 0.87, HAIKU)
+    for s in SCENARIOS:
+        ledger.settle(ledger.reserve(s.name, 0.50, "rejected-key"), 0.0, passed=True, calls=0)
+    before = path.read_bytes()
+    reopened = Ledger.open(path, 0.87, HAIKU)
+    assert path.read_bytes() == before  # opening changes nothing
+    assert len(reopened.void_entries()) == 14 and reopened.committed() == 0 and reopened.remaining() == pytest.approx(0.87)
+    reopened.check_allowed([s.name for s in SCENARIOS], repeat=False)  # all 14 may run
+    assert reopened.repeats_used() == 0
+    # An attempt that was charged anything, or answered once, is a real attempt.
+    charged = reopened.reserve("healthy_clean", 0.50, "run-2")
+    reopened.settle(charged, 0.0, passed=False, unknown_usd=0.0, calls=1)
+    assert not Ledger.is_void(charged) and charged["attempt"] == 1
+    with pytest.raises(LedgerError, match="already been run"):
+        reopened.check_allowed(["healthy_clean"], repeat=False)
+    assert len(reopened.entries) == 15  # nothing was removed
+
+
+def test_the_rule_based_evaluation_still_runs_when_it_is_asked_for(monkeypatch, capsys):
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")  # a model configured, and no key anywhere
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
+    code, out, _ = run_main(monkeypatch, capsys, "--heuristic", "--no-save")
+    assert code == 0 and "Engine: rule-based" in out and "14/14 scenarios passed" in out and "FELL BACK" not in out
+
+
+def test_an_unpriced_model_is_refused(monkeypatch, capsys):
+    monkeypatch.setenv("AI_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-nope")
+    monkeypatch.setenv("OPSILUME_TEST_KEY", FAKE_KEY)
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda *a, **k: pytest.fail("no client may be created"))
+    code, out, err = run_main(monkeypatch, capsys, "--model", "claude-nope", "--key-env", "OPSILUME_TEST_KEY", "--max-cost", "0.87", "--ledger", "x.json")
+    assert code == 2 and "no price is known for claude-nope" in err and FAKE_KEY not in out + err and not Path("x.json").exists()

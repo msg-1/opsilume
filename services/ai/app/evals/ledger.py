@@ -64,11 +64,21 @@ class Ledger:
     def remaining(self) -> float:
         return self.max_cost_usd - self.committed()
 
+    @staticmethod
+    def is_void(entry: dict[str, Any]) -> bool:
+        """An attempt that finished without one model call counted and without any charge: no
+        request was billed and the model never answered (for example a rejected key). It stays in
+        the ledger as a record, and its cost (zero) stays in the total, but it is not an attempt."""
+        return entry.get("status") == "done" and not entry.get("calls") and not float(entry.get("costUsd") or 0) and not float(entry.get("unknownUsd") or 0)
+
+    def void_entries(self) -> list[dict[str, Any]]:
+        return [e for e in self.entries if self.is_void(e)]
+
     def attempts(self, scenario: str) -> list[dict[str, Any]]:
-        return [e for e in self.entries if e["scenario"] == scenario]
+        return [e for e in self.entries if e["scenario"] == scenario and not self.is_void(e)]
 
     def repeats_used(self) -> int:
-        return sum(1 for e in self.entries if int(e.get("attempt", 1)) >= 2)
+        return sum(1 for e in self.entries if int(e.get("attempt", 1)) >= 2 and not self.is_void(e))
 
     # ── Deciding what may run ──
 
