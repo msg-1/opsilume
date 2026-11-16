@@ -10,6 +10,8 @@ This is a design only. Nothing described as **proposed** exists. Every statement
 
 **Decision status (16 November 2026).** The product owner has approved the main decisions in principle, with conditions, and deferred others. Section 18 records each one, and the review ([post-restore-remediation-safety-decision-review.md](post-restore-remediation-safety-decision-review.md)) gives the reasoning. "Approved in principle" means approved as design direction: nothing is implemented, and Phase 0 (section 19) must confirm the technical assumptions first.
 
+**Decisions of 17 November 2026.** The product owner approved V1, V2, V3 and P1–P6 as design direction, and confirmed P8 and P8a in principle and the rejection of P8b. Backup retention (30 days) and the installation-size envelope were approved provisionally, and four limitations were accepted. **P7 was not approved: native Linux durability remains a mandatory, untested gate.** Production implementation is **not** authorised. See the decision summary in section 18.
+
 **Revision after Phase 0 (16 November 2026).** The isolated prototype ([post-restore-remediation-safety-phase0-prototype-report.md](post-restore-remediation-safety-phase0-prototype-report.md)) supported the architecture and exposed two defects in this design. This revision takes in its evidence:
 - the void is appended under a savepoint (section 6);
 - a short write is a journal failure (section 6);
@@ -253,7 +255,7 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 
 ### 6.1 The journal mutex (P3)
 
-**Recommendation** [Proposed; P3, awaiting approval]: one authoritative mutex for **every** journal append, namely the PostgreSQL `InstallationState` row lock (`SELECT … FOR UPDATE`).
+**Recommendation** [P3: **approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests]: one authoritative mutex for **every** journal append, namely the PostgreSQL `InstallationState` row lock (`SELECT … FOR UPDATE`).
 - **Claims** append inside their own transaction while holding it.
 - **Every other record** (`dispatch`, `outcome`, `reconciled`, `cleared`, `repair`) is appended in a short transaction that takes the same lock, appends, `fsync`s and closes the file before commit.
 - **`flock` is not used.**
@@ -285,7 +287,7 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 
 **The problem.** [Phase 0 evidence] Verifying the whole journal on every claim took about 162 ms at 100,000 records (25.6 MB), and the prototype's append (which re-parses to find the last hash) grew from 0.43 ms to 1.19 ms p50 over the first 1,000 records. That cost grows without bound.
 
-**Proposed strategy** [Proposed; P4, awaiting approval; **not prototyped**]:
+**Strategy** [P4: **approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests. Validated in the Phase 0.5 prototype; see below]:
 - **A per-process cache,** never shared between processes and never persisted:
   - the file's device and inode;
   - the verified byte offset;
@@ -337,7 +339,7 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 
 **The problem.** After a `void`, the verifier needs the hash of the claim that becomes the head again, to compare with the database anchor. Keeping every claim's hash costs memory in proportion to the journal.
 
-**Proposed** [Proposed; awaiting approval]:
+**Decision** [V1: **approved** on 17 November 2026. **Explicit overflow and recovery tests are mandatory before production acceptance**]:
 - **The bound:** the verifier remembers the hashes of the last **64** live claims (a stack). A `claim` pushes; a `void` pops.
 - **When the bound is exceeded:** a `void` that would need a hash no longer remembered makes the head hash **unknown**. The trust comparison then **fails closed** with an explicit reason ("journal head hash unknown"). Nothing is discarded silently: the journal itself still holds every record, and clearance re-establishes the anchor from a full verification.
 - **Why 64 is ample** [Assessment]. Under P1, a void follows its own claim under the same lock. Under P5, a void is written only when the database is one claim behind. So a correct journal never needs more than one remembered claim beyond the head. 64 leaves margin for implementation surprises, at negligible memory cost (64 hashes).
@@ -345,7 +347,7 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 
 [Phase 0.5 evidence] The prototype used this bound. No test exceeded it, so the fail-closed path is **specified but not exercised**.
 
-#### 6.2.2 Full-verification schedule (pending decision)
+#### 6.2.2 Full-verification schedule (V2, approved)
 
 The interval is **not decided**. The options:
 
@@ -356,11 +358,22 @@ The interval is **not decided**. The options:
 | Claim-count-based (for example every N claims) | Up to N claims | One full read per N claims | Follows activity; idle installations are never checked |
 | Time-based **or** claim-count-based, whichever comes first | The smaller of the two | As above | The two combined |
 
-**Recommendation** [Proposed; **awaiting product-owner approval**]:
-- a background full verification at a fixed time interval, **plus** the mandatory events;
-- run **outside** the claim lock, as an unlocked reader ([Phase 0.5 evidence]: unlocked reads never saw a corrupt state);
-- **a failure invalidates every cache and quarantines** until a person reviews it;
-- a **daily** interval is suggested as a starting point, to be confirmed against measurements on the supported platform. The interval is **not** chosen here.
+**Decision: a 24-hour interval** [V2: **approved** on 17 November 2026; first proposed on 16 November]. **Any verification failure quarantines all API processes.**
+
+**Full verification runs:**
+- **at start-up,** before the API reports ready;
+- **before recovery clearance** (`inspect` and `clear` always verify from the start);
+- **after any identity or replacement inconsistency:** a device or inode change, a shrunk file, a changed last record, an identity file that differs, or any verification failure (confirmed by a full verification before it is reported);
+- **in the background every 24 hours,** if the interval is approved.
+
+**Immediate quarantine on failure** [Proposed]. A failed scheduled verification records the failure in `InstallationState` (a quarantine reason), inside a transaction holding the `InstallationState` row lock. Every claim reads that row under the same lock and refuses while a reason is set, until clearance resets it. So the failure stops claims in **every** API process at once, not only in the process that found it. [Unverified] It is a column in the proposed `InstallationState` table, and not prototyped.
+
+**Coordination with appends:**
+- The background verification reads **without** the lock, so it never delays a claim. [Phase 0.5 evidence] In 95,890 unlocked checks during 2,000 appends, an in-progress append showed up as a torn tail once, and never as corruption.
+- A torn tail seen by the background check is **not** a failure: the next claim's own check decides.
+- **Before quarantining,** the background check repeats the full verification **under the row lock**. A failure found during a concurrent append is then confirmed against a stable file, so a race can't cause a false quarantine.
+
+**Cost:** about 1.4 s and 106 MB at 1,000,000 records, measured on Docker Desktop, once per interval per API process.
 
 ### 6.3 Unknown commit result (P5)
 
@@ -377,7 +390,7 @@ Each was correctly recognised, or left uncertain while the database was unreacha
 
 **Situation.** The `claim` record for `seq` is on disk, `COMMIT` was sent, and the connection dropped before the reply. PostgreSQL may or may not have committed. **A missing confirmation is never taken to mean "failed".**
 
-**Proposed handling** [Proposed; P5, awaiting approval]:
+**Handling** [P5: **approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests]:
 1. **Do not dispatch, and do not write `void`.** The request ends with an error saying the outcome of the claim is uncertain.
 2. **Resolve it now, if the database is reachable:** reconnect and, in a new transaction, lock `InstallationState` and read `journalSeq` and the action's status and attempts.
    - **`journalSeq = seq` and the action is `EXECUTING` with this attempt:** the claim **committed**. It stays undispatched: the action is left `EXECUTING`, and the sweep records `unknown`, with the journal showing no `dispatch`, meaning not sent. A person can then reconcile it as `not_applied` and retry.
@@ -416,7 +429,7 @@ What each stage records, and what it proves. [Proposed; the distinctions confirm
 
 **The gap.** [Phase 0.5 evidence] An older application, written before this feature, knows nothing of the journal. Against a database that has the feature, its claim **succeeded and dispatched**. The journal never saw it, the heads still matched, and the installation still looked trusted, so a later restore would not reveal that execution. The no-downgrade **policy** (N9) does nothing against this, and **a version check in application code can't help either:** the older application doesn't have that check.
 
-**The guard** [Proposed; P8, **awaiting approval**; the prototype trigger is **not** production-ready]:
+**The guard** [P8: **approved in principle** by the product owner on 16 November 2026, confirmed on 17 November, **subject to production validation**; the prototype trigger is **not** production-ready]:
 - **What it does:** a PostgreSQL trigger on the remediation action table, `BEFORE INSERT OR UPDATE`, refuses any row **entering** `EXECUTING` (from any other status, or inserted as `EXECUTING`) unless the transaction has proved it followed the journal protocol.
 - **The proof** [Proposed]: the claim transaction sets a transaction-local setting, `set_config('opsilume.claim_seq', <seq>, true)`, **after** advancing `InstallationState.journalSeq` to `<seq>` in the same transaction. The trigger requires the setting to equal the current `journalSeq`.
   - The setting is transaction-local, so it can't leak to another transaction or session.
@@ -446,14 +459,14 @@ What each stage records, and what it proves. [Proposed; the distinctions confirm
 
 **Privilege boundary** [Verified for the current deployment, then proposed]:
 - [Verified] The application connects as the same database role that owns the tables (`docker-compose.yml`: one `opspilot` role, used both for migrations and at runtime). The table owner can `ALTER TABLE … DISABLE TRIGGER` or drop the trigger.
-- [Proposed; pending decision] Separate a **migration role** (owner) from a **runtime role** (not the owner). Then the running application, any version, can't disable or drop the guard.
+- [P8a: **approved in principle** on 16 November 2026, confirmed on 17 November, **subject to role and migration testing**; not production-validated] Separate a **migration role** (owner) from a **runtime role** (not the owner). Then the running application, any version, can't disable or drop the guard. **Required check:** connected as the runtime role, `ALTER TABLE … DISABLE TRIGGER`, `DROP TRIGGER` and `DROP FUNCTION` must each be refused. In PostgreSQL only the table owner, or a superuser, can do these, so the runtime role must be neither.
 - Until then, the guard protects against older application code, **not** against a compromised application or a person with the owner role.
 
 **Migration rollback and downgrade:**
 - Prisma migrations are forward-only.
 - Removing the guard means a person deliberately dropping it with owner rights. That isn't a supported downgrade path; it would need to be audited and is a decision in its own right (below).
 - Running an older application against a newer database leaves the guard in place, so remediation execution is unavailable until the application is upgraded again.
-- **Recovery when the guard exists but the application is incompatible:** upgrade the application. A documented, audited "remove the guard" procedure for emergencies is a decision for the product owner (recommended: none, consistent with D7).
+- **Recovery when the guard exists but the application is incompatible:** upgrade the application. An emergency "remove the guard" procedure (P8b) was **rejected** by the product owner on 16 November 2026, consistent with D7.
 
 **Limitations:**
 - it relies on the migration having run;
@@ -582,7 +595,7 @@ Memory grew with size, because inspection loads every affected action into the p
 | Lock duration | The `InstallationState` lock and the touched action rows, for the whole transaction. During quarantine no claim runs anyway, but other routes touching those rows wait | Short locks per batch |
 | Complexity | Low | High: a new blocking state across routes |
 
-**Recommendation** [Proposed; P6, awaiting approval]: **keep one atomic transaction, and make it bounded in memory:**
+**Recommendation** [P6: **approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests]: **keep one atomic transaction, and make it bounded in memory:**
 - compute the inspection digest **in the database** (an ordered, server-side hash over the affected rows) instead of loading them into the process;
 - apply every rule as a **set-based** update. The actions that ran after the backup come from the journal, which is streamed into a temporary table in fixed-size chunks;
 - audit rows: one per organisation, as now, inserted with one statement.
@@ -623,7 +636,7 @@ The process's memory is then bounded by the chunk size, not the installation siz
 
 **One transaction remains the recommendation.** Batching stays the fallback, if production-scale tests show the transaction or lock waits are unacceptable.
 
-**Maximum supported size: not chosen** [pending a product-owner decision]. One million actions is **the largest size tested on one development machine**, not a capacity guarantee. A limit must come from tests on the supported platform, at sizes above the largest expected installation.
+**Installation size** [**decided** on 17 November 2026]: **1,000,000 actions is the tested envelope, not a capacity guarantee.** It is the largest size tested, on one development machine. **Validation condition:** repeat the clearance tests on the supported platform at **twice** the largest expected installation size.
 
 ## 10. Execution reconciliation workflow
 
@@ -795,7 +808,7 @@ Proposed analysis:
   - journal history is kept for at least as long as the oldest restorable database backup;
   - an **off-host, read-only copy** of the journal is maintained, so that after host loss recovery still has a list of what ran;
   - that copy is used for inspection only. The journal is **never restored together with the database,** and never over a newer journal. Doing either defeats detection.
-  - The absolute duration of **backup retention** (and therefore journal retention) is **not chosen here**: it needs product-owner selection.
+  - **Backup retention: 30 days, approved provisionally** (17 November 2026). **Validation conditions:** confirm the storage capacity, and confirm that journal retention covers the oldest restorable backup.
 - **Durability claims (N11, deferred):** see section 16.1. No durability claim is made yet.
 - **Losing it means quarantine:** no data is lost, but everything is reviewed.
 - **Per execution:** two `fsync`ed appends (`claim` and `dispatch`), plus best-effort `outcome` lines. [Phase 0 evidence] On Docker Desktop (Apple silicon), one append and `fsync` on a Docker volume took p50 0.26 ms and p99 0.56 ms. Claim latency was p50 4.8 ms with two containers and p50 19.2 ms with eight processes; the single lock is the bottleneck. These numbers are not a production estimate.
@@ -809,7 +822,7 @@ Proposed analysis:
 
 **What remains unverified:** whether an acknowledged `fsync` reaches stable storage there. A p50 of 0.26 ms through a virtual disk is consistent with the flush stopping at the host's cache. The prototype's own result is **inconclusive**.
 
-**Required before any durability claim** [Proposed; P7, awaiting approval]:
+**Required before any durability claim** [P7: **NOT APPROVED** (17 November 2026). Native Linux durability is a **mandatory, untested validation gate. It is not waived.**]:
 - a test on **native Linux**, with the journal on a **local** filesystem (ext4 or XFS) on a named volume or bind mount, never the container's writable layer;
 - a **power-loss or VM-crash test:** append and `fsync` acknowledged, then a hard reset of the machine (not a process kill). Every acknowledged record must be present and the chain intact; any torn tail must follow N1;
 - the result recorded with the kernel, filesystem, mount options and storage.
@@ -847,7 +860,13 @@ Proposed analysis:
 
 ## 17. Remaining risks
 
-**Accepted risks** (from the deferred decisions D3, D10 and D11; the owner has accepted them, not mitigated them):
+**Accepted limitations of the single-host design** (accepted by the product owner on 17 November 2026). They are **not solved or protected against**; they are known limits. They come from the deferred decisions D3, D10, D11, N7 and N10:
+- **coordinated database and journal snapshot rollback** goes undetected;
+- **journal truncation to a trusted head** goes undetected;
+- **there is no external cryptographic anchor** (D3 and N7 deferred);
+- **there is no multi-host guarantee** (N10).
+
+Detail:
 - **D3:** without an off-host anchor, a rollback or copy of both volumes, or a truncation by someone with host access, is undetected.
 - **D10:** settings and memberships rolled back by a restore are found only by the manual checklist in section 11.
 - **D11:** receivers get no installation id or journal sequence to detect repeats themselves.
@@ -895,38 +914,58 @@ Recorded on 16 November 2026. "Approved in principle" means approved as design d
 | N10 | Enforcing a single API host | **Enforcement deferred** | Phase 0 prototypes two-container locking on one host; no multi-host support is claimed |
 | N11 | Supported platforms for the durability claim | **Deferred** | No broad durability claim until tested |
 | — | Retention of the journal and of clearance records | See N6 | — |
-| — | Backup retention duration | **Requires product-owner selection** | No absolute duration is chosen here |
+| — | Backup retention duration | **30 days, approved provisionally** (17 November 2026) | Validate the storage capacity, and that journal retention covers the oldest restorable backup |
 
-**New technical decisions raised by Phase 0.** These are engineering recommendations, **not approvals:**
-
-| # | Decision | Status | Recommendation |
-|---|---|---|---|
-| P1 | Append `void` under a savepoint taken after the `InstallationState` lock (section 6, step 5) | **Awaiting approval** | Adopt: required for the chain to stay intact (Phase 0 B1) |
-| P2 | Treat every short write as a journal failure, with no dispatch and no truncation (section 6) | **Awaiting approval** | Adopt: required (Phase 0 A) |
-| P3 | The single journal mutex: the `InstallationState` row lock, not `flock` (section 6.1) | **Awaiting approval** | The row lock |
-| P4 | Incremental verification, with the head hash anchored in the database (section 6.2) | **Awaiting approval** | Adopt; design to be tested; the database anchor is a schema addition |
-| P5 | Unknown commit handling: resolve when reachable, otherwise fail closed; never dispatch after an uncertain commit (section 6.3) | **Awaiting approval** | Adopt; fault-proxy testing required |
-| P6 | Clearance in one bounded-memory transaction; batching only as a fallback; maximum size not yet chosen (section 9.1) | **Awaiting approval** | Adopt; measure on the supported platform |
-| P7 | Durability: native Linux, a local filesystem, and a power-loss or VM-crash test before any claim (section 16.1) | **Awaiting approval** | Adopt |
-
-**Raised by Phase 0.5.** These are also engineering recommendations, **not approvals:**
+**Technical decisions raised by Phase 0.** Raised as engineering recommendations; the **Status** column records the product owner's decisions of 17 November 2026:
 
 | # | Decision | Status | Recommendation |
 |---|---|---|---|
-| P8 | A database guard refusing any entry into `EXECUTING` not made through the journal protocol, created in the same migration as `InstallationState` (section 6.5) | **Awaiting approval** | Adopt. The prototype trigger is a demonstration; production needs the integration tests in section 6.5 |
-| P8a | Separate the migration (owner) role from the runtime role, so the application can't disable the guard | **Awaiting approval** | Adopt, as part of, or before, P8 |
-| P8b | An audited emergency procedure to remove the guard when the application is incompatible | **Awaiting approval** | None (consistent with D7): upgrade the application instead |
-| V1 | Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1) | **Awaiting approval** | Adopt |
-| V2 | The full-verification schedule (section 6.2.2) | **Awaiting product-owner decision** | Background, time-based, plus mandatory events; daily suggested as a starting point, not chosen |
-| V3 | Clearance supersedes every current approval, whatever the action's status (section 9) | **Awaiting approval** | Adopt |
+| P1 | Append `void` under a savepoint taken after the `InstallationState` lock (section 6, step 5) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | Adopt: required for the chain to stay intact (Phase 0 B1) |
+| P2 | Treat every short write as a journal failure, with no dispatch and no truncation (section 6) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | Adopt: required (Phase 0 A) |
+| P3 | The single journal mutex: the `InstallationState` row lock, not `flock` (section 6.1) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | The row lock |
+| P4 | Incremental verification, with the head hash anchored in the database (section 6.2) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | Adopt; design to be tested; the database anchor is a schema addition |
+| P5 | Unknown commit handling: resolve when reachable, otherwise fail closed; never dispatch after an uncertain commit (section 6.3) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | Adopt; fault-proxy testing required |
+| P6 | Clearance in one bounded-memory transaction; batching only as a fallback; maximum size not yet chosen (section 9.1) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests | Adopt; measure on the supported platform |
+| P7 | Durability: native Linux, a local filesystem, and a power-loss or VM-crash test before any claim (section 16.1) | **NOT APPROVED** (17 November 2026): a mandatory, untested validation gate; not waived | Run the test (final readiness report) |
 
-**Still awaiting the product owner:**
-- the backup retention duration;
-- acceptance of the coordinated-snapshot and truncation risks;
-- the maximum supported installation size;
-- the full-verification interval (V2);
-- final approval of this revised design;
-- the production implementation scope.
+**Raised by Phase 0.5.** Raised as engineering recommendations; the **Status** column records the product owner's decisions:
+
+| # | Decision | Status | Recommendation |
+|---|---|---|---|
+| P8 | A database guard refusing any entry into `EXECUTING` not made through the journal protocol, created in the same migration as `InstallationState` (section 6.5) | **Approved in principle** (16 November 2026; confirmed 17 November), **subject to production validation** | The prototype trigger is a demonstration; production needs the integration tests in section 6.5 |
+| P8a | Separate the migration (owner) role from the runtime role, so the application can't disable the guard | **Approved in principle** (16 November 2026; confirmed 17 November), **subject to role and migration testing** | As part of, or before, P8 |
+| P8b | An audited emergency procedure to remove the guard when the application is incompatible | **Rejected** (16 November 2026; confirmed 17 November) | Upgrade the application instead (consistent with D7) |
+| V1 | Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1) | **Approved** (17 November 2026) | Explicit overflow and recovery tests are mandatory before production acceptance |
+| V2 | The full-verification schedule (section 6.2.2) | **Approved: 24 hours** (17 November 2026) | Plus start-up, before clearance, and after any identity or replacement inconsistency; any verification failure quarantines all API processes |
+| V3 | Clearance supersedes every current approval, whatever the action's status (section 9) | **Approved** (17 November 2026) | — |
+
+**Decision summary (17 November 2026).** The earlier dated records above are kept as history.
+
+- **Approved design decisions:**
+  - V1 (64 remembered claims, overflow fails closed);
+  - V2 (24-hour full verification, plus start-up, pre-clearance and inconsistency checks; any failure quarantines all API processes);
+  - V3 (clearance supersedes every current approval, whatever the action's status);
+  - P1–P6 as design direction.
+- **Approved in principle, subject to validation:**
+  - P8, subject to production validation;
+  - P8a, subject to role and migration testing.
+- **Provisional decisions with validation conditions:**
+  - backup retention 30 days: validate the storage capacity, and that journal retention covers the oldest restorable backup;
+  - installation size: 1,000,000 actions is the tested envelope, not a capacity guarantee; validate on the supported platform at twice the largest expected installation size.
+- **Rejected:** P8b (emergency removal of the guard).
+- **Outstanding mandatory validation gates:**
+  - **P7, native Linux durability: NOT APPROVED and NOT TESTED; not waived;**
+  - V1 overflow and recovery tests;
+  - production implementation review, security review and integration tests for P1–P6;
+  - production validation of P8, and role and migration testing for P8a.
+- **Accepted limitations of the single-host design** (section 17), not solved or protected against:
+  - coordinated database and journal snapshot rollback;
+  - truncation exactly to a trusted journal head;
+  - no independent external cryptographic anchor;
+  - no multi-host guarantee.
+- **Not given:**
+  - final approval of the design as a whole, which can't be given while P7 is open;
+  - authorisation of the production implementation scope.
 
 ## 19. Implementation milestones
 
@@ -1013,20 +1052,20 @@ Production implementation can't be authorised until every item is complete. Thre
 
 | # | Gate | Design | Prototype validation | Production integration testing |
 |---|---|---|---|---|
-| 1 | Final design approved | Revised (this document) | — | — (**awaiting the product owner**) |
+| 1 | Final design approved | Design decisions approved (17 November 2026); **final approval not given while P7 is open** | — | — (**awaiting the product owner**) |
 | 2 | P1: savepoint behaviour | Specified (§6) | Passed (Phase 0, two containers) | Not done |
 | 3 | P2: short-write handling | Specified (§6) | Passed (Phase 0, full disk) | Not done |
 | 4 | P3: database row lock as the journal mutex | Specified (§6.1) | Passed (Phase 0 and 0.5, one host) | Not done |
-| 5 | P4: incremental verification, and the full-verification schedule | Specified (§6.2); **schedule pending (V2)** | Passed up to 1,000,000 records (Phase 0.5) | Not done |
+| 5 | P4: incremental verification, and the full-verification schedule | Specified (§6.2); P4 approved as design direction; **V2 approved: 24 hours** | Passed up to 1,000,000 records (Phase 0.5) | Not done |
 | 6 | P5: unknown `COMMIT` resolution | Specified (§6.3), with failure classification | Passed, 5 wire-protocol scenarios (Phase 0.5) | Not done (the real driver mapping) |
-| 7 | P6: clearance, and invalidating every approval | Specified (§9, §9.1) | Clearance passed up to 1,000,000 actions; the every-approval rule (V3) **not yet tested** | Not done |
-| 8 | P7: native Linux durability | Specified (§16.1) | **NOT TESTED** | **NOT TESTED** |
-| 9 | P8: database-enforced downgrade protection | Specified (§6.5); **awaiting approval** | Passed as a demonstration trigger (Phase 0.5) | Not done (integration tests listed in §6.5) |
-| 10 | Bounded void memory (V1) | Specified (§6.2.1) | Bound used; the fail-closed path **not exercised** | Not done |
+| 7 | P6: clearance, and invalidating every approval | Specified (§9, §9.1); P6 approved as design direction; **V3 approved** | Clearance passed up to 1,000,000 actions; the every-approval rule (V3) **not yet tested** | Not done |
+| 8 | P7: native Linux durability | Specified (§16.1); **NOT APPROVED: mandatory gate, not waived** | **NOT TESTED:** no native Linux environment available (final readiness report) | **NOT TESTED** |
+| 9 | P8 and P8a: database-enforced downgrade protection, with separate roles | Specified (§6.5); **approved in principle**, subject to production validation (P8) and role and migration testing (P8a) | P8 passed as a demonstration trigger (Phase 0.5); P8a not tested | Not done (integration tests listed in §6.5) |
+| 10 | Bounded void memory (V1) | Specified (§6.2.1); **V1 approved** | Bound used; the fail-closed path **not exercised** | Not done: **overflow and recovery tests mandatory before production acceptance** |
 | 11 | Recovery and clone restrictions (D8, N8) | Specified (§7, §11) | Not tested (the new-installation path wasn't built) | Not done |
-| 12 | Backup retention selected | — | — | — (**awaiting the product owner**) |
-| 13 | Accepted risks explicitly approved: coordinated snapshot, truncation | Documented (§17) | Truncation shown undetected (Phase 0, case 15) | — (**awaiting the product owner**) |
-| 14 | Maximum installation size selected | — | Evidence up to 1,000,000 actions on one development machine | — (**awaiting the product owner**) |
+| 12 | Backup retention selected | **30 days, approved provisionally** | — | Not done: validate the storage capacity, and journal coverage of the oldest restorable backup |
+| 13 | Accepted risks explicitly approved: coordinated snapshot rollback, truncation to a trusted head, no external cryptographic anchor, no multi-host guarantee | **Accepted as limitations** (17 November 2026; §17) | Truncation shown undetected (Phase 0, case 15) | — (accepted limitations, not protections) |
+| 14 | Maximum installation size selected | **1,000,000 actions: the tested envelope, not a capacity guarantee** (17 November 2026) | Evidence up to 1,000,000 actions on one development machine | Not done: validate on the supported platform at twice the largest expected installation |
 | 15 | Production implementation scope explicitly approved | — | — | — (**awaiting the product owner**) |
 
 ---

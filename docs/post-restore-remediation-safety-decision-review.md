@@ -88,17 +88,17 @@ The isolated prototype was run, and its results are in [post-restore-remediation
 
 ### New technical decisions raised by Phase 0
 
-Each is an engineering recommendation awaiting explicit product-owner approval. The details are in the design sections cited.
+Each was raised as an engineering recommendation. The **Status** column records the product owner's decisions of 17 November 2026; the details are in the design sections cited.
 
 | # | Decision | Phase 0 basis | Recommendation | Status |
 |---|---|---|---|---|
-| P1 | Savepoint-based `void` handling | A failed statement released the lock. The chain forked in both first two-container runs, and B1 saw 266 spurious refusals. With the savepoint, both runs were clean | Adopt (design §6, step 5) | **Awaiting approval** |
-| P2 | Short-write protection | `fs.writeSync` wrote 343 of 461 bytes on a full disk without throwing | Adopt (design §6) | **Awaiting approval** |
-| P3 | Journal mutex | Row lock: 626 claims, intact, no deadlocks. `flock`: the inherited-descriptor hazard | The `InstallationState` row lock; no `flock` (design §6.1) | **Awaiting approval** |
-| P4 | Incremental verification | Full verification took 162 ms per claim at 100,000 records | Per-process cache, inode and shrink checks, re-hash of the last record, mandatory full checks, the head hash anchored in the database (design §6.2) | **Awaiting approval** (not prototyped) |
-| P5 | Unknown commit result | Not tested | Resolve by reading the locked database state; otherwise fail closed; never dispatch after an uncertain commit; no automatic "heal" (design §6.3) | **Awaiting approval** (needs fault-proxy testing) |
-| P6 | Large-installation clearance | 100,000 actions: 1.7 s, 389 MB in one transaction | One transaction, bounded in memory (digest in the database, set-based updates, journal streamed in chunks); batching as a fallback; no maximum size chosen (design §9.1) | **Awaiting approval** |
-| P7 | Native Linux durability validation | Docker Desktop only; inconclusive | A native Linux, local-filesystem, power-loss or VM-crash test before any durability claim (design §16.1) | **Awaiting approval** |
+| P1 | Savepoint-based `void` handling | A failed statement released the lock. The chain forked in both first two-container runs, and B1 saw 266 spurious refusals. With the savepoint, both runs were clean | Adopt (design §6, step 5) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P2 | Short-write protection | `fs.writeSync` wrote 343 of 461 bytes on a full disk without throwing | Adopt (design §6) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P3 | Journal mutex | Row lock: 626 claims, intact, no deadlocks. `flock`: the inherited-descriptor hazard | The `InstallationState` row lock; no `flock` (design §6.1) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P4 | Incremental verification | Full verification took 162 ms per claim at 100,000 records | Per-process cache, inode and shrink checks, re-hash of the last record, mandatory full checks, the head hash anchored in the database (design §6.2) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P5 | Unknown commit result | Not tested | Resolve by reading the locked database state; otherwise fail closed; never dispatch after an uncertain commit; no automatic "heal" (design §6.3) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P6 | Large-installation clearance | 100,000 actions: 1.7 s, 389 MB in one transaction | One transaction, bounded in memory (digest in the database, set-based updates, journal streamed in chunks); batching as a fallback; no maximum size chosen (design §9.1) | **Approved design direction** (17 November 2026), subject to production implementation review, security review and integration tests |
+| P7 | Native Linux durability validation | Docker Desktop only; inconclusive | A native Linux, local-filesystem, power-loss or VM-crash test before any durability claim (design §16.1) | **NOT APPROVED** (17 November 2026): a mandatory, untested validation gate; not waived |
 
 **Accepted risks and deferred items, unchanged:**
 - **Coordinated snapshot or journal truncation:** undetected, now demonstrated (case 15).
@@ -110,7 +110,7 @@ Each is an engineering recommendation awaiting explicit product-owner approval. 
 - The journal is kept at least as long as the oldest restorable database backup.
 - The off-host copy is read-only.
 - The journal is never restored together with the database.
-- The **absolute backup retention duration is still awaiting product-owner selection.**
+- The absolute backup retention duration was awaiting product-owner selection on 16 November. **On 17 November, 30 days was approved provisionally,** subject to validating the storage capacity and that journal retention covers the oldest restorable backup.
 
 **Readiness gate:** design §19, "Production readiness gate".
 
@@ -118,27 +118,56 @@ Each is an engineering recommendation awaiting explicit product-owner approval. 
 
 A second isolated prototype was run: [post-restore-remediation-safety-phase05-validation-report.md](post-restore-remediation-safety-phase05-validation-report.md), on Docker Desktop on Apple silicon only.
 
-**No status above changes:** D1–D11 and N1–N11 keep the statuses in "Decision outcome", and every P or V item awaits explicit product-owner approval. The columns below are kept strictly apart:
-- **Approved in principle:** a product-owner status.
+**D1–D11 and N1–N11 keep the statuses in "Decision outcome".** The P and V items were decided by the product owner on 17 November 2026; the decisions are recorded below this table. The columns are kept strictly apart:
+- **Product-owner status:** approved, approved in principle, rejected or not approved.
 - **Proposed technical design:** an engineering recommendation.
 - **Experimentally validated:** passed in a prototype, not in production.
 - **Not tested.**
+- **Outstanding condition:** what must still happen before production acceptance.
 
-| Item | Approved in principle? | Proposed technical design | Experimentally validated | Not tested | Awaiting product-owner approval |
+| Item | Product-owner status (17 November 2026) | Proposed technical design | Experimentally validated | Not tested | Outstanding condition |
 |---|---|---|---|---|---|
-| P1: savepoint-held `void` | No | Design §6, step 5 | Phase 0 (two containers) | Production integration | **Yes** |
-| P2: short-write protection | No | Design §6 | Phase 0 (full disk) | Production integration | **Yes** |
-| P3: row lock as the journal mutex | No | Design §6.1 | Phase 0 and 0.5 (one host) | Multi-host (not supported); production integration | **Yes** |
-| P4: incremental verification, database head anchor | No | Design §6.2; the last record re-hashed **from its content** | Phase 0.5: 100,000 to 1,000,000 records; per-claim p50 ≈ 0.05 ms, p99 ≤ 0.45 ms; full verification 1.37 s and 106 MB at 1,000,000 records (235 MB); a same-head replacement caught only by the anchor | Production integration | **Yes** |
-| P5: unknown `COMMIT` resolution | No | Design §6.3, with classification before, inside and after the transaction callback | Phase 0.5: 5 wire-protocol fault scenarios | The real driver's error mapping; production integration | **Yes** |
-| P6: one bounded-memory clearance transaction | No | Design §9.1 | Phase 0.5: 100,000 actions in 0.92 s / 147 MB; 1,000,000 in 10.3 s / 246 MB; 6 failure scenarios fully cleared or unchanged; claims waited for the whole clearance; routes at most 2.9 s | Larger installations; production integration | **Yes** |
-| P7: native Linux durability | No | Design §16.1 (environment, procedure, expected results) | — | **Native Linux and power loss: NOT TESTED** | **Yes** |
-| **P8: database-enforced downgrade protection** | No | Design §6.5 | Phase 0.5: a demonstration trigger refused an older application's claim, with no effect on newer claims or the sweep | Older real application builds, migration atomicity, role separation, overhead | **Yes** |
-| P8a: separate migration and runtime roles | No | Design §6.5 | — | Everything | **Yes** |
-| P8b: emergency removal of the guard | No | Design §6.5: recommended none | — | — | **Yes** |
-| V1: bounded void memory (64) | No | Design §6.2.1 | The bound was used; the fail-closed path **not exercised** | The fail-closed path | **Yes** |
-| V2: full-verification schedule | No | Design §6.2.2: options, with a daily background check suggested as a starting point | Full-verification cost measured | — | **Yes: the interval is not chosen** |
-| V3: supersede every current approval at clearance | No | Design §9, rule 1 | **Not tested.** Phase 0.5 found the gap that motivates it | Everything | **Yes** |
+| P1: savepoint-held `void` | Approved design direction | Design §6, step 5 | Phase 0 (two containers) | Production integration | Implementation review, security review, integration tests |
+| P2: short-write protection | Approved design direction | Design §6 | Phase 0 (full disk) | Production integration | Implementation review, security review, integration tests |
+| P3: row lock as the journal mutex | Approved design direction | Design §6.1 | Phase 0 and 0.5 (one host) | Multi-host (not supported); production integration | Implementation review, security review, integration tests |
+| P4: incremental verification, database head anchor | Approved design direction | Design §6.2; the last record re-hashed **from its content** | Phase 0.5: 100,000 to 1,000,000 records; per-claim p50 ≈ 0.05 ms, p99 ≤ 0.45 ms; full verification 1.37 s and 106 MB at 1,000,000 records (235 MB); a same-head replacement caught only by the anchor | Production integration | Implementation review, security review, integration tests |
+| P5: unknown `COMMIT` resolution | Approved design direction | Design §6.3, with classification before, inside and after the transaction callback | Phase 0.5: 5 wire-protocol fault scenarios | The real driver's error mapping; production integration | Implementation review, security review, integration tests (the real driver mapping) |
+| P6: one bounded-memory clearance transaction | Approved design direction | Design §9.1 | Phase 0.5: 100,000 actions in 0.92 s / 147 MB; 1,000,000 in 10.3 s / 246 MB; 6 failure scenarios fully cleared or unchanged; claims waited for the whole clearance; routes at most 2.9 s | Larger installations; production integration | Implementation review, security review, integration tests |
+| P7: native Linux durability | **NOT APPROVED**: a mandatory, untested gate | Design §16.1 (environment, procedure, expected results) | — | **Native Linux and power loss: NOT TESTED** | The native Linux durability test (not waived) |
+| **P8: database-enforced downgrade protection** | Approved in principle (confirmed) | Design §6.5 | Phase 0.5: a demonstration trigger refused an older application's claim, with no effect on newer claims or the sweep | Older real application builds, migration atomicity, role separation, overhead | Production validation |
+| P8a: separate migration and runtime roles | Approved in principle (confirmed) | Design §6.5 | — | Everything | Role and migration testing |
+| P8b: emergency removal of the guard | **Rejected** | Design §6.5 | — | — | — |
+| V1: bounded void memory (64) | **Approved** | Design §6.2.1 | The bound was used; the fail-closed path **not exercised** | The fail-closed path | Overflow and recovery tests, mandatory before production acceptance |
+| V2: full-verification schedule | **Approved: 24 hours** | Design §6.2.2: **24 hours**, plus start-up, before clearance, after inconsistencies; immediate quarantine on failure | Full-verification cost measured | The quarantine column and the locked confirmation | Integration tests: any failure quarantines all API processes |
+| V3: supersede every current approval at clearance | **Approved** | Design §9, rule 1 | **Not tested.** Phase 0.5 found the gap that motivates it | Everything | Integration tests |
+
+**Product-owner statuses recorded on 16 November 2026** (from the M16 final approval preparation brief):
+- **P8 and P8a:** approved in principle, not production-validated.
+- **P8b:** rejected.
+- **V2:** a 24-hour interval proposed, awaiting confirmation.
+- **Backup retention:** 30 days proposed. **A proposal only, not approved.**
+- **V3:** pending. The decision brief is in the [final readiness report](post-restore-remediation-safety-final-readiness-report.md).
+- **P1–P7 and V1:** still awaiting approval.
+
+**Product-owner decisions recorded on 17 November 2026.** These supersede the open items above; the 16 November list is kept as history.
+- **Approved design decisions:**
+  - **V1:** 64 remembered claims; overflow fails closed. Explicit overflow and recovery tests are mandatory before production acceptance.
+  - **V2:** full verification every 24 hours, plus start-up, pre-clearance and identity or replacement inconsistency checks. Any verification failure quarantines all API processes.
+  - **V3:** clearance supersedes every current approval, whatever the action's status.
+  - **P1–P6:** approved design direction, subject to production implementation review, security review and integration tests.
+- **Approved in principle, with conditions:**
+  - **P8,** subject to production validation;
+  - **P8a,** subject to role and migration testing.
+- **Rejected:** **P8b.**
+- **Provisional decisions with validation conditions:**
+  - **Backup retention: 30 days,** approved provisionally. Validate the storage capacity, and that journal retention covers the oldest restorable backup.
+  - **Installation size:** 1,000,000 actions is the tested envelope, not a capacity guarantee. Validate on the supported platform at twice the largest expected installation size.
+- **Outstanding mandatory validation gate:** **P7 is NOT APPROVED.** Native Linux durability remains untested, and it is not waived.
+- **Accepted limitations** of the single-host design, not solved or protected against:
+  - coordinated database and journal snapshot rollback;
+  - truncation exactly to a trusted journal head;
+  - no independent external cryptographic anchor;
+  - no multi-host guarantee.
 
 **Revised technical assessments:**
 - **N9 (no downgrades, approved in principle) is not enforceable as a policy alone.** Phase 0.5 shows an older application executing while ignoring the journal, with the installation still trusted. P8 is the proposed enforcement.
@@ -516,13 +545,22 @@ Even after the design and this review:
 
 **Decided on 16 November 2026:** see "Decision outcome" above.
 
+**Decided on 17 November 2026:** see "Product-owner decisions recorded on 17 November 2026" above. In short:
+- V1, V2, V3 and P1–P6 (as design direction) approved;
+- P8 and P8a approved in principle, with conditions;
+- P8b rejected;
+- backup retention (30 days) and the installation-size envelope approved provisionally;
+- the four limitations accepted.
+
 **Still open:**
-- the absolute backup retention duration;
-- acceptance of the coordinated-snapshot and truncation risks;
-- the maximum supported installation size;
-- the full-verification interval (V2);
-- P1 to P8, P8a, P8b, V1 and V3 (above);
-- final approval of the design as revised after Phase 0.5;
+- **P7, native Linux durability:** not approved, untested, not waived;
+- the validation conditions of the decisions above:
+  - the V1 overflow and recovery tests;
+  - implementation review, security review and integration tests for P1–P6;
+  - production validation of P8, and role and migration testing for P8a;
+  - the storage and journal-coverage checks for retention;
+  - the supported-platform tests at twice the largest expected installation;
+- final approval of the design as a whole (not given while P7 is open);
 - explicit approval of the production implementation scope (design §19, the 15-item readiness gate).
 
 **As originally listed for decision:**
