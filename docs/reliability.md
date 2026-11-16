@@ -152,7 +152,7 @@ These are product security policies, enforced in code and covered by tests. They
   Sending back for review compares the action's content fingerprint (what it says, its risk included), not only its stored approval fingerprint, which a `PROPOSED` action does not have. So an edit made meanwhile is detected, and a risk is only ever raised from the one stored. What is not locked: reading an action and the organisation's settings to decide what to do. Every write that follows is conditional or keeps the higher value, and the execution claim reads the settings under a share lock.
 - **Audit records match what happened.** Sending an action back for review, invalidating its approvals and superseding expired ones happen in one transaction under the lock, and only if the action has not moved on. If it has, nothing changes, the request is refused, and nothing is audited. The audit records the number of approvals actually superseded, the risk actually found and applied, and, at execution, the status the action actually moved to (`newStatus`). Existing audit entries are never changed.
 
-  Limit: the audit is written after the transaction commits, and audit writes are best-effort (a failure is logged, not retried). So a transition can be recorded with no audit entry if that write fails. An audit entry is never written for a transition that did not commit. See "Audit durability" below for the assessment and the recommendation.
+  The audit row is written in the same transaction as the transition: if it cannot be written, the transition rolls back (see "Audit durability" below).
 - **Submission checks content under the lock.** Submitting stores the approval fingerprint computed from the copy the submitter read. Under the row lock the action is read again; if its content fingerprint differs, because of an edit or a risk change in the meantime, the submission is refused (409) and nothing is stored.
 
 ### Approval validity: a security policy
@@ -163,24 +163,41 @@ An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This i
 - **An expired approval stays expired.** It is superseded when found: it stays on record, never counts again whatever any clock says later, and its approver may decide again. Repeating an old approve request does not revive it either: it is a new approval, made now, by a signed-in person, for the fingerprint the action has now. The action returns to `PENDING_APPROVAL`. The audit records the time of each expired approval and the cutoff (`remediation.approval_expired`).
 - **Approvals are never extended.**
 
-### Audit durability: assessment
+### Audit durability
 
-**Question.** Should remediation audit events go through a transactional outbox?
+**Policy.** A security-relevant remediation transition commits together with its audit row, or not at all. Informational events stay best-effort.
 
-**Finding.** No. An outbox exists to deliver events reliably to another system: write the event in the same transaction as the change, and have a separate process deliver it, with retries and deduplication. Here the audit log is a table in the same PostgreSQL database as the actions. There is nothing to deliver. Durability needs only that the audit row be inserted in the same transaction as the transition. `writeAudit` already accepts a transaction client.
+**How.** `auditIn(tx, entry)` (`lib/audit.ts`) inserts the row through the transaction client of the change it records. It does not catch errors: a failed insert aborts the PostgreSQL transaction, the error reaches the transaction's owner, and everything the transaction did is rolled back. The functions in `remediation/approvals.ts` and `recordOutcome` take an optional transaction client, so a route runs the change and its audit row in one transaction. No transaction is nested, and the lock order is unchanged (the action row, then the settings row if read, then approvals, then the audit row). An outbox was not used: the audit log is a table in the same database, so there is nothing to deliver.
 
-| | Today | Recommended next step (not implemented here) |
+**Durable (same transaction; a failed audit write rolls the transition back):**
+
+| Transition | Audit event | If the audit write fails |
 |---|---|---|
-| Write | After the transition commits, best-effort | In the same transaction as the transition, for the transitions below |
-| If the audit write fails | The transition stands with no audit entry; the failure is logged | The transition rolls back: no unaudited transition |
-| Delivery, retries, deduplication | Not needed | Not needed: one database, one transaction |
-| Tenant isolation | `organizationId` on every row | Unchanged |
-| Sensitive data | Metadata is built from field names, categories and hashes (see "Failures never name the destination") | Unchanged: the same metadata, written earlier |
-| Consumers | The audit log page and exports read `AuditLog` | Unchanged: same table, same shape |
+| Submit for approval | `remediation.request_approval` | Stays `PROPOSED`, no fingerprint stored |
+| Approve | `remediation.approve` | No approval recorded, status unchanged |
+| Reject | `remediation.reject` | No rejection recorded, still `PENDING_APPROVAL` |
+| Approvals expired (at approval) | `remediation.approval_expired` | Approvals not superseded |
+| Approvals expired (at execution) | `remediation.approval_expired` | Not superseded, not sent back: superseding, stepping back and the audit row are one transaction |
+| Approvals invalid at execution | `remediation.approval_invalid` | Still `APPROVED`, approvals still on record as they were |
+| Too few approvals at execution | `remediation.approval_insufficient` | Status unchanged |
+| Sent back for review (risk raised, fingerprint stale, destination changed, source no longer sound) | `remediation.risk_raised`, `approval_fingerprint_outdated`, `approval_invalid`, `source_review_required` | Nothing superseded, nothing changed |
+| Edit | `remediation.edit` | Content and approvals unchanged |
+| Execution claim | `remediation.execute_start` (or `approval_insufficient` when the claim finds too few) | Not claimed: no attempt counted and nothing dispatched, because dispatch starts only after the claim commits |
+| Outcome | `remediation.execute_success` / `execute_failure` | Outcome not stored; the action stays `EXECUTING` and the sweep later records it as `unknown` for a person to reconcile, never as done or failed |
+| Interrupted execution (sweep) | `remediation.execute_interrupted` | Stays `EXECUTING`; the next sweep tries again; other actions are still swept |
+| Reconcile | `remediation.reconcile` | Decision not recorded |
+| Retry | `remediation.retry` | Not authorised: stays `FAILED` |
+| Cancel | `remediation.cancel` | Not cancelled |
+| Settings (webhook address and secret, approval thresholds, self-approval) | `settings.update` | Settings unchanged |
 
-**Transitions that would warrant it:** an approval or rejection recorded, approvals superseded (edit, expiry, invalidation, sent back for review), the execution claim (`execute_start`), the recorded outcome, a reconciliation, and a retry.
+A failed audit write surfaces as an error (HTTP 500) and nothing is left half-done. A webhook request already sent before its outcome was stored stays as it was: the outcome is then unknown, which is how the system treats it.
 
-**Why it is not done in this change.** It makes a transition fail when its audit cannot be written. That is the right trade for these transitions, but it is a behaviour change, and it means threading the request's actor and metadata into each transaction in `approvals.ts`. No failure of an audit write has been observed. It is recorded here as a recommendation for the owner to decide. An outbox would become appropriate only if audit events had to reach an external system.
+**Best-effort (written after the change, a failure is logged and the request succeeds):**
+- `remediation.propose`: creating a proposal changes nothing, and the action itself records who proposed it.
+- `remediation.outcome_after_interruption`: there is no transition to roll back; the late outcome is also on the incident timeline.
+- Every audit event outside remediation and settings (sign-in, services, incidents, knowledge, postmortem drafting and so on).
+
+**Tests.** `apps/api/tests/audit-durability.test.ts` makes audit inserts fail for real, with a PostgreSQL trigger on `AuditLog` limited to one organisation and one action name. For each durable transition it checks that the state did not change, nothing was dispatched, and the transition succeeds once audits can be written again. It also checks that a proposal is still created when its audit cannot be written. With `auditIn` turned back into a best-effort write, every durable case fails.
 
 ### Execution, outcome and reconciliation
 
