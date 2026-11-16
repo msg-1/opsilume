@@ -9,7 +9,7 @@ import { prisma } from '../../lib/prisma';
 import { type AuthContext, authOf, can, requirePermission, requireUser, userOf } from '../../middleware/auth';
 import { addIncidentEvent } from '../incidents';
 import { getSettings } from '../organization';
-import { awaitMoreApprovals, databaseNow, invalidateApproval, isExpired, lockAction, recordApproval, recordRejection, submitForApproval, supersedeApprovals, supersedeExpired, validApprovals } from './approvals';
+import { awaitMoreApprovals, claimExecution, databaseNow, raiseRequiredApprovals, invalidateApproval, isExpired, lockAction, recordApproval, recordRejection, submitForApproval, supersedeApprovals, supersedeExpired, validApprovals } from './approvals';
 import { approvalHash, contentHash, executionTarget, legacyApprovalHash } from './content';
 import { RISK_ORDER, approvalThreshold, effectOf, effectiveRisk, requiredApprovals } from './effect';
 import { execute } from './execution';
@@ -151,10 +151,9 @@ remediationRouter.post('/:id/approve', requirePermission('remediation:approve'),
     throw forbidden('You cannot approve an action that you proposed or requested');
   }
   if (action.approvals.some((a) => a.approverId === auth.userId && !a.supersededAt)) throw conflict('You have already recorded a decision on this action');
-  // The threshold is worked out from the risk as it is now, not read from the row alone.
-  const required = approvalThreshold(settings, action);
-  if (required !== action.requiredApprovals) await prisma.remediationAction.updateMany({ where: { id: action.id, status: 'PENDING_APPROVAL', contentHash: hash }, data: { requiredApprovals: required } });
-  const result = await recordApproval({ id: action.id, requiredApprovals: required }, auth.userId, hash, comment);
+  // The threshold is worked out from the risk as it is now; recordApproval applies it under the lock, never lowering the stored one.
+  const result = await recordApproval({ id: action.id, requiredApprovals: approvalThreshold(settings, action) }, auth.userId, hash, comment);
+  const { required } = result;
   await audit(req, 'remediation.approve', 'remediation_action', action.id, { granted: result.granted, required, risk: action.risk, comment, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true } : {}) });
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `${auth.label} approved: ${action.title} (${result.granted}/${required})`, auth, { actionId: action.id });
   if (result.approved) {
@@ -186,7 +185,8 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
   // The effect is recomputed, not trusted from the row: text that now reads as state-changing is treated as such.
   const current = await effectOf(auth.organizationId, action);
   if (readOnly && current.effect !== 'read_only') {
-    await prisma.remediationAction.update({ where: { id: action.id }, data: { effect: 'state_changing', effectReasons: current.reasons, requiredApprovals: Math.max(1, action.requiredApprovals) } });
+    await prisma.remediationAction.update({ where: { id: action.id }, data: { effect: 'state_changing', effectReasons: current.reasons } });
+    await raiseRequiredApprovals(action.id, 1);
     throw conflict('This action is no longer a read-only diagnostic and now needs approval.');
   }
   const settings = await getSettings(auth.organizationId);
@@ -250,12 +250,15 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
       throw badRequest('No remediation webhook is configured. Carry out the action yourself, then confirm with confirmManual: true.');
     }
   }
-  // Claim the action atomically so it cannot be executed twice, and only with the content that was checked.
-  const claimed = await prisma.remediationAction.updateMany({
-    where: { id: action.id, status: action.status, ...(readOnly ? {} : { contentHash: approvedHash }) },
-    data: { status: 'EXECUTING', executedById: auth.userId, attempts: { increment: 1 } },
-  });
-  if (!claimed.count) throw conflict('This action is already being executed');
+  // Claim the action atomically so it cannot be executed twice, only with the content that was
+  // checked, and only if enough approvals count under the settings as they are at this moment.
+  const claim = await claimExecution(action.id, auth.organizationId, action.status, readOnly ? null : approvedHash, auth.userId);
+  if (!claim.claimed && claim.reason === 'moved_on') throw conflict('This action is already being executed, or changed since it was checked. Reload it. Nothing was executed.');
+  if (!claim.claimed) {
+    await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: claim.valid, required: claim.required, recorded: action.requiredApprovals, newStatus: claim.newStatus, stage: 'claim' });
+    throw conflict(`This ${action.risk.toLowerCase()}-risk action needs ${claim.required} approvals and has ${claim.valid}. It is waiting for approval again; nothing was executed.`);
+  }
+  if (!readOnly) approvers = claim.approvers;
   const mode = readOnly ? 'diagnostic' : settings.remediationWebhookUrl ? 'webhook' : 'manual';
   await audit(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, approvalHash: readOnly ? null : approvedHash, attempt: action.attempts + 1, approvedBy: approvers.map((a) => a.approverId), approvedAt: approvers.map((a) => a.approvedAt.toISOString()), ...(sourceState ? { sourceRequired: sourceState.required, sourceVerified: sourceState.verified, ...(sourceState.required && !sourceState.verified ? { approvedOnAcknowledgedReview: true } : {}) } : {}) });
 

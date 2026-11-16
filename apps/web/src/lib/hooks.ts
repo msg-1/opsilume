@@ -2,6 +2,7 @@
 
 import { useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useState } from 'react';
+import { ApiError } from './api';
 
 /**
  * Runs a mutation with busy/error state and then refreshes every cached API query, so lists,
@@ -21,6 +22,8 @@ export function useAction() {
         return result;
       } catch (err) {
         setError(err);
+        // A conflict means what is on screen is out of date: show the current state at once. Nothing is sent again.
+        if (err instanceof ApiError && err.status === 409) await client.invalidateQueries({ queryKey: ['api'] });
         return undefined;
       } finally {
         setBusy(null);

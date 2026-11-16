@@ -603,6 +603,28 @@ describe('approving a remediation', () => {
     expect(screen.getByText('Pods show the restart.')).toBeInTheDocument();
   });
 
+  it('after a conflict, shows the message and the current state at once, and sends nothing again', async () => {
+    let current: RemediationDetail = remediation;
+    const api = fakeApi({
+      'GET /remediations/act-1': () => current,
+      'POST /remediations/act-1/approve': () => {
+        // Someone else approved it a moment earlier.
+        current = { ...remediation, status: 'APPROVED', approvalsGranted: 1 };
+        return apiError(409, 'conflict', 'This action is not awaiting approval (current status: APPROVED)');
+      },
+    });
+    show(<RemediationDetailPage />, ada);
+    await userEvent.click(await screen.findByRole('button', { name: 'Approve' }));
+    const reads = () => api.calls.filter((c) => c.method === 'GET' && c.path === '/remediations/act-1').length;
+    const before = reads();
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Approve' }));
+    expect((await screen.findAllByText('This action is not awaiting approval (current status: APPROVED)')).length).toBeGreaterThan(0);
+    // Refetched straight away, not at the next timed refresh, and the page now shows the approved action.
+    await waitFor(() => expect(reads()).toBeGreaterThan(before));
+    await waitFor(() => expect(within(screen.getByRole('list', { name: 'Approval progress' })).getByText('Approved')).toHaveAttribute('aria-current', 'step'));
+    expect(api.writes()).toHaveLength(1);
+  });
+
   it('asks for nothing extra when the investigation still supports the change', async () => {
     fakeApi({ 'GET /remediations/act-1': remediation });
     show(<RemediationDetailPage />, ada);
