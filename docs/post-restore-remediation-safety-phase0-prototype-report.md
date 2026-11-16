@@ -1,0 +1,349 @@
+# Post-restore remediation safety: Phase 0 prototype report
+
+Milestone 16, Phase 0. A time-boxed prototype, on an isolated stack, of the design in [post-restore-remediation-safety-design.md](post-restore-remediation-safety-design.md), as decided in [post-restore-remediation-safety-decision-review.md](post-restore-remediation-safety-decision-review.md).
+
+- **Code:** [`prototype/m16-phase0/`](../prototype/m16-phase0/), on branch `prototype/m16-recovery-safety-phase0`.
+- **Raw results:** `prototype/m16-phase0/results/`.
+- **Status:** this validates the design. **It does not authorise production implementation.** Nothing here is wired into the application.
+
+**Result classes used below:**
+- **Successfully tested:** run, and behaved as the design requires.
+- **Failed:** run, and did not behave as required.
+- **Partially tested.**
+- **Not tested.**
+- **Inconclusive.**
+
+## 1. Executive summary
+
+**Recommendation: proceed to revise the production design, not to implement it yet.**
+
+The prototype supports the architecture's core claim, on this environment:
+- **An unwanted repeat was prevented.** A real `pg_dump`/`pg_restore` of the prototype database brought an executed action back as `APPROVED`. The claim was refused, inspection listed exactly the three executions made after the backup, and clearance sent them to reconciliation. **The receiver got no second request.**
+- **Every corruption case failed closed.** All 16 corruption and identity cases behaved as the rules say: anything inconsistent refused the claim, and a torn tail was ignored and repaired without truncation.
+- **No crash ever led to an automatic retry.** A crash at each of the 11 execution boundaries never made a retry possible, and never turned an unknown outcome into a known one.
+
+It also found **two defects that would have broken the design's guarantees.** Both are fixed in the prototype and must be explicit in the production design:
+
+1. **"Append the void while the lock is still held" is impossible as the design states it.**
+   - **What happens:** when a statement fails inside a transaction, PostgreSQL aborts the transaction and releases its locks at once.
+   - **Consequence:** with two containers this forked the hash chain (the journal was corrupt in both first runs) and caused 266 spurious "quarantined" refusals.
+   - **Fix:** a savepoint taken after the lock keeps it. With that, the runs were clean: zero forks, zero spurious refusals.
+2. **A full disk produces a short write, not an error.**
+   - **What happens:** Node's `fs.writeSync` returned fewer bytes than the record, and the append looked successful while leaving a torn record.
+   - **Fix:** the writer must check the number of bytes written.
+
+**Further findings that change the design:**
+- **Verification cost grows with the journal.** The prototype re-reads and re-verifies the whole journal on every claim (about 162 ms at 100,000 records). Production needs incremental verification.
+- **Clearance at 100,000 actions** took 1.7 s in one transaction, with a peak of 389 MB in the process.
+- **`flock` releases only if no child process inherited the descriptor.**
+
+**What was not tested:**
+- durability through a real power loss, and on a native Linux host;
+- an unknown commit result;
+- multi-host operation;
+- the new-installation path (D8);
+- an off-host journal copy.
+
+The measurements are from one Docker Desktop installation on Apple silicon. They say nothing about other environments.
+
+## 2. Prototype architecture
+
+All of the following is prototype code, in `prototype/m16-phase0/`:
+
+| Part | What it does |
+|---|---|
+| `lib/journal.mjs` | Hash-chained JSON lines (`claim`, `void`, `dispatch`, `outcome`, `reconciled`, `cleared`, `repair`), written with one `O_APPEND` write and an `fsync` each. Verification enforces the chain, the claim sequence (head + 1), void-of-latest, and the torn-tail rule (N1). The trust check compares the identity and the heads (design §6) |
+| `lib/proto.mjs` | The lifecycle. The claim takes the `installation_state` row lock **first** (N5), compares, locks the action, takes a **savepoint**, appends `claim`, and writes. On failure it rolls back to the savepoint, appends `void` and rethrows. After commit: `dispatch` record, then the request to the receiver, then the outcome in the database, then the `outcome` record. Also: the sweep, reconcile, `inspect` (with digest, N4) and `clear` (lock first, digest compare-and-set, rules, audit per organisation, `cleared` record before commit) |
+| Journal mutex | **Every** append happens under the `installation_state` row lock (a database lock), not `flock` (see deviation 1) |
+| `receiver.mjs` | A local stand-in that records requests; it can delay its answer |
+| Crash points | `SIGKILL` of the process at `before_claim`, `after_claim_append`, `after_commit`, `after_dispatch_record`, `after_send`, `after_response`, `after_outcome_db` and `after_cleared_record` |
+
+The prototype has its own minimal schema, not the application's: `org`, `action`, `approval`, `audit`, and a single-row `installation_state` created empty.
+
+## 3. Environment and reproducibility
+
+| Item | Value |
+|---|---|
+| Host | macOS 26.2, Apple silicon (arm64), 10 CPUs |
+| Docker | Docker Desktop, engine 29.2.1. VM kernel `6.12.76-linuxkit`, 8 GB for the VM, overlayfs storage driver |
+| Journal storage measured | A named Docker volume: **ext4 on the VM's virtual disk `/dev/vda1`** (`rw,relatime,discard`). Also the container overlay, and `tmpfs` |
+| Runtime | Image `opspilot-isolated-api:latest` (Debian 12, Node 22.23.5, Prisma client 6.19.3), reused unchanged. Containers run as root inside the prototype only |
+| Database | `postgres:16-alpine`, default settings, its own volume |
+| Isolation | Compose project `opspilot-m16-proto`. **Internal** network, no published ports, its own volumes. Experiment A used `--network none` |
+| How to reproduce | `prototype/m16-phase0/README.md` (commands); results in `results/` |
+
+Sample sizes are given in each table. Latency is measured in-process with `process.hrtime`.
+
+## 4. Experiment A: flush latency and durability
+
+**Raw append (a ~220-byte record, `open`/`write`/`close`), n = 2,000 per row, milliseconds:**
+
+| Storage | Flush | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| Docker volume (ext4 on the VM disk) | none | 0.003 | 0.004 | 0.014 | 0.665 |
+| Docker volume | `fdatasync` | 0.267 | 0.454 | 0.622 | 3.308 |
+| Docker volume | `fsync` | 0.259 | 0.449 | 0.559 | 2.512 |
+| Container overlay | `fsync` | 0.258 | 0.424 | 0.526 | 1.027 |
+| `tmpfs` | `fsync` | 0.002 | 0.002 | 0.003 | 0.047 |
+
+**The prototype's whole append** (it re-parses the file to find the last hash, then appends and `fsync`s), as the journal grows:
+
+| Journal size | n | p50 | p95 | p99 | max |
+|---|---|---|---|---|---|
+| lines 1–250 | 250 | 0.43 | 0.76 | 0.91 | 1.66 |
+| lines 251–500 | 250 | 0.72 | 1.08 | 1.29 | 1.44 |
+| lines 501–1,000 | 500 | 1.19 | 2.19 | 2.73 | 3.90 |
+
+**Concurrent writers.** Several processes appended 2,000 records in total, each with `O_APPEND` and an `fsync`, and no lock:
+
+| Writers | Records per second | Records intact |
+|---|---|---|
+| 1 | 3,503 | 2,000 / 2,000 |
+| 2 | 3,993 | 2,000 / 2,000 |
+| 4 | 6,714 | 2,000 / 2,000 |
+| 8 | 8,945 | 2,000 / 2,000 |
+
+No record was interleaved or torn.
+
+**Verification (parse) cost of a whole journal, n = 5 each:**
+
+| Records | Size | p50 | max |
+|---|---|---|---|
+| 1,000 | 252 KB | 1.3 ms | 1.4 ms |
+| 10,000 | 2.5 MB | 13.8 ms | 14.1 ms |
+| 100,000 | 25.6 MB | 162 ms | 169 ms |
+
+**Full disk** (a 64 KiB `tmpfs`):
+- 133 records were appended; the 134th was a **short write** of 343 of 461 bytes.
+- **The first run counted that write as a success.** That was a defect, fixed by checking the bytes written. The original run is kept as `results/exp-a-before-short-write-fix.json`.
+- After the fix: the error is `JOURNAL_SHORT_WRITE`, and the journal is `torn_tail` with head 133, so the unwritten record doesn't count. Further appends are refused (`JOURNAL_TORN`) until repaired.
+
+**Unavailable storage:**
+
+| Case | Result |
+|---|---|
+| Read-only filesystem | Provisioning fails |
+| Journal file deleted while in use | The next append refuses (`JOURNAL_MISSING`) and does **not** recreate the file |
+| Root-owned journal opened as uid 1000 | `EACCES` |
+
+| Item | Classification |
+|---|---|
+| Append latency with and without flush, percentiles | **Successfully tested** (this environment only) |
+| Throughput with increasing concurrency | **Successfully tested** (raw appends); for claims see B |
+| Full disk | **Successfully tested**, after fixing a defect it exposed |
+| Storage unavailable (read-only, deleted, permission) | **Successfully tested** |
+| Durability: does `fsync` reach stable storage? | **Inconclusive.** A p50 of 0.26 ms through a VM's virtual disk is consistent with the flush stopping at the host's cache. No power-loss test was possible |
+| Native Linux host | **Not tested** |
+
+## 5. Experiment B: two API containers sharing the journal
+
+Two containers (`api1` and `api2`) run the claim path against one database and one shared state volume. Each successful claim is followed by a `dispatch` record. Every 25th own claim is made to fail its audit insert (a rollback).
+
+| Run | Claims | Rollbacks (voided) | Journal | Duplicate sequences or claims | Deadlocks | Lock wait p50 / p95 / p99 / max (ms) | Claim latency p50 / p95 / p99 / max (ms) | Wall time |
+|---|---|---|---|---|---|---|---|---|
+| B1: 1 process per container | 626 (576 own + 50 shared, each shared claimed once) | 24 | ok, head = database head = 626 | 0 | 0 | 1.6 / 4.1 / 6.0 / 8.4 | 4.8 / 9.1 / 12.2 / 20.3 | 3.1 s |
+| B1x: 4 processes per container (8 in total) | 626 | 24 | ok, head 626 = 626 | 0 | 0 | 15.3 / 24.8 / 31.8 / 44.0 | 19.2 / 29.5 / 39.8 / 49.7 | 3.9 s |
+
+**First run: Failed, then fixed.** Before the savepoint fix both runs ended with the **journal corrupt** ("previous-record hash does not match"), and B1 had 266 spurious "quarantined" refusals. The original results are kept as `results/exp-b-*-verify-before-savepoint-fix.json`.
+- **Cause:** a failed statement in a PostgreSQL transaction aborts it and releases its locks immediately. The `void` record, appended in the `catch`, was therefore written without the lock, racing another container's `dispatch` record.
+- **Shown directly:** `probe-prisma-lock.mjs` shows the lock gone after the failed statement, and kept when the failure is rolled back to a savepoint.
+- **The runs above are after the fix.**
+
+**The other scenarios:**
+
+| Scenario | Result | Classification |
+|---|---|---|
+| **B3: process killed while holding the lock,** 2 s after flushing its `claim` record | The lock was released when the process died. The other container's 20 claims, which had been waiting, were all refused as quarantined ("database head 0 is behind the journal head 1"). Clearance then marked the action "not sent" (no `dispatch` record); the 599 other approvals were superseded, so later claims were refused (`moved_on`) | **Successfully tested** |
+| **B4: container restarted** in the middle of 300 claims | Afterwards the journal is ok and journal head = database head = 300; the next 20 claims succeeded | **Successfully tested** |
+| **B5: claims racing a clearance** that holds the lock for 3 s | The 30 claims waited (wall time 2.6 s) behind the clearance; no deadlock; none executed (all `moved_on` after the approvals were superseded) | **Successfully tested** |
+| **B6: `flock(1)` between the containers,** 500 locked appends each | 1,000 lines, 1,000 unique, 0 malformed, 348 ms | **Successfully tested** |
+| **B6: `flock` holder killed** | **Not released** while a child process that had inherited the locked descriptor was alive. **Released** when the descriptor was not inherited (`flock -o`): the other container acquired it within 2.3 s, including two `docker exec` round trips | **Successfully tested**; it shows a constraint (section 12) |
+| Multi-host locking | — | **Not tested** (N10: not claimed) |
+
+## 6. Experiment C: torn tails and corruption
+
+Each case is run with its own state directory and a database whose installation state matches it. A real claim is then attempted. The inputs and outputs for every case are in `results/exp-c/<case>/`.
+
+| # | Case | Journal status | Claim | As required? |
+|---|---|---|---|---|
+| 1 | Valid journal | ok | executed | Yes |
+| 2 | Incomplete final line (no newline) | torn tail, ignored for trust | refused: appends blocked until repair. Repair appended a `repair` record naming the 60-byte fragment; the fragment was kept (2,107 → 2,573 bytes, nothing truncated); the next claim succeeded as sequence 4 | Yes |
+| 3 | Final record truncated, but newline-terminated | corrupt (a line that is not a record) | refused | Yes |
+| 4 | Record corrupted in the middle | corrupt (hash mismatch) | refused | Yes |
+| 5 | Invalid sequence number | corrupt (sequence 7, expected 2) | refused | Yes |
+| 6 | Invalid previous-record hash | corrupt | refused | Yes |
+| 7 | Duplicate sequence number | corrupt (sequence 2, expected 3) | refused | Yes |
+| 8 | Journal missing | missing | refused | Yes |
+| 9a | Journal empty, database has history | empty | refused (database ahead) | Yes |
+| 9b | Journal empty, fresh install | empty | executed | Yes |
+| 10 | Journal head older than database head | ok | refused (database ahead) | Yes |
+| 11 | Journal head newer than database head | ok | refused (database behind: restore) | Yes |
+| 12 | Installation file missing | ok | refused | Yes |
+| 13 | Installation id differs | ok | refused | Yes |
+| 14 | Database row missing (pre-feature) | ok | refused | Yes |
+| 15 | Journal truncated **exactly** to a restored database's head | ok | **executed** | **Accepted risk, demonstrated:** undetected, as the design states |
+
+**No silent rewrite.** In every case where the claim was refused, the journal was left byte-for-byte as it was.
+
+**Real restore** (`run-exp-c-restore.sh`, prototype database only):
+1. Execute two actions.
+2. `pg_dump`.
+3. Execute three more.
+4. `pg_restore` the dump.
+
+Result:
+- Action `a-1-3` came back as `APPROVED`: the C1 condition.
+- Its claim was refused: "database head 2 is behind the journal head 5".
+- Inspection listed exactly the three later executions, each dispatched, with `applied` recorded in the journal.
+- Clearance (one audit row in each of the two organisations) made those three `FAILED`/`unknown`, with the note "may have been sent: check the target system". The journal's `applied` was shown as evidence, not applied automatically. The other 5 actions returned to `PROPOSED`.
+- Claiming `a-1-3` again was refused.
+- **The receiver held 5 requests before and after: no repeat.**
+
+| Item | Classification |
+|---|---|
+| Cases 1–14 | **Successfully tested** |
+| Case 15 (the accepted risk) | **Successfully tested** (shown to be undetected) |
+| Real `pg_dump`/`pg_restore` detection and recovery | **Successfully tested** |
+
+## 7. Experiment D: execution lifecycle and crash windows
+
+**Method.** One approved action per scenario. The execution runs in a child process that is `SIGKILL`ed at the crash point. Then:
+- the journal and database are read;
+- the stranded-execution sweep is run, as if the attempt had gone stale;
+- inspection is run.
+
+| Scenario | Process | Journal | Database at crash → after sweep | Receiver requests | Could dispatch have occurred? | External outcome | Automatic retry | Person must reconcile | Next claim trusted |
+|---|---|---|---|---|---|---|---|---|---|
+| Baseline | exit 0 | claim, dispatch, outcome:applied | EXECUTED/applied | 1 | yes | known: applied | no | no | yes |
+| Crash before the claim | killed | — | APPROVED | 0 | no | nothing attempted | no | no | yes |
+| Crash after the claim record, before commit | killed | claim | APPROVED | 0 | **no** (no dispatch record) | not sent | no | no | **no: quarantined** (database behind the journal) |
+| **S1:** append ok, transaction rolls back | exit 3 (foreign-key violation) | claim, void | APPROVED | 0 | no | nothing applied | no | no | yes |
+| **S2:** commit ok, crash before dispatch | killed | claim | EXECUTING → FAILED/unknown | 0 | **no** (no dispatch record) | unknown to the database; the journal shows not sent | no | yes | yes |
+| **S3:** dispatch record, crash before any byte | killed | claim, dispatch | EXECUTING → FAILED/unknown | **0** | yes (intent only) | unknown | no | yes | yes |
+| **S4:** request sent, crash before the response | killed | claim, dispatch | EXECUTING → FAILED/unknown | 1 | yes | unknown | no | yes | yes |
+| **S5:** receiver completed, crash before the outcome | killed | claim, dispatch | EXECUTING → FAILED/unknown | 1 | yes | unknown | no | yes | yes |
+| **S6a:** outcome transaction fails (design order: database, then journal) | exit 3 | claim, dispatch | EXECUTING → FAILED/unknown | 1 | yes | unknown | no | yes | yes |
+| **S6b:** journal records `applied`, then the database fails (reversed order) | exit 3 | claim, dispatch, outcome:applied | EXECUTING → FAILED/unknown | 1 | yes | unknown in the database; the journal's `applied` is evidence only | no | yes | yes |
+| Crash after the outcome commits, before the outcome record | killed | claim, dispatch | EXECUTED/applied | 1 | yes | known: applied | no | no | yes (trust uses claims only) |
+| Reconciliation after S5 (a person records applied) | — | claim, dispatch, reconciled:applied | EXECUTED/applied | 1 | — | known: applied (by a person) | no | done | yes |
+
+**Two results to note:**
+- **S3:** the dispatch record exists and the receiver got **no** request. A dispatch record is intent, never proof of execution.
+- **No retry anywhere:** no scenario made an automatic retry possible.
+
+| Item | Classification |
+|---|---|
+| S1–S6 and the other boundaries | **Successfully tested** |
+| Reconciliation | **Successfully tested** |
+| Commit result unknown (connection lost during `COMMIT`) | **Not tested.** No injection point was built |
+
+## 8. Experiment E: clearance at scale
+
+**Synthetic "restored" databases.** Statuses at backup time: 40% approved, 30% awaiting approval, 10% executed, 10% failed/unknown, 10% proposed, with one approval per pending action. The journal had run on past the backup:
+- 5% of actions were executed after the backup; a quarter of those had no dispatch record, and some carry outcomes or reconciliations;
+- 1% of journal claims are for actions the restored database doesn't have.
+
+| Actions / organisations | Journal | Inspection | Repeat inspection | Clearance (one transaction) | Superseded approvals | → proposed / → unknown | Audit rows | Peak process memory |
+|---|---|---|---|---|---|---|---|---|
+| 1,000 / 10 | 431 records, 99 KB | 49 ms | 9 ms | 33 ms | 700 | 651 / 49 | 10 | 87 MB |
+| 10,000 / 50 | 4,325 records, 1.0 MB | 78 ms | 33 ms | 160 ms | 7,000 | 6,501 / 499 | 50 | 117 MB |
+| 100,000 / 200 | 43,250 records, 10.1 MB | 519 ms | 269 ms | 1,693 ms | 70,000 | 65,001 / 4,999 | 200 | 389 MB |
+
+**After every clearance:**
+- the digest was stable between two inspections;
+- no approval was still current;
+- no action could be executed;
+- the installation was trusted again.
+
+**A defect in the test data.** The generator put two post-backup claims on one action (`a-10`), which is why the "→ unknown" column is 49, 499 and 4,999 rather than 50, 500 and 5,000. The prototype handled the double claim correctly.
+
+| Check | Result | Classification |
+|---|---|---|
+| Changed after inspection (one action edited) | The clearance with the old digest was refused ("the state changed since inspection"); a fresh inspection then cleared | **Successfully tested** |
+| Two clearances at once, same digest (10,000 actions) | One cleared in 230 ms; the other waited for the lock, then was refused | **Successfully tested** |
+| Interrupted after the `cleared` record, before commit | Database untouched: head still 1,000, all 7,000 approvals still current, 0 audit rows. The uncommitted `cleared` record is kept in the journal. The old digest was refused (the record changed the journal); a fresh inspection cleared (database head 1,600, 50 audit rows) | **Successfully tested** |
+| Claim attempted during clearance | At 1,000 actions it waited 17 ms, then was refused (`moved_on`). At 10,000 and 100,000 it got the lock first and was refused as quarantined. None executed | **Successfully tested** |
+| Lock wait for a claim held behind a long clearance | 2.6 s behind a 3 s hold (B5). Not measured behind a real 100,000-action clearance | **Partially tested** |
+| Audit rows atomic with the clearance | One per organisation on success; none after the interrupted run | **Successfully tested** |
+| Clearance of a corrupt or missing journal (N1 acknowledgement path) | The prototype refuses | **Not tested** (not built) |
+| The new-installation path (D8) | — | **Not tested** |
+
+## 9. Failure-injection summary
+
+| Injection | Where tested | Result |
+|---|---|---|
+| `SIGKILL` at 8 points in claim, dispatch, outcome and clearance | D, E | Fail-closed or recoverable at every point; no repeat; no automatic retry |
+| Database statement failure inside the claim | B1, D (S1) | `void` under the lock (after the savepoint fix); heads equal |
+| Outcome transaction failure | D (S6a, S6b) | Unknown, needing reconciliation |
+| Process killed holding the lock | B3 | Lock released; quarantine; then cleared |
+| Container restart | B4 | Consistent |
+| Full disk | A | Short write detected (after the fix); torn tail; appends blocked |
+| Read-only, deleted or unreadable journal | A | Refused, never recreated |
+| 14 kinds of journal and identity damage | C | All refused, except the documented accepted risk |
+| Real database restore | C | Detected and recovered, no repeat |
+| Commit result unknown | — | **Not tested** |
+| Power loss | — | **Not tested** |
+
+## 10. Performance summary
+
+Docker Desktop, Apple silicon. Not to be generalised.
+
+| Measure | Value |
+|---|---|
+| `fsync` of one record (Docker volume) | p50 0.26 ms, p99 0.56 ms |
+| Claim latency, 2 containers × 1 process | p50 4.8 ms, p99 12.2 ms (≈ 200 claims/s overall, including dispatch records) |
+| Claim latency, 2 containers × 4 processes | p50 19.2 ms, p99 39.8 ms (≈ 160 claims/s; the single lock is the bottleneck) |
+| Lock wait, 8 processes | p50 15.3 ms, p99 31.8 ms |
+| Whole-journal verification | 1.3 ms at 1k records, 13.8 ms at 10k, 162 ms at 100k |
+| Clearance, 100,000 actions | 1.7 s, 389 MB peak |
+
+## 11. Unresolved technical questions
+
+1. **Durability of `fsync` on the production platform.** On Docker Desktop the flush may stop at the host cache. This needs a Linux host with a local filesystem, and ideally a power-loss or VM-crash test (N11).
+2. **Incremental verification.** A whole-journal parse per claim grows linearly: 162 ms at 100k records. Production should cache the verified offset, last hash and head per process, verify only new bytes, and re-read from the start if the file shrinks or its inode changes. This must be designed and tested.
+3. **The journal mutex.**
+   - The prototype serialises all appends with the database row lock. It is correct, tested, and works across containers on one host.
+   - The design named `flock`, which is also proven here, but only if the descriptor is never inherited (`O_CLOEXEC`, no child processes).
+   - Choose one. The row lock also orders claims, so it is the simpler single mechanism.
+4. **An unknown commit result:** how it is detected and handled. Not prototyped.
+5. **Clearance at a larger scale.** It loads every affected action into memory (389 MB at 100k) and updates "ran after the backup" actions one by one. It needs batching or streaming, and a decision about one transaction against chunked transactions bound to the same digest.
+6. **Operating the torn-tail repair.** Who runs it, how it is surfaced, and whether a torn tail should also put the installation into the visible quarantine state. Today only appends are refused.
+
+## 12. Deviations from the approved design
+
+| # | Deviation | Why |
+|---|---|---|
+| 1 | All appends are serialised by the `installation_state` row lock, not `flock` | One mechanism already orders claims; `flock` was tested separately (B6) |
+| 2 | **A savepoint after the lock**, rolled back to on failure, so that `void` is appended while the lock is held | Required: without it, PostgreSQL releases the lock at the failed statement (the design assumed otherwise) |
+| 3 | **The bytes written are checked**; a short write is an error | Required: a full disk produced a silent short write |
+| 4 | The torn-tail repair format: a `repair` record that names the ignored fragment's length; the fragment stays | The design said "repaired only by tooling" without a format |
+| 5 | The inspection digest includes the journal's last record hash | So any append, including an uncommitted `cleared` record, invalidates an earlier inspection (E: interrupted) |
+| 6 | Not built: `recovery status`, `adopt`/new-installation (D8), the unreadable-journal clearance path (N1), the interface, and the approve and retry route checks | Outside the Phase 0 measurement scope |
+
+## 13. Security limitations
+
+- **Truncation exactly to the database's head is undetected** (C, case 15; accepted risk while D3 is deferred). So is a rollback or a clone of both volumes. That case was **not separately tested**, because it is equivalent to case 15.
+- **The hash chain is unkeyed** (N7 deferred). Anyone who can write to the volume can recompute it.
+- **Durability claims are limited to the measured environment,** and even there are inconclusive.
+- **The prototype ran as root in its containers.** The production volume needs ownership and permissions designed. The prototype showed that a uid without permission is refused (`EACCES`).
+- **Not tested:** multi-host, off-host journal copies (N6), downgrade (N9).
+
+## 14. Recommendation
+
+**Proceed, to a revised production design, not to implementation.** The architecture held under every test that was run, and its accepted risks behaved exactly as documented. The revised design must take in, at least:
+- deviations 2 and 3 (savepoint-held void; short-write check);
+- question 2 (incremental verification);
+- question 3 (one journal mutex);
+- question 5 (clearance batching and memory).
+
+## 15. Production implementation blockers
+
+1. The savepoint-held `void` and the short-write check written into the design.
+2. Incremental journal verification designed, and tested against corruption, truncation and replacement of the file.
+3. A single journal-mutex decision; if `flock`, a no-inheritance guarantee.
+4. Unknown-commit handling designed and tested with a fault proxy.
+5. A durability test on a Linux host with a local filesystem, the supported platform (N11).
+6. A clearance design for large installations (memory and batching), and an agreed size limit tested.
+7. The parts not built (section 12, item 6) designed, and covered by the acceptance criteria in the design §19.
+8. The backup retention duration selected by the product owner (still open).
+9. Product-owner approval of the revised design.
