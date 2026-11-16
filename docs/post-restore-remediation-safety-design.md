@@ -22,8 +22,18 @@ This is a design only. Nothing described as **proposed** exists. Every statement
 
 The new technical decisions are P1 to P7 (section 18), and a production readiness gate follows in section 19.
 
+**Revision after Phase 0.5 (16 November 2026).** A second isolated prototype ([post-restore-remediation-safety-phase05-validation-report.md](post-restore-remediation-safety-phase05-validation-report.md); code on the branch `prototype/m16-phase05-validation`, not merged) validated P4, P5 and P6 up to 1,000,000 records and actions. It also found that an **older application can execute remediation while ignoring the journal**. This revision adds:
+- **P8,** database-enforced downgrade protection (section 6.5);
+- the full-verification schedule options (section 6.2);
+- the bounded void memory (section 6.2.1);
+- the `COMMIT` failure classification (section 6.3);
+- superseding **every** current approval at clearance (section 9);
+- the native Linux test specification (section 16.1);
+- the 15-item readiness gate (section 19).
+
 Throughout this revision:
 - **[Phase 0 evidence]** marks what the prototype showed, on one Docker Desktop installation on Apple silicon only.
+- **[Phase 0.5 evidence]** marks the same for the second prototype, in the same environment. None of it generalises to production.
 - **Nothing here is production-validated.** Production implementation is **not** authorised.
 
 ## 1. Executive summary
@@ -285,9 +295,9 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
   1. `fstat` the journal.
   2. **A different device or inode** (the file was replaced): full verification.
   3. **The file is smaller than the verified offset** (it shrank): full verification. That will normally end in quarantine.
-  4. **Otherwise,** re-read the **last verified record** (from its start offset to the verified offset) and check that its hash is still the cached one. This catches an in-place edit of the tail.
+  4. **Otherwise,** re-read the **last verified record** (from its start offset to the verified offset), **recompute its hash from its content,** and check that the result equals both its stored hash and the cached one. **Never trust the stored hash field alone.** [Phase 0.5 evidence] The prototype's first implementation compared only the stored `hash` field and **missed an in-place rewrite** of the last record (case f), because editing another field leaves that field unchanged. Recomputing from the content caught it.
   5. Then read and verify **only the bytes after the verified offset,** with the normal rules: the chain continues from the cached hash, the sequence follows, and a torn tail is not counted. Advance the cache only over complete, valid records.
-- **Anchor the head hash in the database too** [Proposed]: `InstallationState` stores the hash of the record at the database head, not only its sequence number. The trust comparison then checks the sequence and the hash. A replaced journal with the same head number but different content is then refused. [Unverified] Not prototyped. It is a schema addition, so it needs approval.
+- **Anchor the head hash in the database too** [Proposed]: `InstallationState` stores the hash of the claim record at the database head, not only its sequence number. The trust comparison then checks the sequence and the hash. [Phase 0.5 evidence] A replacement journal with a valid chain and **the same head** was caught **only** by this anchor (case d3). It is a schema addition, so it needs approval.
 - **Several API processes:** each has its own cache. Another process's appends simply appear as new bytes after this process's offset, and are verified like any others. A cache is a performance aid, never a source of trust: a cache that disagrees with the file is discarded and verification starts over.
 
 **When a complete verification is mandatory:**
@@ -297,13 +307,73 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 - after any verification failure, before reporting corruption;
 - before `inspect` and `clear`, which always verify from the start;
 - after a torn-tail repair;
-- on a schedule (the interval is to be decided). This catches in-place edits **in the middle** of the file, which the incremental check can't see.
+- on a schedule (section 6.2.2). This catches in-place edits **in the middle** of the file, which the incremental check can't see.
 
-**Limit.** Between scheduled full checks, an in-place edit of an earlier record that changes neither the size nor the last record is not seen. That requires write access to the volume, which is already an accepted risk (section 12).
+**Limit.** Between scheduled full checks, an in-place edit of an earlier record that changes neither the size nor the last record is not seen. That requires write access to the volume, which is already an accepted risk (section 12). [Phase 0.5 evidence] Confirmed: an edit of an earlier record (case h) passed the incremental check and was caught by a full one.
+
+**Measured** [Phase 0.5 evidence; Docker Desktop, Apple silicon only]:
+
+| Records (journal size) | Per-claim incremental verification p50 / p99 | Full verification | Peak memory of a full verification (an empty Node process is 41 MB) |
+|---|---|---|---|
+| 100,000 (23.4 MB) | 0.064 / 0.398 ms | 135 ms | 82 MB |
+| 500,000 (117 MB) | 0.061 / 0.410 ms | 687 ms | 99 MB |
+| 1,000,000 (235 MB) | 0.052 / 0.450 ms | 1,372 ms | 106 MB |
+
+**Other evidence:**
+- Two containers (1,000 claims) ended with matching heads, matching head hashes and unique sequences.
+- An unlocked reader running 95,890 checks during 2,000 appends saw 1 torn tail and 0 corrupt states.
+- A process's cache picked up another process's appends without going stale.
+
+**Full verification is streamed** in fixed-size reads, so its memory doesn't grow with the journal.
+
+**Restart behaviour:** a new process has no cache, so its first check is a full verification (1.4 s at 1,000,000 records in this environment). A large journal therefore slows the first claim after a start-up. [Proposed] Run the start-up verification before the API reports ready, so the first request doesn't pay for it.
+
+**Corruption and torn tails:** unchanged (N1).
+- A torn tail is ignored for trust, and appends are refused until the repair tool records it.
+- Corruption anywhere is quarantine.
+- A corrupt result is never cached, and is confirmed by a full verification before being reported.
+
+#### 6.2.1 Bounded void memory
+
+**The problem.** After a `void`, the verifier needs the hash of the claim that becomes the head again, to compare with the database anchor. Keeping every claim's hash costs memory in proportion to the journal.
+
+**Proposed** [Proposed; awaiting approval]:
+- **The bound:** the verifier remembers the hashes of the last **64** live claims (a stack). A `claim` pushes; a `void` pops.
+- **When the bound is exceeded:** a `void` that would need a hash no longer remembered makes the head hash **unknown**. The trust comparison then **fails closed** with an explicit reason ("journal head hash unknown"). Nothing is discarded silently: the journal itself still holds every record, and clearance re-establishes the anchor from a full verification.
+- **Why 64 is ample** [Assessment]. Under P1, a void follows its own claim under the same lock. Under P5, a void is written only when the database is one claim behind. So a correct journal never needs more than one remembered claim beyond the head. 64 leaves margin for implementation surprises, at negligible memory cost (64 hashes).
+- **Alternative considered:** each `void` record also carries the head hash it restores. That removes the bound, but it puts trust in a value the verifier can't cross-check beyond its memory. It is not recommended now.
+
+[Phase 0.5 evidence] The prototype used this bound. No test exceeded it, so the fail-closed path is **specified but not exercised**.
+
+#### 6.2.2 Full-verification schedule (pending decision)
+
+The interval is **not decided**. The options:
+
+| Option | Detection delay for a middle edit | Cost | Notes |
+|---|---|---|---|
+| Mandatory events only (no schedule) | Until the next restart, `inspect` or `clear` | None extra | Weakest; an edit can go unseen for weeks |
+| Time-based, in the background (for example daily) | Up to the interval | One full read per interval (1.4 s and about 106 MB at 1,000,000 records, measured on Docker Desktop) | Predictable; independent of load |
+| Claim-count-based (for example every N claims) | Up to N claims | One full read per N claims | Follows activity; idle installations are never checked |
+| Time-based **or** claim-count-based, whichever comes first | The smaller of the two | As above | The two combined |
+
+**Recommendation** [Proposed; **awaiting product-owner approval**]:
+- a background full verification at a fixed time interval, **plus** the mandatory events;
+- run **outside** the claim lock, as an unlocked reader ([Phase 0.5 evidence]: unlocked reads never saw a corrupt state);
+- **a failure invalidates every cache and quarantines** until a person reviews it;
+- a **daily** interval is suggested as a starting point, to be confirmed against measurements on the supported platform. The interval is **not** chosen here.
 
 ### 6.3 Unknown commit result (P5)
 
-**Status:** a production blocker. **Not tested in Phase 0.** It needs fault-proxy testing (`apps/api/tests/faults.ts`).
+**Status:** validated in the Phase 0.5 prototype. **Still to be tested in the application's real integration.**
+
+[Phase 0.5 evidence] Five scenarios passed, with the faults injected by a proxy at the PostgreSQL wire protocol (the `COMMIT` cut before forwarding, or its answer swallowed after the server replied):
+- committed, answer lost;
+- rolled back at `COMMIT` (a deferred foreign key), answer lost;
+- connection dropped during `COMMIT`;
+- database unavailable straight after `COMMIT`, then available again;
+- the process restarted before resolving.
+
+Each was correctly recognised, or left uncertain while the database was unreachable. In none was anything dispatched, and the journal was only appended to.
 
 **Situation.** The `claim` record for `seq` is on disk, `COMMIT` was sent, and the connection dropped before the reply. PostgreSQL may or may not have committed. **A missing confirmation is never taken to mean "failed".**
 
@@ -315,6 +385,12 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
    - **Anything else** (another sequence, a changed action): leave it alone. The comparison will quarantine, and a person resolves it.
 3. **If the database stays unreachable:** do nothing more. The journal keeps the `claim` with no `dispatch`. When the database returns, either the heads differ (quarantine) or they are equal with the action `EXECUTING` (the sweep records `unknown`, not sent).
 4. **After a process restart,** there is no in-memory state to recover: the same rules apply. A start-up check may run step 2 for a last claim that has no `dispatch` and no `void`. **It must not void automatically on any other evidence.**
+
+**Classifying the failure** [Proposed; must be tested against the real driver]:
+- **Before `COMMIT`:** an error raised by any statement **inside** the transaction callback. The transaction certainly did not commit. If it happened after the `claim` append, the P1 path applies (roll back to the savepoint, then `void`). If it happened before the append, nothing was written.
+- **During `COMMIT`:** the callback **returned**, and the transaction call then failed: a connection loss, a timeout, a server error. The result is **uncertain**. The prototype marked "callback finished" as the callback's last action and treated any later failure as uncertain. That is conservative: a failure that is really a rollback (a deferred constraint, Prisma's own transaction timeout) is resolved as "not committed" by step 2 below, never assumed.
+- **Not every connection failure is a failed `COMMIT`.** A connection failure **before** the callback ran (for example, acquiring a connection) means no claim was attempted. One **inside** the callback means "not committed". Only one **after** the callback means "uncertain".
+- **The driver detail must be confirmed in implementation tests.** The evidence is for Prisma 6.19.3, which sent `COMMIT` as a simple query in every scenario. Error codes and timeouts (including the interactive-transaction timeout) must be mapped in tests against the version in use. Where they can't be mapped, the result stays **uncertain**.
 
 **Rejected: automatically healing any "journal one ahead".** [Assessment] A restored database that is behind by exactly one undispatched claim looks the same. Healing it would hide the restore, and with it the settings and memberships the restore rolled back.
 
@@ -335,6 +411,65 @@ What each stage records, and what it proves. [Proposed; the distinctions confirm
 | Human reconciliation | Database, then the `reconciled` record | A person's finding |
 
 **Unknown outcomes are never retried automatically.** [Phase 0 evidence] No crash at any of the 11 tested boundaries made a retry possible. A retry still requires `not_applied`.
+
+### 6.5 Database-enforced downgrade protection (P8)
+
+**The gap.** [Phase 0.5 evidence] An older application, written before this feature, knows nothing of the journal. Against a database that has the feature, its claim **succeeded and dispatched**. The journal never saw it, the heads still matched, and the installation still looked trusted, so a later restore would not reveal that execution. The no-downgrade **policy** (N9) does nothing against this, and **a version check in application code can't help either:** the older application doesn't have that check.
+
+**The guard** [Proposed; P8, **awaiting approval**; the prototype trigger is **not** production-ready]:
+- **What it does:** a PostgreSQL trigger on the remediation action table, `BEFORE INSERT OR UPDATE`, refuses any row **entering** `EXECUTING` (from any other status, or inserted as `EXECUTING`) unless the transaction has proved it followed the journal protocol.
+- **The proof** [Proposed]: the claim transaction sets a transaction-local setting, `set_config('opsilume.claim_seq', <seq>, true)`, **after** advancing `InstallationState.journalSeq` to `<seq>` in the same transaction. The trigger requires the setting to equal the current `journalSeq`.
+  - The setting is transaction-local, so it can't leak to another transaction or session.
+  - A stronger variant also checks that the `InstallationState` row was modified by the current transaction (its `xmin`). [Unverified] Not prototyped.
+- **The read-only exemption** (consistent with D6): an action whose stored effect is `read_only`, before and after the update, is exempt. The application never changes a state-changing action to read-only. Whether the trigger should also forbid that change is part of the integration design.
+- **Failure mode: closed.** Any doubt raises an error with a dedicated SQLSTATE, and the transaction rolls back, so nothing is claimed and nothing is dispatched.
+
+[Phase 0.5 evidence] With the guard: the older application's claim was refused (`P0001`) and nothing was sent; the newer application's claims and the sweep (`EXECUTING` → `FAILED`) still worked.
+
+**Installation and activation:**
+- **The same migration that creates `InstallationState`** also creates the guard, so any database that has the feature has the guard.
+- **Order inside the migration:** the trigger function and trigger first, then the table. If the migration were applied only partly, a guard that references a missing table raises an error on every claim, which fails closed.
+- [Unverified] Whether `prisma migrate deploy` applies a migration atomically on PostgreSQL must be confirmed by a test. The order above is the safety net if it doesn't.
+- **The guard is active immediately.** No setting enables it, and none disables it.
+
+**How each component behaves:**
+
+| Component | With the guard |
+|---|---|
+| Newer API | Claims set the proof in the claim transaction; unaffected otherwise |
+| Older API (pre-feature) | Every state-changing claim is refused at the database: an error, nothing dispatched. Its other routes (propose, approve, reject, edit, cancel, reconcile, retry, reads) keep working, because none moves an action into `EXECUTING` |
+| Older worker | Unaffected: the worker never claims. Its sweep moves `EXECUTING` → `FAILED`, which the guard allows |
+| Retry (`FAILED` → `APPROVED`) | Allowed. Execution afterwards goes through the guarded claim |
+| Reconcile (`FAILED` → `EXECUTED`/`FAILED`) | Allowed; nothing is dispatched. An older application's reconciliation isn't journalled, which costs recovery evidence, not safety |
+| Direct SQL by a person | A person can set the session setting themselves, or disable the trigger, if their role permits. The guard stops **older application code**, not a privileged person |
+| Mixed versions during an upgrade | Once the migration has run, older API instances can't execute until they are replaced. Execution is unavailable from them in the meantime; that is the intended fail-closed behaviour |
+
+**Privilege boundary** [Verified for the current deployment, then proposed]:
+- [Verified] The application connects as the same database role that owns the tables (`docker-compose.yml`: one `opspilot` role, used both for migrations and at runtime). The table owner can `ALTER TABLE … DISABLE TRIGGER` or drop the trigger.
+- [Proposed; pending decision] Separate a **migration role** (owner) from a **runtime role** (not the owner). Then the running application, any version, can't disable or drop the guard.
+- Until then, the guard protects against older application code, **not** against a compromised application or a person with the owner role.
+
+**Migration rollback and downgrade:**
+- Prisma migrations are forward-only.
+- Removing the guard means a person deliberately dropping it with owner rights. That isn't a supported downgrade path; it would need to be audited and is a decision in its own right (below).
+- Running an older application against a newer database leaves the guard in place, so remediation execution is unavailable until the application is upgraded again.
+- **Recovery when the guard exists but the application is incompatible:** upgrade the application. A documented, audited "remove the guard" procedure for emergencies is a decision for the product owner (recommended: none, consistent with D7).
+
+**Limitations:**
+- it relies on the migration having run;
+- an owner-role connection can bypass it;
+- it guards claims, not reads;
+- a trigger runs on every action update, and the overhead hasn't been measured on the real table.
+
+**Integration tests required** (none done):
+- a real older API build against a newer database: claim refused, every other route working;
+- a newer API: claims pass; diagnostics exempt;
+- the worker of each version;
+- migration atomicity, including a partly applied migration failing closed;
+- inserts made directly as `EXECUTING` are refused;
+- disabling the trigger with the runtime role is refused, once roles are separated;
+- the overhead on a realistic table;
+- error mapping in the newer API (a clear message, never a generic 500).
 
 ## 7. Installation identity strategy
 
@@ -413,7 +548,9 @@ All of them are treated the same way: quarantined.
 The interface only shows it; there is no frontend-only control.
 
 **At clearance, in one transaction per installation** [Proposed; the exact rules are decision D2]:
-1. Every `APPROVED` and `PENDING_APPROVAL` action has its approvals superseded and returns to `PROPOSED`. A fresh review is needed.
+1. **Every current approval in the installation is superseded,** whatever the status of its action. Every `APPROVED` and `PENDING_APPROVAL` action returns to `PROPOSED`, so a fresh review is needed.
+   - **Why every approval.** [Phase 0.5 evidence] The prototype's rule superseded only the approvals of `APPROVED` and `PENDING_APPROVAL` actions. An action whose status had been changed by hand to `PROPOSED`, with its approvals left current, kept 2 current approvals through clearance. The application's own routes can't produce that state, but **no approval may survive recovery merely because its action has an unexpected status.**
+   - **Consequence:** a `FAILED`/`not_applied` action that is retried after recovery needs fresh approval, because its earlier approvals are superseded too. That is consistent with D2.
 2. Every action the journal shows claimed **after the database head** that exists in the database becomes `FAILED` with outcome `unknown`, and a note citing the journal entries. It needs reconciliation, and is never retried automatically.
    - A claim with no `dispatch` line is noted as "not sent", so a person can reconcile it as `not_applied` without checking the target.
    - A claim with a `dispatch` line is noted as "may have been sent: check the target system".
@@ -452,7 +589,41 @@ Memory grew with size, because inspection loads every affected action into the p
 
 The process's memory is then bounded by the chunk size, not the installation size. The transaction duration still grows with the number of affected rows.
 
-**Maximum supported size: not chosen.** [Unresolved] No evidence exists beyond 100,000 actions on Docker Desktop. Before a limit is stated, the bounded-memory version must be measured on the supported platform, at sizes above the largest expected installation, including the lock wait seen by other routes during clearance. Batching is the fallback, if a single transaction proves too long there.
+**Measured with the bounded-memory version** [Phase 0.5 evidence; Docker Desktop, Apple silicon only]. One transaction; the digest computed by PostgreSQL; set-based updates; the journal streamed; two approvals per pending action:
+
+| Actions / organisations | Clearance (one transaction) | Inspection | Process peak memory | A claim attempted during clearance |
+|---|---|---|---|---|
+| 100,000 / 200 | 0.92 s | 0.18 s | 147 MB | waited 116 ms, then refused |
+| 250,000 / 500 | 3.0 s | 0.38 s | 172 MB | waited 2.0 s, then refused |
+| 500,000 / 1,000 | 5.5 s | 0.90 s | 197 MB | waited 4.7 s, then refused |
+| 1,000,000 / 2,000 | 10.3 s | 1.41 s | 246 MB | waited 9.9 s, then refused |
+
+**Afterwards, at every size:**
+- one audit row per organisation, in the same transaction;
+- no approval still current, and nothing executable;
+- trust restored.
+
+**Waits during the 1,000,000-action clearance:**
+- **Claims** wait for the whole clearance.
+- **A route** repeatedly locking an affected row waited at most **2.9 s** (median 2 ms).
+
+**Failure tests:** all six scenarios left the database either fully cleared or unchanged:
+- killed early;
+- killed after the `cleared` record, before commit;
+- database session terminated;
+- two clearances at once;
+- changed after inspection;
+- repeated with a used digest.
+
+**Assessment** [Assessment]:
+- **Atomicity holds** at every tested size.
+- **Process memory** grows with the claims made after the backup, not with the installation.
+- **Transaction duration and lock waits** grow roughly linearly. During a quarantine claims are refused anyway, so the main cost is routes on affected rows waiting up to seconds.
+- **Organisation count** (tested up to 2,000) costs one audit insert statement.
+
+**One transaction remains the recommendation.** Batching stays the fallback, if production-scale tests show the transaction or lock waits are unacceptable.
+
+**Maximum supported size: not chosen** [pending a product-owner decision]. One million actions is **the largest size tested on one development machine**, not a capacity guarantee. A limit must come from tests on the supported platform, at sizes above the largest expected installation.
 
 ## 10. Execution reconciliation workflow
 
@@ -589,6 +760,10 @@ Proposed analysis:
 17. **P5:** using the fault proxy, the connection is cut during `COMMIT`, both after a real commit and without one. There is no dispatch in either case. Resolution gives committed (left for the sweep) or not committed (voided). With the database unreachable, the state is left for the comparison.
 18. **P6:** clearance runs bounded in memory at sizes above the largest expected installation, on the supported platform, with the lock waits of other routes measured.
 19. **P7:** the durability test on native Linux, with a hard reset (section 16.1).
+20. **P8:** the integration tests in section 6.5.
+21. **Bounded void memory:** a journal with more consecutive voids than the bound fails closed with "head hash unknown"; clearance re-establishes the anchor.
+22. **Every approval superseded:** after clearance, no current approval remains on an action in any status.
+23. **`COMMIT` classification:** failures before, inside and after the callback are classified as no claim, not committed, and uncertain, against the real driver version.
 
 **Isolated-stack drill (`npm run drill:backup`, extended):**
 - back up;
@@ -639,6 +814,30 @@ Proposed analysis:
 - a **power-loss or VM-crash test:** append and `fsync` acknowledged, then a hard reset of the machine (not a process kill). Every acknowledged record must be present and the chain intact; any torn tail must follow N1;
 - the result recorded with the kernel, filesystem, mount options and storage.
 
+**Status after Phase 0.5:**
+- **Native Linux: NOT TESTED.**
+- **Power loss or VM crash: NOT TESTED.**
+- **Docker Desktop only:** a process kill and a container kill each ended consistent (every committed claim in the journal, heads equal). Neither touches the page cache, so **they prove nothing about physical durability.** A Linux container inside Docker Desktop is not a native Linux test.
+
+**The test still required** [Proposed]:
+- **Environment:**
+  - a native Linux host, bare metal or a VM whose hypervisor can hard-reset it;
+  - the journal on a local ext4 or XFS filesystem (a named volume or bind mount, never the overlay layer);
+  - PostgreSQL with `fsync=on` and `full_page_writes=on`.
+- **Recorded:** the distribution, kernel, filesystem, mount options, storage device, write-cache setting and Docker version.
+- **Procedure:**
+  1. Run claims in a loop. After each claim commits, send its sequence number to a recorder **off the machine** (another host), so acknowledgements survive the crash.
+  2. Cut power at a random moment: the hypervisor's hard reset or power-off, or on bare metal a power cut. `echo b > /proc/sysrq-trigger` is only an approximation, because it skips power loss to the disk cache.
+  3. Reboot, start PostgreSQL and the application, and run a full verification.
+  4. Repeat at least 20 times, including during a burst of claims.
+- **Expected results:**
+  - every claim acknowledged off the machine is present in the journal **and** committed in the database;
+  - the journal's chain is valid, and a torn tail, if any, follows N1;
+  - the heads are equal, or the journal is one claim ahead (quarantine, per the crash table);
+  - nothing is ever "committed in the database but missing from the journal".
+
+**Physical durability remains a production blocker until this passes.**
+
 **Claims that can't be made yet:**
 - durability on any platform;
 - support for network filesystems (NFS, SMB);
@@ -661,7 +860,7 @@ Proposed analysis:
 - **Host loss** loses the local journal: quarantine. The off-host read-only copy (N6) gives a list of what ran, up to the time of its last copy. Executions after that copy need a full manual reconciliation against external systems.
 - **A clone that copies both volumes** is never quarantined (N8 operator rule; detection needs D3).
 - **Truncation** of the journal back to the database's head is undetected (section 12).
-- **Downgrades** remove the protection (N9).
+- **Downgrades** remove the protection (N9), unless the proposed database guard (P8) is adopted. Even with it, an owner-role connection can bypass it (section 6.5).
 - **Receivers** that don't deduplicate stay exposed to any repeat that gets past OPSILUME.
 - **Settings and memberships rolled back by a restore** are not detected by the journal (D10).
 - **False quarantines:** a crash between the `claim` append and commit, an unknown commit result, or a failed `void` write. They are safe but cost an operator review.
@@ -710,6 +909,25 @@ Recorded on 16 November 2026. "Approved in principle" means approved as design d
 | P6 | Clearance in one bounded-memory transaction; batching only as a fallback; maximum size not yet chosen (section 9.1) | **Awaiting approval** | Adopt; measure on the supported platform |
 | P7 | Durability: native Linux, a local filesystem, and a power-loss or VM-crash test before any claim (section 16.1) | **Awaiting approval** | Adopt |
 
+**Raised by Phase 0.5.** These are also engineering recommendations, **not approvals:**
+
+| # | Decision | Status | Recommendation |
+|---|---|---|---|
+| P8 | A database guard refusing any entry into `EXECUTING` not made through the journal protocol, created in the same migration as `InstallationState` (section 6.5) | **Awaiting approval** | Adopt. The prototype trigger is a demonstration; production needs the integration tests in section 6.5 |
+| P8a | Separate the migration (owner) role from the runtime role, so the application can't disable the guard | **Awaiting approval** | Adopt, as part of, or before, P8 |
+| P8b | An audited emergency procedure to remove the guard when the application is incompatible | **Awaiting approval** | None (consistent with D7): upgrade the application instead |
+| V1 | Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1) | **Awaiting approval** | Adopt |
+| V2 | The full-verification schedule (section 6.2.2) | **Awaiting product-owner decision** | Background, time-based, plus mandatory events; daily suggested as a starting point, not chosen |
+| V3 | Clearance supersedes every current approval, whatever the action's status (section 9) | **Awaiting approval** | Adopt |
+
+**Still awaiting the product owner:**
+- the backup retention duration;
+- acceptance of the coordinated-snapshot and truncation risks;
+- the maximum supported installation size;
+- the full-verification interval (V2);
+- final approval of this revised design;
+- the production implementation scope.
+
 ## 19. Implementation milestones
 
 [Proposed] Order and scope only; nothing started.
@@ -739,6 +957,13 @@ A time-boxed prototype in a throwaway branch, on the isolated stack only, agains
 - the design is revised where a measurement contradicts it;
 - the prototype branch is discarded.
 
+### Phase 0.5: validation on the isolated stack
+
+**Status: run on 16 November 2026.** Results: [post-restore-remediation-safety-phase05-validation-report.md](post-restore-remediation-safety-phase05-validation-report.md); code on `prototype/m16-phase05-validation`, not merged.
+- **P4, P5, P6: passed** in the prototype, up to 1,000,000 records and actions.
+- **Downgrade:** a gap was found (P8).
+- **P7: native Linux and power loss NOT TESTED.**
+
 ### Phases 1 to 4
 
 1. **Journal, detection and provisioning.**
@@ -763,31 +988,46 @@ A time-boxed prototype in a throwaway branch, on the isolated stack only, agains
 
 **Release gate.** Phases 1 to 3 may merge to `develop` separately, but no release may contain phase 1 without phase 3.
 
-**Phase 1 now includes** P1 to P5: the savepoint and void, the short-write check, the row-lock mutex for every append, incremental verification with the database head anchor, and the unknown-commit handling. **Phase 3 includes** P6.
+**Phase 1 now includes:**
+- P1 to P5: the savepoint and void, the short-write check, the row-lock mutex for every append, incremental verification with the database head anchor, and the unknown-commit handling;
+- the bounded void memory (V1);
+- the P8 guard, in the same migration as `InstallationState`, with role separation (P8a) if approved.
+
+**Phase 3 includes:**
+- P6, with every approval superseded (V3);
+- the scheduled full verification (V2), once its interval is chosen.
+
+**Optional, after decisions:**
+- an off-host journal anchor (D3);
+- settings journaling (D10);
+- receiver headers (D11);
+- a keyed integrity check (N7);
+- a break-glass re-baseline (N3).
 
 ### Production readiness gate
 
-Production implementation can't be authorised until every item below is complete. Design completion and test completion are tracked separately; "—" means not applicable.
+Production implementation can't be authorised until every item is complete. Three things are tracked separately:
+- **Design:** is it specified?
+- **Prototype:** was it validated in Phase 0 or 0.5? Docker Desktop on Apple silicon only.
+- **Production integration:** was it tested in the real application? Nothing has been, since nothing is implemented.
 
-| # | Gate | Design | Test |
-|---|---|---|---|
-| 1 | Revised design approved by the product owner | Revised (this document) | — |
-| 2 | Savepoint and short-write requirements specified (P1, P2) | Specified (section 6) | Prototype only (Phase 0); to be repeated in the implementation |
-| 3 | Journal mutex selected (P3) | Recommended: row lock (section 6.1) | Prototype only (two containers, one host) |
-| 4 | Incremental verification designed and tested (P4) | Designed (section 6.2) | **Not tested** |
-| 5 | Unknown commit handling designed and fault-injection tested (P5) | Designed (section 6.3) | **Not tested** (needs the fault proxy) |
-| 6 | Native Linux durability test completed (P7) | Specified (section 16.1) | **Not done** |
-| 7 | Large-installation clearance validated (P6) | Designed (section 9.1); maximum size open | **Not tested** (bounded-memory version) |
-| 8 | Backup retention duration selected | — | — (**awaiting the product owner**) |
-| 9 | Security and downgrade behaviour reviewed (N9; accepted risks D3, N7) | Documented (sections 13, 17) | Downgrade **not tested** |
-| 10 | Production implementation scope explicitly approved | — | — (**awaiting the product owner**) |
-
-5. **Optional, after decisions:**
-   - an off-host journal anchor (D3);
-   - settings journaling (D10);
-   - receiver headers (D11);
-   - a keyed integrity check (N7);
-   - a break-glass re-baseline (N3).
+| # | Gate | Design | Prototype validation | Production integration testing |
+|---|---|---|---|---|
+| 1 | Final design approved | Revised (this document) | — | — (**awaiting the product owner**) |
+| 2 | P1: savepoint behaviour | Specified (§6) | Passed (Phase 0, two containers) | Not done |
+| 3 | P2: short-write handling | Specified (§6) | Passed (Phase 0, full disk) | Not done |
+| 4 | P3: database row lock as the journal mutex | Specified (§6.1) | Passed (Phase 0 and 0.5, one host) | Not done |
+| 5 | P4: incremental verification, and the full-verification schedule | Specified (§6.2); **schedule pending (V2)** | Passed up to 1,000,000 records (Phase 0.5) | Not done |
+| 6 | P5: unknown `COMMIT` resolution | Specified (§6.3), with failure classification | Passed, 5 wire-protocol scenarios (Phase 0.5) | Not done (the real driver mapping) |
+| 7 | P6: clearance, and invalidating every approval | Specified (§9, §9.1) | Clearance passed up to 1,000,000 actions; the every-approval rule (V3) **not yet tested** | Not done |
+| 8 | P7: native Linux durability | Specified (§16.1) | **NOT TESTED** | **NOT TESTED** |
+| 9 | P8: database-enforced downgrade protection | Specified (§6.5); **awaiting approval** | Passed as a demonstration trigger (Phase 0.5) | Not done (integration tests listed in §6.5) |
+| 10 | Bounded void memory (V1) | Specified (§6.2.1) | Bound used; the fail-closed path **not exercised** | Not done |
+| 11 | Recovery and clone restrictions (D8, N8) | Specified (§7, §11) | Not tested (the new-installation path wasn't built) | Not done |
+| 12 | Backup retention selected | — | — | — (**awaiting the product owner**) |
+| 13 | Accepted risks explicitly approved: coordinated snapshot, truncation | Documented (§17) | Truncation shown undetected (Phase 0, case 15) | — (**awaiting the product owner**) |
+| 14 | Maximum installation size selected | — | Evidence up to 1,000,000 actions on one development machine | — (**awaiting the product owner**) |
+| 15 | Production implementation scope explicitly approved | — | — | — (**awaiting the product owner**) |
 
 ---
 
