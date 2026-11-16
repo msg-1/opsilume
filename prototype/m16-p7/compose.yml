@@ -1,0 +1,42 @@
+# P7 durability harness (Milestone 16). Its own Compose project. PostgreSQL is on an internal network only; the
+# harness container also joins `egress`, solely to reach the acknowledgement recorder on ANOTHER host. Nothing is
+# published to the host. No fault proxy and no webhook receiver: dispatches are synthetic intent records only.
+# The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime (build it with `npm run isolated:up`).
+# Override the project name for a smoke run (-p opspilot-m16-p7-smoke); never use the default `opspilot` project.
+name: opspilot-m16-p7
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: "no"
+    environment: { POSTGRES_USER: proto, POSTGRES_PASSWORD: proto, POSTGRES_DB: proto }
+    # P7 decision 4: all three required. wal_sync_method is left at the platform default and recorded (decision 5).
+    command: ["postgres", "-c", "fsync=on", "-c", "full_page_writes=on", "-c", "synchronous_commit=on", "-c", "max_connections=100", "-c", "shared_buffers=512MB"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [p7db]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 60 }
+  harness:
+    image: opspilot-isolated-api:latest
+    restart: "no"
+    user: "0:0"
+    entrypoint: ["sleep", "infinity"]
+    working_dir: /prototype/m16-p7
+    environment:
+      PROTO_DATABASE_URL: postgresql://proto:proto@db:5432/proto?sslmode=disable&connection_limit=16
+      PROTO_DIRECT_URL: postgresql://proto:proto@db:5432/proto?sslmode=disable&connection_limit=16
+      PROTO_STATE_DIR: /state
+      P7_EVIDENCE_DIR: /evidence
+      P7_RECORDER_URL: ${P7_RECORDER_URL:?set P7_RECORDER_URL to the recorder on the other host, e.g. http://192.168.1.20:8787}
+    volumes:
+      - state:/state
+      - ../:/prototype:ro
+      - ${P7_EVIDENCE_HOST:-./evidence}:/evidence
+    networks: [p7db, egress]
+    depends_on: { db: { condition: service_healthy } }
+
+networks:
+  p7db: { internal: true }
+  egress: {}
+volumes:
+  pgdata:
+  state:
