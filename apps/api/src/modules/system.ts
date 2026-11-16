@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { aiService } from '../integrations/aiService';
 import { env } from '../config/env';
-import { writeAudit } from '../lib/audit';
+import { auditIn } from '../lib/audit';
 import { purgeExpiredIdempotencyKeys } from '../lib/idempotency';
 import { logger } from '../lib/logger';
 import { prisma } from '../lib/prisma';
@@ -54,9 +54,16 @@ export async function reapStranded(now = new Date()) {
   for (const action of actions) {
     // Only this attempt, only while still in progress: two workers sweeping at once record it once.
     const record = { mode: 'unknown', success: false, outcome: 'unknown', summary: unknown, interrupted: true, attempt: action.attempts, contentHash: action.contentHash, startedAt: action.updatedAt.toISOString(), idempotencyKey: action.id };
-    const claimed = await prisma.remediationAction.updateMany({ where: { id: action.id, status: 'EXECUTING', attempts: action.attempts, updatedAt: action.updatedAt }, data: { status: 'FAILED', executedAt: now, executionResult: record } });
-    if (!claimed.count) continue;
-    await writeAudit({ organizationId: action.organizationId, actorType: 'system', actorLabel: 'OPSILUME worker', action: 'remediation.execute_interrupted', resourceType: 'remediation_action', resourceId: action.id, metadata: { attempt: action.attempts, contentHash: action.contentHash, startedAt: action.updatedAt.toISOString(), staleMinutes: env.REMEDIATION_EXECUTION_STALE_MINUTES } });
+    // The state change and its audit row commit together. If the audit cannot be written, the action
+    // stays EXECUTING and the next sweep tries again; the other actions are still swept now.
+    const claimed = await prisma
+      .$transaction(async (tx) => {
+        const done = await tx.remediationAction.updateMany({ where: { id: action.id, status: 'EXECUTING', attempts: action.attempts, updatedAt: action.updatedAt }, data: { status: 'FAILED', executedAt: now, executionResult: record } });
+        if (done.count) await auditIn(tx, { organizationId: action.organizationId, actorType: 'system', actorLabel: 'OPSILUME worker', action: 'remediation.execute_interrupted', resourceType: 'remediation_action', resourceId: action.id, metadata: { attempt: action.attempts, contentHash: action.contentHash, startedAt: action.updatedAt.toISOString(), staleMinutes: env.REMEDIATION_EXECUTION_STALE_MINUTES } });
+        return done.count;
+      })
+      .catch((err) => (logger.error({ err, actionId: action.id }, 'could not record an interrupted execution; retried on the next sweep'), 0));
+    if (!claimed) continue;
     if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Remediation outcome unknown: ${action.title} — ${unknown}`, { kind: 'system', label: 'OPSILUME worker' }, { actionId: action.id });
   }
 

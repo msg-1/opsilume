@@ -13,6 +13,13 @@ import { requiredApprovals as requiredFor } from './effect';
  * Superseded and expired approvals stay on record.
  */
 
+type Tx = Prisma.TransactionClient;
+/**
+ * Runs `fn` in the caller's transaction when one is given, so a route can commit the change and its
+ * audit row together (lib/audit.ts, auditIn); otherwise in a transaction of its own.
+ */
+const within = <T>(db: Tx | undefined, fn: (tx: Tx) => Promise<T>) => (db ? fn(db) : prisma.$transaction(fn));
+
 type ApprovalRow = { approverId: string; decision: string; contentHash: string | null; supersededAt: Date | null; createdAt: Date };
 
 /** The moment before which an approval no longer counts. */
@@ -63,9 +70,9 @@ export async function lockAction(tx: Prisma.TransactionClient, actionId: string)
  * number of approvals needed never goes down: it is what the current settings require, or what
  * the action already required, whichever is more. Returns false when it was already submitted.
  */
-export async function submitForApproval(expected: Content & { id: string }, requestedById: string, requiredApprovals: number, hash: string): Promise<boolean> {
+export async function submitForApproval(expected: Content & { id: string }, requestedById: string, requiredApprovals: number, hash: string, db?: Tx): Promise<boolean> {
   const actionId = expected.id;
-  return prisma.$transaction(async (tx) => {
+  return within(db, async (tx) => {
     const row = await lockAction(tx, actionId);
     if (row?.status !== 'PROPOSED') return false;
     // `hash` was computed from the copy the submitter read. Under the lock, the action must still say
@@ -83,8 +90,8 @@ export async function submitForApproval(expected: Content & { id: string }, requ
  * settings require; under the lock it is raised to the stored number if that is higher, and the
  * stored number is raised to it, never lowered. Returns the number actually applied.
  */
-export function recordApproval(action: { id: string; requiredApprovals: number }, approverId: string, hash: string, comment?: string) {
-  return prisma.$transaction(async (tx) => {
+export function recordApproval(action: { id: string; requiredApprovals: number }, approverId: string, hash: string, comment?: string, db?: Tx) {
+  return within(db, async (tx) => {
     // Under the lock: still awaiting approval, still bound to the hash the approver was shown.
     const row = await lockAction(tx, action.id);
     if (!row || row.status !== 'PENDING_APPROVAL' || row.contentHash !== hash) throw conflict('This action changed while you were approving it. Reload it and review what you are approving.');
@@ -100,8 +107,8 @@ export function recordApproval(action: { id: string; requiredApprovals: number }
 }
 
 /** PENDING_APPROVAL → REJECTED, under the lock: refused if the action moved on or changed since the rejecter read it. */
-export function recordRejection(action: Content & { id: string; contentHash: string | null }, approverId: string, comment: string) {
-  return prisma.$transaction(async (tx) => {
+export function recordRejection(action: Content & { id: string; contentHash: string | null }, approverId: string, comment: string, db?: Tx) {
+  return within(db, async (tx) => {
     const row = await lockAction(tx, action.id);
     if (!row || row.status !== 'PENDING_APPROVAL' || row.contentHash !== action.contentHash) throw conflict('This action changed while you were rejecting it. Reload it and review what you are rejecting.');
     await tx.approval.create({ data: { actionId: action.id, approverId, decision: 'rejected', comment, contentHash: contentHash(action) } });
@@ -114,8 +121,8 @@ export function recordRejection(action: Content & { id: string; contentHash: str
  * approvers can decide again; only while the action is still in `status` (an action that moved on,
  * to execution for example, keeps its approvals as they were). Returns how many, and their times.
  */
-export function supersedeExpired(actionId: string, status: 'PENDING_APPROVAL' | 'APPROVED'): Promise<{ count: number; approvedAt: string[]; cutoff: string }> {
-  return prisma.$transaction(async (tx) => {
+export function supersedeExpired(actionId: string, status: 'PENDING_APPROVAL' | 'APPROVED', db?: Tx): Promise<{ count: number; approvedAt: string[]; cutoff: string }> {
+  return within(db, async (tx) => {
     const row = await lockAction(tx, actionId);
     const cutoff = approvalCutoff(await databaseNow(tx));
     if (row?.status !== status) return { count: 0, approvedAt: [], cutoff: cutoff.toISOString() };
@@ -134,8 +141,8 @@ export const supersedeApprovals = (actionId: string, db: Prisma.TransactionClien
  * The action is not what was approved: its approvals stop counting and it starts again from
  * PROPOSED. Only while it is still APPROVED; returns false, having changed nothing, otherwise.
  */
-export function invalidateApproval(actionId: string): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
+export function invalidateApproval(actionId: string, db?: Tx): Promise<boolean> {
+  return within(db, async (tx) => {
     if ((await lockAction(tx, actionId))?.status !== 'APPROVED') return false;
     await supersedeApprovals(actionId, tx);
     await tx.remediationAction.update({ where: { id: actionId }, data: { status: 'PROPOSED', contentHash: null } });
@@ -149,8 +156,8 @@ export function invalidateApproval(actionId: string): Promise<boolean> {
  * waiting for the rest, needing the higher of `required` and what it already needed. Under the
  * lock. Returns the number applied, or null when it could not (no requester on record, or it moved on).
  */
-export function awaitMoreApprovals(actionId: string, hash: string, required: number): Promise<number | null> {
-  return prisma.$transaction(async (tx) => {
+export function awaitMoreApprovals(actionId: string, hash: string, required: number, db?: Tx): Promise<number | null> {
+  return within(db, async (tx) => {
     const row = await lockAction(tx, actionId);
     if (!row || row.status !== 'APPROVED' || row.contentHash !== hash || !row.requestedById) return null;
     const applied = Math.max(row.requiredApprovals, required);
@@ -186,8 +193,8 @@ export type Claim =
  * claim returns it, and the dispatch uses exactly that: the settings are not read again, so an
  * address saved after the claim is never used for this attempt.
  */
-export function claimExecution(actionId: string, organizationId: string, status: string, hash: string | null, executedById: string, target: string | null = null): Promise<Claim> {
-  return prisma.$transaction(async (tx) => {
+export function claimExecution(actionId: string, organizationId: string, status: string, hash: string | null, executedById: string, target: string | null = null, db?: Tx): Promise<Claim> {
+  return within(db, async (tx) => {
     const row = await lockAction(tx, actionId);
     if (!row || row.status !== status || (hash !== null && row.contentHash !== hash)) return { claimed: false, reason: 'moved_on' } as const;
     let approvers: { approverId: string; approvedAt: Date }[] = [];

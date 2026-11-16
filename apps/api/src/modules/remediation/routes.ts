@@ -1,7 +1,7 @@
 import type { Prisma, RemediationAction } from '@prisma/client';
 import { type Request, Router } from 'express';
 import { z } from 'zod';
-import { audit } from '../../lib/audit';
+import { audit, auditEntry, auditIn } from '../../lib/audit';
 import { badRequest, conflict, forbidden } from '../../lib/errors';
 import { csvEnum, paged, paginate, paginationQuery, param } from '../../lib/http';
 import { notifyRoles, notifyUsers } from '../../lib/notify';
@@ -30,8 +30,8 @@ type Settings = Awaited<ReturnType<typeof getSettings>>;
 const MOVED_ON = 'This action changed while it was being executed or checked by someone else. Reload it. Nothing was executed.';
 
 /** An APPROVED action that may not run yet goes back to waiting for approvals, or, failing that, to PROPOSED. Null when it had already moved on. */
-const stepBack = async (actionId: string, hash: string, required: number) =>
-  (await awaitMoreApprovals(actionId, hash, required)) ? ('PENDING_APPROVAL' as const) : (await invalidateApproval(actionId)) ? ('PROPOSED' as const) : null;
+const stepBack = async (actionId: string, hash: string, required: number, db?: Prisma.TransactionClient) =>
+  (await awaitMoreApprovals(actionId, hash, required, db)) ? ('PENDING_APPROVAL' as const) : (await invalidateApproval(actionId, db)) ? ('PROPOSED' as const) : null;
 const bindingOf = (settings: Settings, unverifiedSource: boolean) => ({ unverifiedSource, executionTarget: executionTarget(settings) });
 
 /** Why the fingerprint an action was submitted under no longer matches it, or null when it does. */
@@ -115,8 +115,13 @@ remediationRouter.post('/:id/request-approval', requirePermission('remediation:p
   const unverified = source.required && !source.verified;
   if (unverified && !acknowledgeUnverifiedSource) throw conflict(sourceMessage(source, action.proposedByType));
   const hash = approvalHash(action, bindingOf(settings, unverified));
-  if (!(await submitForApproval(action, auth.userId, requiredApprovals(settings, action.risk, 'state_changing'), hash))) throw conflict('This action was already submitted');
-  await audit(req, 'remediation.request_approval', 'remediation_action', action.id, { risk: action.risk, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true, sourceReasons: source.reasons } : {}) });
+  // Each transition below commits with its audit row or not at all (lib/audit.ts, auditIn).
+  const submitted = await prisma.$transaction(async (tx) => {
+    if (!(await submitForApproval(action, auth.userId, requiredApprovals(settings, action.risk, 'state_changing'), hash, tx))) return false;
+    await auditIn(tx, auditEntry(req, 'remediation.request_approval', 'remediation_action', action.id, { risk: action.risk, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true, sourceReasons: source.reasons } : {}) }));
+    return true;
+  });
+  if (!submitted) throw conflict('This action was already submitted');
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Approval requested for: ${action.title}`, auth, { actionId: action.id });
   await notifyRoles(action.risk === 'HIGH' ? ['OWNER', 'ADMIN'] : ['OWNER', 'ADMIN', 'ENGINEER'], { organizationId: auth.organizationId, type: 'remediation.approval_requested', title: `Approval needed: ${action.title}`, body: `${auth.label} requested approval for a ${action.risk.toLowerCase()}-risk action.`, link: `/remediation/${action.id}` }, auth.userId);
   res.json(await present(auth.organizationId, action.id));
@@ -128,11 +133,12 @@ remediationRouter.post('/:id/approve', requirePermission('remediation:approve'),
   let action = await load(auth.organizationId, param(req.params.id));
   if (action.status !== 'PENDING_APPROVAL') throw conflict(`This action is not awaiting approval (current status: ${action.status})`);
   // Approvals past their validity stop counting here, so their approvers can decide again.
-  const expired = await supersedeExpired(action.id, 'PENDING_APPROVAL');
-  if (expired.count) {
-    await audit(req, 'remediation.approval_expired', 'remediation_action', action.id, { superseded: expired.count, approvedAt: expired.approvedAt, cutoff: expired.cutoff, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'approve' });
-    action = await load(auth.organizationId, action.id);
-  }
+  const expired = await prisma.$transaction(async (tx) => {
+    const found = await supersedeExpired(action.id, 'PENDING_APPROVAL', tx);
+    if (found.count) await auditIn(tx, auditEntry(req, 'remediation.approval_expired', 'remediation_action', action.id, { superseded: found.count, approvedAt: found.approvedAt, cutoff: found.cutoff, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'approve' }));
+    return found;
+  });
+  if (expired.count) action = await load(auth.organizationId, action.id);
   const settings = await getSettings(auth.organizationId);
   const risk = await currentRisk(action);
   if (risk !== action.risk) {
@@ -152,9 +158,12 @@ remediationRouter.post('/:id/approve', requirePermission('remediation:approve'),
   }
   if (action.approvals.some((a) => a.approverId === auth.userId && !a.supersededAt)) throw conflict('You have already recorded a decision on this action');
   // The threshold is worked out from the risk as it is now; recordApproval applies it under the lock, never lowering the stored one.
-  const result = await recordApproval({ id: action.id, requiredApprovals: approvalThreshold(settings, action) }, auth.userId, hash, comment);
+  const result = await prisma.$transaction(async (tx) => {
+    const recorded = await recordApproval({ id: action.id, requiredApprovals: approvalThreshold(settings, action) }, auth.userId, hash, comment, tx);
+    await auditIn(tx, auditEntry(req, 'remediation.approve', 'remediation_action', action.id, { granted: recorded.granted, required: recorded.required, risk: action.risk, comment, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true } : {}) }));
+    return recorded;
+  });
   const { required } = result;
-  await audit(req, 'remediation.approve', 'remediation_action', action.id, { granted: result.granted, required, risk: action.risk, comment, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true } : {}) });
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `${auth.label} approved: ${action.title} (${result.granted}/${required})`, auth, { actionId: action.id });
   if (result.approved) {
     await notifyUsers([action.requestedById], { organizationId: auth.organizationId, type: 'remediation.approved', title: `Approved: ${action.title}`, body: 'The action can now be executed.', link: `/remediation/${action.id}` });
@@ -168,8 +177,10 @@ remediationRouter.post('/:id/reject', requirePermission('remediation:approve'), 
   const action = await load(auth.organizationId, param(req.params.id));
   if (action.status !== 'PENDING_APPROVAL') throw conflict(`This action is not awaiting approval (current status: ${action.status})`);
   if (action.approvals.some((a) => a.approverId === auth.userId && !a.supersededAt)) throw conflict('You have already recorded a decision on this action');
-  await recordRejection(action, auth.userId, comment);
-  await audit(req, 'remediation.reject', 'remediation_action', action.id, { comment });
+  await prisma.$transaction(async (tx) => {
+    await recordRejection(action, auth.userId, comment, tx);
+    await auditIn(tx, auditEntry(req, 'remediation.reject', 'remediation_action', action.id, { comment }));
+  });
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `${auth.label} rejected: ${action.title} — ${comment}`, auth, { actionId: action.id });
   await notifyUsers([action.requestedById], { organizationId: auth.organizationId, type: 'remediation.rejected', title: `Rejected: ${action.title}`, body: comment, link: `/remediation/${action.id}` });
   res.json(await present(auth.organizationId, action.id));
@@ -222,25 +233,36 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
     const expiredHere = action.approvals.filter((a) => a.contentHash === expected && isExpired(a, now));
     if (expected === action.contentHash && valid.length < required && expiredHere.length) {
       // Approvals given for this content, but too long ago. They stay on record; the action waits for fresh ones.
-      const superseded = await supersedeExpired(action.id, 'APPROVED');
-      if (!superseded.count) throw conflict(MOVED_ON);
-      const newStatus = await stepBack(action.id, expected, required);
-      // What was superseded, and where the action went, as it actually happened.
-      await audit(req, 'remediation.approval_expired', 'remediation_action', action.id, { expired: superseded.count, approvedAt: superseded.approvedAt, cutoff: superseded.cutoff, validApprovals: valid.length, required, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'execute', newStatus: newStatus ?? 'unchanged' });
+      // Superseding, stepping back and the audit row are one transaction, under the action's lock.
+      const newStatus = await prisma.$transaction(async (tx) => {
+        const superseded = await supersedeExpired(action.id, 'APPROVED', tx);
+        if (!superseded.count) return null;
+        const stepped = await stepBack(action.id, expected, required, tx);
+        // What was superseded, and where the action went, as it actually happened.
+        await auditIn(tx, auditEntry(req, 'remediation.approval_expired', 'remediation_action', action.id, { expired: superseded.count, approvedAt: superseded.approvedAt, cutoff: superseded.cutoff, validApprovals: valid.length, required, validityHours: env.REMEDIATION_APPROVAL_VALIDITY_HOURS, stage: 'execute', newStatus: stepped ?? 'unchanged' }));
+        return stepped;
+      });
       if (!newStatus) throw conflict(MOVED_ON);
       throw conflict(`${expiredHere.length} approval(s) of this action are older than ${env.REMEDIATION_APPROVAL_VALIDITY_HOURS} hours and no longer count. It is waiting for approval again; nothing was executed.`);
     }
     if (!valid.length) {
       // Bound to this fingerprint, but no approval counts for it. It starts again.
-      if (!(await invalidateApproval(action.id))) throw conflict(MOVED_ON);
-      await audit(req, 'remediation.approval_invalid', 'remediation_action', action.id, { approvedHash: action.contentHash, currentHash: expected, validApprovals: 0, required, stage: 'execute', newStatus: 'PROPOSED' });
+      const invalidated = await prisma.$transaction(async (tx) => {
+        if (!(await invalidateApproval(action.id, tx))) return false;
+        await auditIn(tx, auditEntry(req, 'remediation.approval_invalid', 'remediation_action', action.id, { approvedHash: action.contentHash, currentHash: expected, validApprovals: 0, required, stage: 'execute', newStatus: 'PROPOSED' }));
+        return true;
+      });
+      if (!invalidated) throw conflict(MOVED_ON);
       throw conflict('No approval counts for this action as it is now. Submit it for approval again. Nothing was executed.');
     }
     if (valid.length < required) {
       // Same content, too few approvals. Those given still count; the action waits for the rest.
-      const newStatus = await stepBack(action.id, expected, required);
+      const newStatus = await prisma.$transaction(async (tx) => {
+        const stepped = await stepBack(action.id, expected, required, tx);
+        if (stepped) await auditIn(tx, auditEntry(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: valid.length, required, recorded: action.requiredApprovals, newStatus: stepped }));
+        return stepped;
+      });
       if (!newStatus) throw conflict(MOVED_ON);
-      await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: valid.length, required, recorded: action.requiredApprovals, newStatus });
       throw conflict(`This ${action.risk.toLowerCase()}-risk action needs ${required} approvals and has ${valid.length}. It is waiting for approval again; nothing was executed.`);
     }
     approvers = valid.map((a) => ({ approverId: a.approverId, approvedAt: a.createdAt }));
@@ -252,7 +274,19 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
   }
   // Claim the action atomically so it cannot be executed twice, only with the content that was
   // checked, and only if enough approvals count under the settings as they are at this moment.
-  const claim = await claimExecution(action.id, auth.organizationId, action.status, readOnly ? null : approvedHash, auth.userId, readOnly ? null : executionTarget(settings));
+  // The claim and its audit row (execute_start, or approval_insufficient) commit together: an
+  // attempt is never started without its record, and nothing is dispatched before this commits.
+  const claim = await prisma.$transaction(async (tx) => {
+    const claimed = await claimExecution(action.id, auth.organizationId, action.status, readOnly ? null : approvedHash, auth.userId, readOnly ? null : executionTarget(settings), tx);
+    if (claimed.claimed) {
+      const by = readOnly ? approvers : claimed.approvers;
+      const mode = readOnly ? 'diagnostic' : claimed.destination.url ? 'webhook' : 'manual';
+      await auditIn(tx, auditEntry(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, approvalHash: readOnly ? null : approvedHash, attempt: action.attempts + 1, approvedBy: by.map((a) => a.approverId), approvedAt: by.map((a) => a.approvedAt.toISOString()), ...(sourceState ? { sourceRequired: sourceState.required, sourceVerified: sourceState.verified, ...(sourceState.required && !sourceState.verified ? { approvedOnAcknowledgedReview: true } : {}) } : {}) }));
+    } else if (claimed.reason === 'insufficient') {
+      await auditIn(tx, auditEntry(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: claimed.valid, required: claimed.required, recorded: action.requiredApprovals, newStatus: claimed.newStatus, stage: 'claim' }));
+    }
+    return claimed;
+  });
   if (!claim.claimed && claim.reason === 'destination_changed') {
     // The webhook address was changed after the route read it. The approvals were given for the earlier destination.
     await requireFreshApproval(req, auth, action, 'remediation.approval_invalid', { approvedHash: action.contentHash, reason: 'destination_changed', validApprovals: 0, stage: 'claim' }, `"${action.title}" needs approval again: where it would be carried out changed after it was approved`);
@@ -260,17 +294,21 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
   }
   if (!claim.claimed && claim.reason === 'moved_on') throw conflict('This action is already being executed, or changed since it was checked. Reload it. Nothing was executed.');
   if (!claim.claimed) {
-    await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: claim.valid, required: claim.required, recorded: action.requiredApprovals, newStatus: claim.newStatus, stage: 'claim' });
     throw conflict(`This ${action.risk.toLowerCase()}-risk action needs ${claim.required} approvals and has ${claim.valid}. It is waiting for approval again; nothing was executed.`);
   }
   if (!readOnly) approvers = claim.approvers;
-  const mode = readOnly ? 'diagnostic' : claim.destination.url ? 'webhook' : 'manual';
-  await audit(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, approvalHash: readOnly ? null : approvedHash, attempt: action.attempts + 1, approvedBy: approvers.map((a) => a.approverId), approvedAt: approvers.map((a) => a.approvedAt.toISOString()), ...(sourceState ? { sourceRequired: sourceState.required, sourceVerified: sourceState.verified, ...(sourceState.required && !sourceState.verified ? { approvedOnAcknowledgedReview: true } : {}) } : {}) });
 
   const startedAt = new Date();
   const result = await execute({ ...action, attempts: action.attempts + 1 }, { userId: auth.userId, label: auth.label }, approvers, body.notes, hash, claim.destination);
   const attempt = action.attempts + 1;
-  if (!(await recordOutcome(action.id, { ...result, contentHash: hash, attempt, approvedBy: approvers, startedAt, finishedAt: new Date() }))) {
+  // The outcome and its audit row commit together. If that fails, the action stays EXECUTING and the
+  // sweep records the attempt as unknown for a person to reconcile (system.ts): never as done or failed.
+  const recorded = await prisma.$transaction(async (tx) => {
+    if (!(await recordOutcome(action.id, { ...result, contentHash: hash, attempt, approvedBy: approvers, startedAt, finishedAt: new Date() }, tx))) return false;
+    await auditIn(tx, auditEntry(req, result.success ? 'remediation.execute_success' : 'remediation.execute_failure', 'remediation_action', action.id, { mode: result.mode, outcome: result.outcome, summary: result.summary, contentHash: hash }));
+    return true;
+  });
+  if (!recorded) {
     // This attempt was recorded as interrupted (or reconciled) while it was running. Its outcome is
     // kept in the audit log for whoever reconciles it; it does not overwrite what was recorded.
     await audit(req, 'remediation.outcome_after_interruption', 'remediation_action', action.id, { attempt, mode: result.mode, outcome: result.outcome, success: result.success, contentHash: hash });
@@ -278,7 +316,6 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
     throw conflict(`The outcome of attempt ${attempt} (${result.outcome}) arrived after the attempt had been recorded as interrupted. It is in the audit log; record what happened with reconcile.`);
   }
   if (result.success && !readOnly) await recordEffects(action, auth, result);
-  await audit(req, result.success ? 'remediation.execute_success' : 'remediation.execute_failure', 'remediation_action', action.id, { mode: result.mode, outcome: result.outcome, summary: result.summary, contentHash: hash });
   if (action.incidentId) {
     const what = result.success ? (readOnly ? 'Diagnostic recorded' : 'Remediation executed') : result.outcome === 'unknown' ? 'Remediation outcome unknown' : 'Remediation failed';
     await addIncidentEvent(action.incidentId, 'remediation', `${what}: ${action.title} — ${result.summary}`, auth, { actionId: action.id, mode: result.mode, outcome: result.outcome });
@@ -315,7 +352,7 @@ remediationRouter.patch('/:id', requirePermission('remediation:propose'), requir
     const now = await tx.remediationAction.findUnique({ where: { id: action.id } });
     if (!row || row.status !== action.status || !now || contentHash(now) !== before) return { count: 0 };
     if (changed) await supersedeApprovals(action.id, tx);
-    return tx.remediationAction.updateMany({
+    const done = await tx.remediationAction.updateMany({
       where: { id: action.id, status: action.status },
       data: {
         title: next.title, description: next.description, rationale: next.rationale, risk: next.risk, serviceId: next.serviceId,
@@ -325,9 +362,10 @@ remediationRouter.patch('/:id', requirePermission('remediation:propose'), requir
         ...(changed ? { status: 'PROPOSED' as const, contentHash: null, requestedById: null, requestedAt: null } : {}),
       },
     });
+    if (done.count) await auditIn(tx, auditEntry(req, 'remediation.edit', 'remediation_action', action.id, { fields: Object.keys(patch), previousHash: before, newHash: after, supersededApprovals: superseded, previousStatus: action.status, ...(next.risk !== action.risk ? { previousRisk: action.risk, newRisk: next.risk } : {}) }));
+    return done;
   });
   if (!updated.count) throw conflict('This action changed state; reload and try again');
-  await audit(req, 'remediation.edit', 'remediation_action', action.id, { fields: Object.keys(patch), previousHash: before, newHash: after, supersededApprovals: superseded, previousStatus: action.status, ...(next.risk !== action.risk ? { previousRisk: action.risk, newRisk: next.risk } : {}) });
   if (changed && action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Remediation edited: ${next.title}${next.risk !== action.risk ? ` (risk ${action.risk.toLowerCase()} → ${next.risk.toLowerCase()})` : ''}${superseded ? ` (${superseded} approval(s) no longer count)` : ''}`, auth, { actionId: action.id });
   res.json(await present(auth.organizationId, action.id));
 });
@@ -350,13 +388,16 @@ remediationRouter.post('/:id/retry', requirePermission('remediation:execute'), r
   if (last.outcome !== 'not_applied') {
     throw conflict(`The outcome of attempt ${action.attempts} is ${last.outcome ?? 'unknown'}: the change may have been applied. Check the target system and record what happened (reconcile); it can be retried once it is recorded as not applied.`);
   }
-  const updated = await prisma.remediationAction.updateMany({
-    where: { id: action.id, organizationId: auth.organizationId, status: 'FAILED', attempts: action.attempts, updatedAt: action.updatedAt },
-    data: { status: 'APPROVED' },
+  const reconciled = Array.isArray(last.reconciliations) && last.reconciliations.at(-1)?.outcome === 'not_applied';
+  const updated = await prisma.$transaction(async (tx) => {
+    const done = await tx.remediationAction.updateMany({
+      where: { id: action.id, organizationId: auth.organizationId, status: 'FAILED', attempts: action.attempts, updatedAt: action.updatedAt },
+      data: { status: 'APPROVED' },
+    });
+    if (done.count) await auditIn(tx, auditEntry(req, 'remediation.retry', 'remediation_action', action.id, { attempt: action.attempts, previousOutcome: 'not_applied', notAppliedBecause: reconciled ? 'reconciled' : 'refused' }));
+    return done;
   });
   if (!updated.count) throw conflict('This action changed; reload it before retrying');
-  const reconciled = Array.isArray(last.reconciliations) && last.reconciliations.at(-1)?.outcome === 'not_applied';
-  await audit(req, 'remediation.retry', 'remediation_action', action.id, { attempt: action.attempts, previousOutcome: 'not_applied', notAppliedBecause: reconciled ? 'reconciled' : 'refused' });
   res.json(await present(auth.organizationId, param(req.params.id)));
 });
 
@@ -386,13 +427,16 @@ remediationRouter.post('/:id/reconcile', requirePermission('remediation:execute'
   if (action.status !== 'FAILED' || last.outcome !== 'unknown') throw conflict(`Only an attempt whose outcome is unknown can be reconciled (current status: ${action.status}, outcome: ${String(last.outcome ?? 'none')})`);
   if (body.attempt !== action.attempts) throw conflict(`Attempt ${body.attempt} is not the latest attempt (${action.attempts}). Reload the action.`);
   const executionResult = reconciled(last, { outcome: body.outcome, by: auth.userId, byLabel: auth.label, at: new Date().toISOString(), notes: body.notes });
-  const updated = await prisma.remediationAction.updateMany({
-    where: { id: action.id, organizationId: auth.organizationId, status: 'FAILED', attempts: action.attempts, updatedAt: action.updatedAt },
-    data: { status: body.outcome === 'applied' ? 'EXECUTED' : 'FAILED', executionResult: executionResult as Prisma.InputJsonValue },
+  const updated = await prisma.$transaction(async (tx) => {
+    const done = await tx.remediationAction.updateMany({
+      where: { id: action.id, organizationId: auth.organizationId, status: 'FAILED', attempts: action.attempts, updatedAt: action.updatedAt },
+      data: { status: body.outcome === 'applied' ? 'EXECUTED' : 'FAILED', executionResult: executionResult as Prisma.InputJsonValue },
+    });
+    if (done.count) await auditIn(tx, auditEntry(req, 'remediation.reconcile', 'remediation_action', action.id, { attempt: action.attempts, outcome: body.outcome, previousOutcome: 'unknown', interrupted: !!last.interrupted, contentHash: last.contentHash ?? null }));
+    return done;
   });
   if (!updated.count) throw conflict('This action changed while you were reconciling it (someone else may have recorded a decision). Reload it.');
   if (body.outcome === 'applied') await recordEffects(action, auth, { mode: last.mode === 'webhook' ? 'webhook' : 'manual', reconciled: true });
-  await audit(req, 'remediation.reconcile', 'remediation_action', action.id, { attempt: action.attempts, outcome: body.outcome, previousOutcome: 'unknown', interrupted: !!last.interrupted, contentHash: last.contentHash ?? null });
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `${auth.label} reconciled "${action.title}" (attempt ${action.attempts}): ${body.outcome === 'applied' ? 'applied' : body.outcome === 'not_applied' ? 'not applied' : 'still unknown'}`, auth, { actionId: action.id, attempt: action.attempts });
   res.json(await present(auth.organizationId, action.id));
 });
@@ -401,9 +445,12 @@ remediationRouter.post('/:id/cancel', requirePermission('remediation:propose'), 
   const auth = userOf(req);
   const action = await load(auth.organizationId, param(req.params.id));
   if (!['PROPOSED', 'PENDING_APPROVAL', 'APPROVED'].includes(action.status)) throw conflict(`This action can no longer be cancelled (current status: ${action.status})`);
-  const updated = await prisma.remediationAction.updateMany({ where: { id: action.id, status: action.status }, data: { status: 'CANCELLED' } });
+  const updated = await prisma.$transaction(async (tx) => {
+    const done = await tx.remediationAction.updateMany({ where: { id: action.id, status: action.status }, data: { status: 'CANCELLED' } });
+    if (done.count) await auditIn(tx, auditEntry(req, 'remediation.cancel', 'remediation_action', action.id));
+    return done;
+  });
   if (!updated.count) throw conflict('This action changed state; reload and try again');
-  await audit(req, 'remediation.cancel', 'remediation_action', action.id);
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Remediation cancelled: ${action.title}`, auth, { actionId: action.id });
   res.json(await present(auth.organizationId, action.id));
 });
