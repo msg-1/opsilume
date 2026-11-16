@@ -114,6 +114,52 @@ Each is an engineering recommendation awaiting explicit product-owner approval. 
 
 **Readiness gate:** design §19, "Production readiness gate".
 
+## Phase 0.5 evidence and P8 (16 November 2026)
+
+A second isolated prototype was run: [post-restore-remediation-safety-phase05-validation-report.md](post-restore-remediation-safety-phase05-validation-report.md), on Docker Desktop on Apple silicon only.
+
+**No status above changes:** D1–D11 and N1–N11 keep the statuses in "Decision outcome", and every P or V item awaits explicit product-owner approval. The columns below are kept strictly apart:
+- **Approved in principle:** a product-owner status.
+- **Proposed technical design:** an engineering recommendation.
+- **Experimentally validated:** passed in a prototype, not in production.
+- **Not tested.**
+
+| Item | Approved in principle? | Proposed technical design | Experimentally validated | Not tested | Awaiting product-owner approval |
+|---|---|---|---|---|---|
+| P1: savepoint-held `void` | No | Design §6, step 5 | Phase 0 (two containers) | Production integration | **Yes** |
+| P2: short-write protection | No | Design §6 | Phase 0 (full disk) | Production integration | **Yes** |
+| P3: row lock as the journal mutex | No | Design §6.1 | Phase 0 and 0.5 (one host) | Multi-host (not supported); production integration | **Yes** |
+| P4: incremental verification, database head anchor | No | Design §6.2; the last record re-hashed **from its content** | Phase 0.5: 100,000 to 1,000,000 records; per-claim p50 ≈ 0.05 ms, p99 ≤ 0.45 ms; full verification 1.37 s and 106 MB at 1,000,000 records (235 MB); a same-head replacement caught only by the anchor | Production integration | **Yes** |
+| P5: unknown `COMMIT` resolution | No | Design §6.3, with classification before, inside and after the transaction callback | Phase 0.5: 5 wire-protocol fault scenarios | The real driver's error mapping; production integration | **Yes** |
+| P6: one bounded-memory clearance transaction | No | Design §9.1 | Phase 0.5: 100,000 actions in 0.92 s / 147 MB; 1,000,000 in 10.3 s / 246 MB; 6 failure scenarios fully cleared or unchanged; claims waited for the whole clearance; routes at most 2.9 s | Larger installations; production integration | **Yes** |
+| P7: native Linux durability | No | Design §16.1 (environment, procedure, expected results) | — | **Native Linux and power loss: NOT TESTED** | **Yes** |
+| **P8: database-enforced downgrade protection** | No | Design §6.5 | Phase 0.5: a demonstration trigger refused an older application's claim, with no effect on newer claims or the sweep | Older real application builds, migration atomicity, role separation, overhead | **Yes** |
+| P8a: separate migration and runtime roles | No | Design §6.5 | — | Everything | **Yes** |
+| P8b: emergency removal of the guard | No | Design §6.5: recommended none | — | — | **Yes** |
+| V1: bounded void memory (64) | No | Design §6.2.1 | The bound was used; the fail-closed path **not exercised** | The fail-closed path | **Yes** |
+| V2: full-verification schedule | No | Design §6.2.2: options, with a daily background check suggested as a starting point | Full-verification cost measured | — | **Yes: the interval is not chosen** |
+| V3: supersede every current approval at clearance | No | Design §9, rule 1 | **Not tested.** Phase 0.5 found the gap that motivates it | Everything | **Yes** |
+
+**Revised technical assessments:**
+- **N9 (no downgrades, approved in principle) is not enforceable as a policy alone.** Phase 0.5 shows an older application executing while ignoring the journal, with the installation still trusted. P8 is the proposed enforcement.
+- **P4's last-record check must recompute the hash from the content.** The prototype's first version, which compared only the stored field, missed an in-place rewrite; the error was in the prototype, and the design text is now explicit.
+- **P5's integration risk is in error classification,** not the resolution logic: which driver errors mean "inside the callback" against "after it".
+- **P6 holds atomically up to the tested size.** The open questions are lock waits for routes and the maximum size, not correctness.
+
+**Outstanding verification requirements:**
+- every production integration test (nothing is implemented);
+- the P8 integration tests (design §6.5);
+- the native Linux durability test (design §16.1);
+- the V1 fail-closed path;
+- V3;
+- the real driver mapping for P5;
+- clearance on the supported platform at sizes above the largest expected installation.
+
+**Phase 0 evidence.** The 15 input journals of Phase 0's experiment C were git-ignored (`*.log`) and never committed. Their recovery is recorded in the erratum of the [Phase 0 report](post-restore-remediation-safety-phase0-prototype-report.md):
+- 11 exact originals still exist locally;
+- 4 local files show the post-experiment state;
+- all 15 are reproducible by the deterministic generator.
+
 ## 2. D1–D11 decision table
 
 The decision wording is quoted exactly from the design's section 18. "Alternatives" are those the design itself describes. Each **Final decision** line records the product owner's decision of 16 November 2026. "Approved in principle" means approved as design direction, with conditions; nothing is implemented, and Phase 0 must confirm the technical assumptions first.
@@ -472,9 +518,12 @@ Even after the design and this review:
 
 **Still open:**
 - the absolute backup retention duration;
-- the new Phase 0 decisions P1 to P7 (above);
-- approval of the design as revised after Phase 0;
-- explicit approval of the production implementation scope (design §19, readiness gate).
+- acceptance of the coordinated-snapshot and truncation risks;
+- the maximum supported installation size;
+- the full-verification interval (V2);
+- P1 to P8, P8a, P8b, V1 and V3 (above);
+- final approval of the design as revised after Phase 0.5;
+- explicit approval of the production implementation scope (design §19, the 15-item readiness gate).
 
 **As originally listed for decision:**
 - **From the design:** D1–D11, journal retention and backup retention (section 2).
