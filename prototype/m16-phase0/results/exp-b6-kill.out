@@ -1,0 +1,8 @@
+while held: refused (expected)
+flock holder pid 2169 killed
+acquire_after_kill_ms=12236 (includes two docker exec round trips)
+== flock -o (descriptor not inherited by the command)
+while held: refused (expected)
+flock process 2201 killed
+after holder killed: acquired
+elapsed_ms=2256 (includes two docker exec round trips)

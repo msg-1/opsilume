@@ -1,0 +1,13 @@
+{
+  "expect": "trusted (fresh provisioning)",
+  "journalStatus": "empty",
+  "journalProblem": null,
+  "journalHead": 0,
+  "databaseHead": 0,
+  "claim": {
+    "claimed": true,
+    "problem": null,
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": null
+}

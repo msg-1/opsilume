@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (database behind journal: restore)",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 3,
+  "databaseHead": 2,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "database head 2 is behind the journal head 3",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

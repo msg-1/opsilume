@@ -1,0 +1,110 @@
+{
+  "beforeBackup": {
+    "executed": [
+      "a-1-1",
+      "a-1-2"
+    ],
+    "receiverHits": 2,
+    "journalHead": 2
+  },
+  "afterBackup": {
+    "executed": [
+      "a-1-3",
+      "a-1-4",
+      "a-2-1"
+    ],
+    "receiverHits": 5,
+    "journalHead": 5
+  },
+  "afterRestore": {
+    "restoredStatusOfA13": "APPROVED",
+    "claimAttempt": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "database head 2 is behind the journal head 5"
+    },
+    "receiverHits": 5,
+    "inspection": {
+      "problem": "database head 2 is behind the journal head 5",
+      "dbHead": 2,
+      "journalHead": 5,
+      "ranAfterBackup": [
+        {
+          "seq": 3,
+          "actionId": "a-1-3",
+          "dispatched": true,
+          "outcome": "applied"
+        },
+        {
+          "seq": 4,
+          "actionId": "a-1-4",
+          "dispatched": true,
+          "outcome": "applied"
+        },
+        {
+          "seq": 5,
+          "actionId": "a-2-1",
+          "dispatched": true,
+          "outcome": "applied"
+        }
+      ],
+      "digest": "1160452476c8ef63"
+    }
+  },
+  "clearance": {
+    "result": {
+      "cleared": true,
+      "superseded": 8,
+      "toProposed": 5,
+      "toUnknown": 3,
+      "executing": 0,
+      "audits": 2,
+      "unmatched": 0,
+      "ms": 5.379375010728836
+    },
+    "actions": [
+      {
+        "id": "a-1-1",
+        "status": "EXECUTED",
+        "outcome": "applied",
+        "note": null
+      },
+      {
+        "id": "a-1-2",
+        "status": "EXECUTED",
+        "outcome": "applied",
+        "note": null
+      },
+      {
+        "id": "a-1-3",
+        "status": "FAILED",
+        "outcome": "unknown",
+        "note": "journal: may have been sent: check the target system"
+      },
+      {
+        "id": "a-1-4",
+        "status": "FAILED",
+        "outcome": "unknown",
+        "note": "journal: may have been sent: check the target system"
+      },
+      {
+        "id": "a-1-5",
+        "status": "PROPOSED",
+        "outcome": null,
+        "note": null
+      },
+      {
+        "id": "a-2-1",
+        "status": "FAILED",
+        "outcome": "unknown",
+        "note": "journal: may have been sent: check the target system"
+      }
+    ],
+    "claimA13Again": {
+      "claimed": false,
+      "reason": "moved_on"
+    },
+    "receiverHits": 5,
+    "trustedAfter": true
+  }
+}

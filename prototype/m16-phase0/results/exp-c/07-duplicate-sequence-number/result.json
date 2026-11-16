@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (duplicate claim sequence)",
+  "journalStatus": "corrupt",
+  "journalProblem": "claim sequence 2, expected 3",
+  "journalHead": null,
+  "databaseHead": 2,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "journal corrupt (claim sequence 2, expected 3)",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

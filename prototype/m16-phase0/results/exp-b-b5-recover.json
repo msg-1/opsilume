@@ -1,0 +1,19 @@
+{
+  "before": {
+    "problem": null,
+    "dbHead": 0,
+    "journalHead": 0,
+    "after": []
+  },
+  "clear": {
+    "cleared": true,
+    "superseded": 600,
+    "toProposed": 600,
+    "toUnknown": 0,
+    "executing": 0,
+    "audits": 1,
+    "unmatched": 0,
+    "ms": 3037.2669599950314
+  },
+  "afterProblem": null
+}

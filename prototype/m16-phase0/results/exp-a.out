@@ -1,0 +1,198 @@
+{
+ "latency": {
+  "docker-volume": {
+   "none": {
+    "n": 2000,
+    "p50": 0.003,
+    "p95": 0.004,
+    "p99": 0.014,
+    "max": 0.665,
+    "mean": 0.004
+   },
+   "fdatasync": {
+    "n": 2000,
+    "p50": 0.267,
+    "p95": 0.454,
+    "p99": 0.622,
+    "max": 3.308,
+    "mean": 0.275
+   },
+   "fsync": {
+    "n": 2000,
+    "p50": 0.259,
+    "p95": 0.449,
+    "p99": 0.559,
+    "max": 2.512,
+    "mean": 0.264
+   }
+  },
+  "container-overlay": {
+   "none": {
+    "n": 2000,
+    "p50": 0.002,
+    "p95": 0.003,
+    "p99": 0.005,
+    "max": 0.152,
+    "mean": 0.003
+   },
+   "fdatasync": {
+    "n": 2000,
+    "p50": 0.258,
+    "p95": 0.45,
+    "p99": 0.634,
+    "max": 3,
+    "mean": 0.264
+   },
+   "fsync": {
+    "n": 2000,
+    "p50": 0.258,
+    "p95": 0.424,
+    "p99": 0.526,
+    "max": 1.027,
+    "mean": 0.258
+   }
+  },
+  "tmpfs": {
+   "none": {
+    "n": 2000,
+    "p50": 0.002,
+    "p95": 0.002,
+    "p99": 0.003,
+    "max": 0.108,
+    "mean": 0.002
+   },
+   "fdatasync": {
+    "n": 2000,
+    "p50": 0.002,
+    "p95": 0.003,
+    "p99": 0.006,
+    "max": 0.065,
+    "mean": 0.002
+   },
+   "fsync": {
+    "n": 2000,
+    "p50": 0.002,
+    "p95": 0.002,
+    "p99": 0.003,
+    "max": 0.047,
+    "mean": 0.002
+   }
+  }
+ },
+ "journalAppend": {
+  "lines 1-250": {
+   "n": 250,
+   "p50": 0.43,
+   "p95": 0.759,
+   "p99": 0.908,
+   "max": 1.663,
+   "mean": 0.468
+  },
+  "lines 251-500": {
+   "n": 250,
+   "p50": 0.722,
+   "p95": 1.08,
+   "p99": 1.289,
+   "max": 1.436,
+   "mean": 0.749
+  },
+  "lines 501-1000": {
+   "n": 500,
+   "p50": 1.186,
+   "p95": 2.194,
+   "p99": 2.733,
+   "max": 3.896,
+   "mean": 1.256
+  },
+  "finalStatus": "ok"
+ },
+ "throughput": {
+  "1 writer(s)": {
+   "appends": 2000,
+   "ms": 571,
+   "perSecond": 3503,
+   "linesFound": 2000,
+   "linesIntact": 2000
+  },
+  "2 writer(s)": {
+   "appends": 2000,
+   "ms": 501,
+   "perSecond": 3993,
+   "linesFound": 2000,
+   "linesIntact": 2000
+  },
+  "4 writer(s)": {
+   "appends": 2000,
+   "ms": 298,
+   "perSecond": 6714,
+   "linesFound": 2000,
+   "linesIntact": 2000
+  },
+  "8 writer(s)": {
+   "appends": 2000,
+   "ms": 224,
+   "perSecond": 8945,
+   "linesFound": 2000,
+   "linesIntact": 2000
+  }
+ },
+ "parse": {
+  "1000 records": {
+   "bytes": 251786,
+   "n": 5,
+   "p50": 1.27,
+   "p95": 1.385,
+   "p99": 1.385,
+   "max": 1.385,
+   "mean": 1.29
+  },
+  "10000 records": {
+   "bytes": 2537788,
+   "n": 5,
+   "p50": 13.619,
+   "p95": 14.017,
+   "p99": 14.017,
+   "max": 14.017,
+   "mean": 13
+  },
+  "100000 records": {
+   "bytes": 25577790,
+   "n": 5,
+   "p50": 154.42,
+   "p95": 169.212,
+   "p99": 169.212,
+   "max": 169.212,
+   "mean": 157.408
+  }
+ },
+ "diskFull": {
+  "appended": 133,
+  "firstError": {
+   "code": "JOURNAL_SHORT_WRITE",
+   "message": "short write: 343 of 461 bytes"
+  },
+  "journalStatusAfter": "torn_tail",
+  "head": 133,
+  "tornBytes": 343,
+  "nextAppend": {
+   "code": "JOURNAL_TORN",
+   "message": "journal has a torn tail; run the repair tool"
+  }
+ },
+ "unavailable": {
+  "readOnlyCreate": {
+   "ok": false,
+   "code": "ENOENT"
+  },
+  "fileDeleted": {
+   "appended": false,
+   "code": "JOURNAL_MISSING",
+   "recreated": false
+  },
+  "permissionDenied": {
+   "ok": false,
+   "code": "EACCES",
+   "message": "EACCES: permission denied, open '/vol/rootonly/journal.log'"
+  }
+ }
+}

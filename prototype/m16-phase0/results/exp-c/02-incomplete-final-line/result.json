@@ -1,0 +1,27 @@
+{
+  "expect": "torn tail ignored; appends refused until repaired",
+  "journalStatus": "torn_tail",
+  "journalProblem": null,
+  "journalHead": 3,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "error",
+    "problem": null,
+    "error": "journal has a torn tail; run the repair tool"
+  },
+  "inputUnchangedByFailedClaim": true,
+  "repair": {
+    "repaired": true,
+    "ignoredBytes": 60,
+    "statusAfterRepair": "ok",
+    "headAfterRepair": 3,
+    "fragmentPreserved": true,
+    "bytesBefore": 2107,
+    "bytesAfter": 2573,
+    "claimAfterRepair": {
+      "claimed": true,
+      "seq": 4
+    }
+  }
+}

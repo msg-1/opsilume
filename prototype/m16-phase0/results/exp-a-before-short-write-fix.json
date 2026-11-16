@@ -1,0 +1,211 @@
+{
+  "environment": {
+    "kernel": "6.12.76-linuxkit",
+    "arch": "arm64",
+    "cpus": 10,
+    "node": "v22.23.5",
+    "mounts": [
+      "overlay / overlay rw,relatime,lowerdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3707/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3663/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3660/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3657/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3654/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3502/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3498/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/996/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/993/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/942/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/941/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/940/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/939/fs:/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/938/fs,upperdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3708/fs,workdir=/var/lib/desktop-containerd/daemon/io.containerd.snapshotter.v1.overlayfs/snapshots/3708/work 0 0",
+      "tmpfs /ro tmpfs ro,nosuid,nodev,noexec,relatime,size=1024k 0 0",
+      "tmpfs /full tmpfs rw,nosuid,nodev,noexec,relatime,size=64k 0 0",
+      "tmpfs /mem tmpfs rw,nosuid,nodev,noexec,relatime,size=262144k 0 0",
+      "/dev/vda1 /vol ext4 rw,relatime,discard 0 0"
+    ]
+  },
+  "latency": {
+    "docker-volume": {
+      "none": {
+        "n": 2000,
+        "p50": 0.003,
+        "p95": 0.004,
+        "p99": 0.01,
+        "max": 0.56,
+        "mean": 0.003
+      },
+      "fdatasync": {
+        "n": 2000,
+        "p50": 0.265,
+        "p95": 0.462,
+        "p99": 0.676,
+        "max": 3.573,
+        "mean": 0.276
+      },
+      "fsync": {
+        "n": 2000,
+        "p50": 0.27,
+        "p95": 0.565,
+        "p99": 1.148,
+        "max": 5.39,
+        "mean": 0.31
+      }
+    },
+    "container-overlay": {
+      "none": {
+        "n": 2000,
+        "p50": 0.002,
+        "p95": 0.01,
+        "p99": 0.048,
+        "max": 0.251,
+        "mean": 0.004
+      },
+      "fdatasync": {
+        "n": 2000,
+        "p50": 0.265,
+        "p95": 0.441,
+        "p99": 0.62,
+        "max": 5.113,
+        "mean": 0.27
+      },
+      "fsync": {
+        "n": 2000,
+        "p50": 0.265,
+        "p95": 0.439,
+        "p99": 0.677,
+        "max": 1.81,
+        "mean": 0.271
+      }
+    },
+    "tmpfs": {
+      "none": {
+        "n": 2000,
+        "p50": 0.002,
+        "p95": 0.003,
+        "p99": 0.008,
+        "max": 0.145,
+        "mean": 0.002
+      },
+      "fdatasync": {
+        "n": 2000,
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.007,
+        "max": 0.016,
+        "mean": 0.002
+      },
+      "fsync": {
+        "n": 2000,
+        "p50": 0.002,
+        "p95": 0.002,
+        "p99": 0.007,
+        "max": 0.046,
+        "mean": 0.002
+      }
+    }
+  },
+  "journalAppend": {
+    "lines 1-250": {
+      "n": 250,
+      "p50": 0.422,
+      "p95": 0.773,
+      "p99": 0.988,
+      "max": 1.696,
+      "mean": 0.453
+    },
+    "lines 251-500": {
+      "n": 250,
+      "p50": 0.708,
+      "p95": 1.062,
+      "p99": 1.182,
+      "max": 1.223,
+      "mean": 0.737
+    },
+    "lines 501-1000": {
+      "n": 500,
+      "p50": 1.223,
+      "p95": 2.289,
+      "p99": 3.826,
+      "max": 8.989,
+      "mean": 1.326
+    },
+    "finalStatus": "ok"
+  },
+  "throughput": {
+    "1 writer(s)": {
+      "appends": 2000,
+      "ms": 575,
+      "perSecond": 3479,
+      "linesFound": 2000,
+      "linesIntact": 2000
+    },
+    "2 writer(s)": {
+      "appends": 2000,
+      "ms": 519,
+      "perSecond": 3851,
+      "linesFound": 2000,
+      "linesIntact": 2000
+    },
+    "4 writer(s)": {
+      "appends": 2000,
+      "ms": 322,
+      "perSecond": 6218,
+      "linesFound": 2000,
+      "linesIntact": 2000
+    },
+    "8 writer(s)": {
+      "appends": 2000,
+      "ms": 241,
+      "perSecond": 8299,
+      "linesFound": 2000,
+      "linesIntact": 2000
+    }
+  },
+  "parse": {
+    "1000 records": {
+      "bytes": 251786,
+      "n": 5,
+      "p50": 1.289,
+      "p95": 1.427,
+      "p99": 1.427,
+      "max": 1.427,
+      "mean": 1.291
+    },
+    "10000 records": {
+      "bytes": 2537788,
+      "n": 5,
+      "p50": 13.823,
+      "p95": 14.126,
+      "p99": 14.126,
+      "max": 14.126,
+      "mean": 13.105
+    },
+    "100000 records": {
+      "bytes": 25577790,
+      "n": 5,
+      "p50": 162.45,
+      "p95": 168.732,
+      "p99": 168.732,
+      "max": 168.732,
+      "mean": 163.234
+    }
+  },
+  "diskFull": {
+    "appended": 134,
+    "firstError": {
+      "code": "JOURNAL_TORN",
+      "message": "journal has a torn tail; run the repair tool"
+    },
+    "journalStatusAfter": "torn_tail",
+    "head": 133,
+    "tornBytes": 343,
+    "nextAppend": {
+      "code": "JOURNAL_TORN",
+      "message": "journal has a torn tail; run the repair tool"
+    }
+  },
+  "unavailable": {
+    "readOnlyCreate": {
+      "ok": false,
+      "code": "ENOENT"
+    },
+    "fileDeleted": {
+      "appended": false,
+      "code": "JOURNAL_MISSING",
+      "recreated": false
+    },
+    "permissionDenied": {
+      "ok": false,
+      "code": "EACCES",
+      "message": "EACCES: permission denied, open '/vol/rootonly/journal.log'"
+    }
+  }
+}

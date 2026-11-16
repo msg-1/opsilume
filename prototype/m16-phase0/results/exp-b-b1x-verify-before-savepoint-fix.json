@@ -1,0 +1,45 @@
+{
+  "journalStatus": "corrupt",
+  "journalProblem": "previous-record hash does not match",
+  "journalHead": null,
+  "databaseHead": 187,
+  "liveClaims": 188,
+  "voids": 7,
+  "sequencesContiguous": true,
+  "duplicateActionClaims": 0,
+  "actionsExecuting": 187,
+  "workerClaims": 184,
+  "sharedActionsClaimed": 0,
+  "refusals": {
+    "injected_rollback": 8,
+    "quarantined": 805,
+    "error: journal corrupt: previous-record hash does not match": 3
+  },
+  "lockWaitMs": {
+    "n": 184,
+    "p50": 9.952,
+    "p95": 13.917,
+    "p99": 16.52,
+    "max": 19.458,
+    "mean": 10.038
+  },
+  "claimLatencyMs": {
+    "n": 184,
+    "p50": 11.97,
+    "p95": 15.995,
+    "p99": 19.315,
+    "max": 22.92,
+    "mean": 12.124
+  },
+  "workerWallMs": [
+    1436,
+    1433,
+    1449,
+    1440,
+    1436,
+    1430,
+    1447,
+    1423
+  ],
+  "postgresDeadlocksTotal": 0
+}

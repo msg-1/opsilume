@@ -1,0 +1,45 @@
+# Phase 0 prototype stack (Milestone 16). Its own Compose project, network, volumes and database.
+# Nothing is published to the host, and the network is internal: no container can reach outside it.
+# It reuses the already-built opspilot-isolated-api image only as a Node 22 + Prisma runtime; the
+# application inside the image is never started.
+name: opspilot-m16-proto
+
+x-runner: &runner
+  image: opspilot-isolated-api:latest
+  user: "0:0"
+  entrypoint: ["sleep", "infinity"]
+  working_dir: /proto
+  environment:
+    PROTO_DATABASE_URL: postgresql://proto:proto@db:5432/proto
+    PROTO_STATE_DIR: /state
+    RECEIVER_URL: http://receiver:8080/hook
+  volumes:
+    - state:/state
+    - ./:/proto:ro
+    - ./results:/results
+  networks: [proto]
+  depends_on:
+    db: { condition: service_healthy }
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: proto, POSTGRES_PASSWORD: proto, POSTGRES_DB: proto }
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [proto]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 30 }
+  api1: *runner
+  api2: *runner
+  receiver:
+    image: opspilot-isolated-api:latest
+    user: "0:0"
+    entrypoint: ["node", "/proto/receiver.mjs"]
+    volumes: ["./:/proto:ro"]
+    networks: [proto]
+
+networks:
+  proto: { internal: true }
+
+volumes:
+  pgdata:
+  state:

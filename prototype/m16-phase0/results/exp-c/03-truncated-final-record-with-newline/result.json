@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (complete line that is not a record)",
+  "journalStatus": "corrupt",
+  "journalProblem": "line is not a record",
+  "journalHead": null,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "journal corrupt (line is not a record)",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

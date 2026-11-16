@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 3,
+  "databaseHead": null,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "database has no installation state (never provisioned, or a pre-feature backup)",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

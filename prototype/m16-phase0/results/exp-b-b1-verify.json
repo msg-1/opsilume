@@ -1,0 +1,38 @@
+{
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 626,
+  "databaseHead": 626,
+  "liveClaims": 626,
+  "voids": 24,
+  "sequencesContiguous": true,
+  "duplicateActionClaims": 0,
+  "actionsExecuting": 626,
+  "workerClaims": 626,
+  "sharedActionsClaimed": 50,
+  "refusals": {
+    "injected_rollback": 24,
+    "moved_on": 50
+  },
+  "lockWaitMs": {
+    "n": 626,
+    "p50": 1.636,
+    "p95": 4.12,
+    "p99": 5.965,
+    "max": 8.408,
+    "mean": 1.921
+  },
+  "claimLatencyMs": {
+    "n": 626,
+    "p50": 4.837,
+    "p95": 9.121,
+    "p99": 12.161,
+    "max": 20.252,
+    "mean": 5.253
+  },
+  "workerWallMs": [
+    3144,
+    3141
+  ],
+  "postgresDeadlocksTotal": 0
+}

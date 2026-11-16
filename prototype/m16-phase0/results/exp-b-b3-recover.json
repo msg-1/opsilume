@@ -1,0 +1,25 @@
+{
+  "before": {
+    "problem": "database head 0 is behind the journal head 1",
+    "dbHead": 0,
+    "journalHead": 1,
+    "after": [
+      {
+        "seq": 1,
+        "actionId": "a-1-1",
+        "dispatched": false
+      }
+    ]
+  },
+  "clear": {
+    "cleared": true,
+    "superseded": 600,
+    "toProposed": 599,
+    "toUnknown": 1,
+    "executing": 0,
+    "audits": 1,
+    "unmatched": 0,
+    "ms": 16.300125002861023
+  },
+  "afterProblem": null
+}

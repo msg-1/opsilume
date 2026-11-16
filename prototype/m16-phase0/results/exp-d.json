@@ -1,0 +1,303 @@
+[
+  {
+    "scenario": "baseline: no failure",
+    "process": "exited 0",
+    "journal": [
+      "claim",
+      "dispatch",
+      "outcome:applied"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTED",
+      "attempts": 1,
+      "outcome": "applied"
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "EXECUTED",
+      "attempts": 1,
+      "outcome": "applied"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "known: applied (recorded in the database)",
+    "journalEvidence": [
+      "applied"
+    ],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": false,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "crash before the claim",
+    "process": "killed (SIGKILL)",
+    "journal": [],
+    "databaseAtCrash": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "receiverRequests": 0,
+    "dispatchPossible": "no: no dispatch record, so nothing was sent",
+    "externalOutcome": "nothing attempted",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": false,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "crash after the claim record, before the database commit",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim"
+    ],
+    "databaseAtCrash": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "trustAfterCrash": "database head 0 is behind the journal head 1",
+    "databaseAfterSweep": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "receiverRequests": 0,
+    "dispatchPossible": "no: no dispatch record, so nothing was sent",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": false,
+    "nextClaimTrusted": false
+  },
+  {
+    "scenario": "S1: claim record appended, database transaction rolls back",
+    "process": "exited 3: Raw query failed. Code: `23503`. Message: `insert or update on table \"audit\" violates foreign key co",
+    "journal": [
+      "claim",
+      "void"
+    ],
+    "databaseAtCrash": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "APPROVED",
+      "attempts": 0,
+      "outcome": null
+    },
+    "receiverRequests": 0,
+    "dispatchPossible": "no: no dispatch record, so nothing was sent",
+    "externalOutcome": "nothing attempted",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": false,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S2: database commit succeeds, crash before dispatch",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 0,
+    "dispatchPossible": "no: no dispatch record, so nothing was sent",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S3: dispatch record written, crash before sending a byte",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim",
+      "dispatch"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 0,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S4: request sent, crash before the response",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim",
+      "dispatch"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S5: receiver completes, crash before the outcome is recorded",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim",
+      "dispatch"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S6a: outcome database transaction fails (design order: database first, then journal)",
+    "process": "exited 3: injected: outcome transaction failed",
+    "journal": [
+      "claim",
+      "dispatch"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "unknown",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "S6b: journal records the outcome, then the database transaction fails (reversed order)",
+    "process": "exited 3: injected: outcome transaction failed",
+    "journal": [
+      "claim",
+      "dispatch",
+      "outcome:applied"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTING",
+      "attempts": 1,
+      "outcome": null
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "FAILED",
+      "attempts": 1,
+      "outcome": "unknown"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "unknown",
+    "journalEvidence": [
+      "applied"
+    ],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": true,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "crash after the outcome commits, before the outcome record",
+    "process": "killed (SIGKILL)",
+    "journal": [
+      "claim",
+      "dispatch"
+    ],
+    "databaseAtCrash": {
+      "status": "EXECUTED",
+      "attempts": 1,
+      "outcome": "applied"
+    },
+    "trustAfterCrash": "trusted",
+    "databaseAfterSweep": {
+      "status": "EXECUTED",
+      "attempts": 1,
+      "outcome": "applied"
+    },
+    "receiverRequests": 1,
+    "dispatchPossible": "yes: a dispatch record exists (intent only)",
+    "externalOutcome": "known: applied (recorded in the database)",
+    "journalEvidence": [],
+    "automaticRetryPermitted": false,
+    "humanReconciliationRequired": false,
+    "nextClaimTrusted": true
+  },
+  {
+    "scenario": "reconciliation after S5 (a person records applied)",
+    "journal": [
+      "claim",
+      "dispatch",
+      "reconciled:applied"
+    ],
+    "databaseAfter": {
+      "status": "EXECUTED",
+      "outcome": "applied"
+    },
+    "automaticRetryPermitted": false,
+    "nextClaimTrusted": true
+  }
+]

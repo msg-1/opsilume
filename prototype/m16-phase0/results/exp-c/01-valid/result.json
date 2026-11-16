@@ -1,0 +1,13 @@
+{
+  "expect": "trusted",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 3,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": true,
+    "problem": null,
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": null
+}

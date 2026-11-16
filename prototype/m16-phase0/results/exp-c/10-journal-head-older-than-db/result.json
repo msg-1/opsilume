@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (database ahead of journal)",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 2,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "database head 3 is ahead of the journal head 2",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

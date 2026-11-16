@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (missing)",
+  "journalStatus": "missing",
+  "journalProblem": null,
+  "journalHead": null,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "journal missing",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (previous hash)",
+  "journalStatus": "corrupt",
+  "journalProblem": "previous-record hash does not match",
+  "journalHead": null,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "journal corrupt (previous-record hash does not match)",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

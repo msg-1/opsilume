@@ -1,0 +1,13 @@
+{
+  "expect": "NOT detected (accepted risk: truncation to the database head)",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 2,
+  "databaseHead": 2,
+  "claim": {
+    "claimed": true,
+    "problem": null,
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": null
+}

@@ -1,0 +1,26 @@
+{
+  "label": "10000",
+  "inspectMs": 78,
+  "inspectAgainMs": 33,
+  "digestStable": true,
+  "affectedActions": 8000,
+  "ranAfterBackup": 600,
+  "unmatched": 100,
+  "clear": {
+    "cleared": true,
+    "superseded": 7000,
+    "toProposed": 6501,
+    "toUnknown": 499,
+    "executing": 0,
+    "audits": 50,
+    "unmatched": 100,
+    "ms": 160.16462501883507
+  },
+  "auditRowsCreated": 50,
+  "organisations": 50,
+  "approvalsStillCurrent": 0,
+  "actionsStillExecutable": 0,
+  "trustedAfter": true,
+  "rssStartMB": 62,
+  "rssPeakMB": 117
+}

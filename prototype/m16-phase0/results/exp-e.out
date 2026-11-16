@@ -1,0 +1,29 @@
+== size: 1000 actions, 10 organisations
+{"actions":1000,"orgs":10,"journalRecords":431,"journalBytes":99335,"backupHead":100,"journalHead":160,"ranAfterBackup":50,"unmatched":10}
+{"label":"1000","inspectMs":49,"inspectAgainMs":9,"digestStable":true,"affectedActions":800,"ranAfterBackup":60,"unmatched":10,"clear":{"cleared":true,"superseded":700,"toProposed":651,"toUnknown":49,"executing":0,"audits":10,"unmatched":10,"ms":32.78195798397064},"auditRowsCreated":10,"organisations":10,"approvalsStillCurrent":0,"actionsStillExecutable":0,"trustedAfter":true,"rssStartMB":61,"rssPeakMB":87}
+{"label":"during-1000","claimed":false,"reason":"moved_on","lockWait":16.591167002916336,"latency":62.65133398771286}
+== size: 10000 actions, 50 organisations
+{"actions":10000,"orgs":50,"journalRecords":4325,"journalBytes":1002548,"backupHead":1000,"journalHead":1600,"ranAfterBackup":500,"unmatched":100}
+{"label":"during-10000","claimed":false,"reason":"quarantined","problem":"database head 1000 is behind the journal head 1600","lockWait":1.6402080059051514,"latency":58.17041698098183}
+{"label":"10000","inspectMs":78,"inspectAgainMs":33,"digestStable":true,"affectedActions":8000,"ranAfterBackup":600,"unmatched":100,"clear":{"cleared":true,"superseded":7000,"toProposed":6501,"toUnknown":499,"executing":0,"audits":50,"unmatched":100,"ms":160.16462501883507},"auditRowsCreated":50,"organisations":50,"approvalsStillCurrent":0,"actionsStillExecutable":0,"trustedAfter":true,"rssStartMB":62,"rssPeakMB":117}
+== size: 100000 actions, 200 organisations
+{"actions":100000,"orgs":200,"journalRecords":43250,"journalBytes":10084601,"backupHead":10000,"journalHead":16000,"ranAfterBackup":5000,"unmatched":1000}
+{"label":"during-100000","claimed":false,"reason":"quarantined","problem":"database head 10000 is behind the journal head 16000","lockWait":1.7443329989910126,"latency":129.90133300423622}
+{"label":"100000","inspectMs":519,"inspectAgainMs":269,"digestStable":true,"affectedActions":80000,"ranAfterBackup":6000,"unmatched":1000,"clear":{"cleared":true,"superseded":70000,"toProposed":65001,"toUnknown":4999,"executing":0,"audits":200,"unmatched":1000,"ms":1692.7840839922428},"auditRowsCreated":200,"organisations":200,"approvalsStillCurrent":0,"actionsStillExecutable":0,"trustedAfter":true,"rssStartMB":61,"rssPeakMB":389}
+== changes after inspection invalidate the clearance
+{"label":"stale-digest","cleared":false,"reason":"the state changed since inspection","ms":46.90500000119209}
+{"label":"fresh-digest","cleared":true,"superseded":699,"toProposed":650,"toUnknown":49,"executing":0,"audits":10,"unmatched":10,"ms":29.325291991233826}
+== two clearances at once, with the same digest
+{"label":"concurrent-api1","cleared":true,"superseded":7000,"toProposed":6501,"toUnknown":499,"executing":0,"audits":50,"unmatched":100,"ms":229.841000020504}
+{"label":"concurrent-api2","cleared":false,"reason":"the state changed since inspection","ms":252.9380410015583}
+== an interrupted clearance (killed after the cleared record, before commit), then repeated
+exit=137
+after kill: db head=1000
+approvals still current=7000
+cleared audits=0
+cleared records in journal=1
+{"label":"retry-old-digest","cleared":false,"reason":"the state changed since inspection","ms":92.67866599559784}
+{"label":"retry-new-digest","cleared":true,"superseded":7000,"toProposed":6501,"toUnknown":499,"executing":0,"audits":50,"unmatched":100,"ms":174.89979201555252}
+after retry: db head=1600
+approvals still current=0
+cleared audits=50

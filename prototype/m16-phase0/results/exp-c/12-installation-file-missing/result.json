@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined",
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 3,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "installation identity file missing",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

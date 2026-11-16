@@ -1,0 +1,18 @@
+{
+  "journalStatus": "ok",
+  "journalProblem": null,
+  "journalHead": 300,
+  "databaseHead": 300,
+  "liveClaims": 300,
+  "voids": 0,
+  "sequencesContiguous": true,
+  "duplicateActionClaims": 0,
+  "actionsExecuting": 300,
+  "workerClaims": 0,
+  "sharedActionsClaimed": 0,
+  "refusals": {},
+  "lockWaitMs": null,
+  "claimLatencyMs": null,
+  "workerWallMs": [],
+  "postgresDeadlocksTotal": 0
+}

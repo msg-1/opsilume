@@ -1,0 +1,236 @@
+{
+  "01-valid": {
+    "expect": "trusted",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": true,
+      "problem": null,
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": null
+  },
+  "02-incomplete-final-line": {
+    "expect": "torn tail ignored; appends refused until repaired",
+    "journalStatus": "torn_tail",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "error",
+      "problem": null,
+      "error": "journal has a torn tail; run the repair tool"
+    },
+    "inputUnchangedByFailedClaim": true,
+    "repair": {
+      "repaired": true,
+      "ignoredBytes": 60,
+      "statusAfterRepair": "ok",
+      "headAfterRepair": 3,
+      "fragmentPreserved": true,
+      "bytesBefore": 2107,
+      "bytesAfter": 2573,
+      "claimAfterRepair": {
+        "claimed": true,
+        "seq": 4
+      }
+    }
+  },
+  "03-truncated-final-record-with-newline": {
+    "expect": "quarantined (complete line that is not a record)",
+    "journalStatus": "corrupt",
+    "journalProblem": "line is not a record",
+    "journalHead": null,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal corrupt (line is not a record)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "04-corrupted-record-in-middle": {
+    "expect": "quarantined (hash mismatch)",
+    "journalStatus": "corrupt",
+    "journalProblem": "record hash does not match its content",
+    "journalHead": null,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal corrupt (record hash does not match its content)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "05-invalid-sequence-number": {
+    "expect": "quarantined (sequence)",
+    "journalStatus": "corrupt",
+    "journalProblem": "claim sequence 7, expected 2",
+    "journalHead": null,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal corrupt (claim sequence 7, expected 2)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "06-invalid-previous-record-hash": {
+    "expect": "quarantined (previous hash)",
+    "journalStatus": "corrupt",
+    "journalProblem": "previous-record hash does not match",
+    "journalHead": null,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal corrupt (previous-record hash does not match)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "07-duplicate-sequence-number": {
+    "expect": "quarantined (duplicate claim sequence)",
+    "journalStatus": "corrupt",
+    "journalProblem": "claim sequence 2, expected 3",
+    "journalHead": null,
+    "databaseHead": 2,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal corrupt (claim sequence 2, expected 3)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "08-missing-journal": {
+    "expect": "quarantined (missing)",
+    "journalStatus": "missing",
+    "journalProblem": null,
+    "journalHead": null,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "journal missing",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "09a-empty-journal-db-has-history": {
+    "expect": "quarantined (database ahead)",
+    "journalStatus": "empty",
+    "journalProblem": null,
+    "journalHead": 0,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "database head 3 is ahead of the journal head 0",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "09b-empty-journal-fresh-install": {
+    "expect": "trusted (fresh provisioning)",
+    "journalStatus": "empty",
+    "journalProblem": null,
+    "journalHead": 0,
+    "databaseHead": 0,
+    "claim": {
+      "claimed": true,
+      "problem": null,
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": null
+  },
+  "10-journal-head-older-than-db": {
+    "expect": "quarantined (database ahead of journal)",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 2,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "database head 3 is ahead of the journal head 2",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "11-journal-head-newer-than-db": {
+    "expect": "quarantined (database behind journal: restore)",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": 2,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "database head 2 is behind the journal head 3",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "12-installation-file-missing": {
+    "expect": "quarantined",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "installation identity file missing",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "13-installation-id-mismatch": {
+    "expect": "quarantined",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": 3,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "installation identity differs",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "14-database-row-missing-pre-feature": {
+    "expect": "quarantined",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 3,
+    "databaseHead": null,
+    "claim": {
+      "claimed": false,
+      "reason": "quarantined",
+      "problem": "database has no installation state (never provisioned, or a pre-feature backup)",
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": true
+  },
+  "15-truncated-exactly-to-db-head-after-restore": {
+    "expect": "NOT detected (accepted risk: truncation to the database head)",
+    "journalStatus": "ok",
+    "journalProblem": null,
+    "journalHead": 2,
+    "databaseHead": 2,
+    "claim": {
+      "claimed": true,
+      "problem": null,
+      "error": null
+    },
+    "inputUnchangedByFailedClaim": null
+  }
+}

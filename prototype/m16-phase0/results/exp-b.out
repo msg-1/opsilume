@@ -1,0 +1,18 @@
+== B1: concurrent claims, one process per container (300 own + 50 shared each; every 25th own claim rolled back)
+{"journalStatus":"ok","journalProblem":null,"journalHead":626,"databaseHead":626,"liveClaims":626,"voids":24,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":626,"workerClaims":626,"sharedActionsClaimed":50,"refusals":{"injected_rollback":24,"moved_on":50},"lockWaitMs":{"n":626,"p50":1.636,"p95":4.12,"p99":5.965,"max":8.408,"mean":1.921},"claimLatencyMs":{"n":626,"p50":4.837,"p95":9.121,"p99":12.161,"max":20.252,"mean":5.253},"workerWallMs":[3144,3141],"postgresDeadlocksTotal":0}
+== B3: a process killed while holding the state lock, right after flushing its claim record
+{"journalStatus":"ok","journalProblem":null,"journalHead":1,"databaseHead":0,"liveClaims":1,"voids":0,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":0,"workerClaims":0,"sharedActionsClaimed":0,"refusals":{"quarantined":20},"lockWaitMs":null,"claimLatencyMs":null,"workerWallMs":[1538],"postgresDeadlocksTotal":0}
+{"before":{"problem":"database head 0 is behind the journal head 1","dbHead":0,"journalHead":1,"after":[{"seq":1,"actionId":"a-1-1","dispatched":false}]},"clear":{"cleared":true,"superseded":600,"toProposed":599,"toUnknown":1,"executing":0,"audits":1,"unmatched":0,"ms":16.300125002861023},"afterProblem":null}
+{"journalStatus":"ok","journalProblem":null,"journalHead":1,"databaseHead":1,"liveClaims":1,"voids":0,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":0,"workerClaims":0,"sharedActionsClaimed":0,"refusals":{"moved_on":20},"lockWaitMs":null,"claimLatencyMs":null,"workerWallMs":[56],"postgresDeadlocksTotal":0}
+== B4: a container restarted in the middle of a run of claims
+{"journalStatus":"ok","journalProblem":null,"journalHead":300,"databaseHead":300,"liveClaims":300,"voids":0,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":300,"workerClaims":0,"sharedActionsClaimed":0,"refusals":{},"lockWaitMs":null,"claimLatencyMs":null,"workerWallMs":[],"postgresDeadlocksTotal":0}
+{"journalStatus":"ok","journalProblem":null,"journalHead":320,"databaseHead":320,"liveClaims":320,"voids":0,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":320,"workerClaims":20,"sharedActionsClaimed":0,"refusals":{},"lockWaitMs":{"n":20,"p50":0.138,"p95":1.46,"p99":1.46,"max":1.46,"mean":0.216},"claimLatencyMs":{"n":20,"p50":3.381,"p95":50.259,"p99":50.259,"max":50.259,"mean":5.72},"workerWallMs":[148],"postgresDeadlocksTotal":0}
+== B5: claims racing a clearance that holds the state lock for 3 s
+{"before":{"problem":null,"dbHead":0,"journalHead":0,"after":[]},"clear":{"cleared":true,"superseded":600,"toProposed":600,"toUnknown":0,"executing":0,"audits":1,"unmatched":0,"ms":3037.2669599950314},"afterProblem":null}
+{"journalStatus":"ok","journalProblem":null,"journalHead":0,"databaseHead":0,"liveClaims":0,"voids":0,"sequencesContiguous":true,"duplicateActionClaims":0,"actionsExecuting":0,"workerClaims":0,"sharedActionsClaimed":0,"refusals":{"moved_on":30},"lockWaitMs":null,"claimLatencyMs":null,"workerWallMs":[2574],"postgresDeadlocksTotal":0}
+== B6: flock(1) between the two containers: 500 locked appends each, then a holder killed
+lines=1000 unique=1000 malformed=0
+elapsed_ms=348
+while held: refused (expected)
+sh: 1: pkill: not found
+acquire_after_kill_ms=10193

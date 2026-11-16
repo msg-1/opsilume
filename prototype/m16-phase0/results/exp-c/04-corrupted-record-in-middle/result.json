@@ -1,0 +1,14 @@
+{
+  "expect": "quarantined (hash mismatch)",
+  "journalStatus": "corrupt",
+  "journalProblem": "record hash does not match its content",
+  "journalHead": null,
+  "databaseHead": 3,
+  "claim": {
+    "claimed": false,
+    "reason": "quarantined",
+    "problem": "journal corrupt (record hash does not match its content)",
+    "error": null
+  },
+  "inputUnchangedByFailedClaim": true
+}

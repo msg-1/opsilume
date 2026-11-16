@@ -1,0 +1,7 @@
+{
+  "claimed": false,
+  "reason": "quarantined",
+  "problem": "database head 10000 is behind the journal head 16000",
+  "lockWait": 1.7443329989910126,
+  "latency": 129.90133300423622
+}
