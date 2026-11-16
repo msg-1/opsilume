@@ -1,6 +1,6 @@
 # Post-restore remediation safety: final readiness report
 
-Milestone 16, final approval preparation (16 November 2026). This states where the recovery-safety architecture stands before any production implementation decision.
+Milestone 16, final approval preparation (16 November 2026), updated with the product owner's decisions of 17 November 2026. This states where the recovery-safety architecture stands before any production implementation decision.
 
 **It does not authorise production implementation.**
 
@@ -92,9 +92,9 @@ The procedure is in design §16.1:
 
 | Decision | Exact definition (from the merged design, §18) | Status |
 |---|---|---|
-| V1 | "Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1)" | **Awaiting approval.** The bound was used in Phase 0.5; **the overflow path is not tested** |
-| V2 | "The full-verification schedule (section 6.2.2)" | **24 hours proposed by the product owner, awaiting confirmation.** Full verification also runs at start-up, before clearance and after any identity or replacement inconsistency, with immediate quarantine on failure. The quarantine column and the locked confirmation step are specified, **not prototyped** |
-| V3 | "Clearance supersedes every current approval, whatever the action's status (section 9)" | **Pending your decision.** The brief follows |
+| V1 | "Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1)" | **Approved** (17 November 2026). **Explicit overflow and recovery tests are mandatory before production acceptance.** The bound was used in Phase 0.5; **the overflow path is not tested** |
+| V2 | "The full-verification schedule (section 6.2.2)" | **Approved: 24 hours** (17 November 2026). Full verification also runs at start-up, before clearance and after any identity or replacement inconsistency. **Any verification failure quarantines all API processes.** The quarantine column and the locked confirmation step are specified, **not prototyped** |
+| V3 | "Clearance supersedes every current approval, whatever the action's status (section 9)" | **Approved** (17 November 2026): the brief below was the basis |
 
 ### V3 decision brief
 
@@ -121,22 +121,22 @@ The procedure is in design §16.1:
 - **Choosing B or C when A was needed:** an approval kept by an unexpected status, from a hand edit, a future route or a bug, could let a restored action run again without anyone deciding afresh. That is C1 reopened in a narrow case.
 - **Choosing A when B would have done:** some extra approvals after a restore; nothing unsafe.
 
-**Final decision: pending your approval.**
+**Final decision: approved on 17 November 2026,** as recommended (alternative A: every current approval, whatever the action's status).
 
 ## 6. P1–P8 and P8a status
 
 | Item | Product-owner status | Design | Prototype validation | Production integration |
 |---|---|---|---|---|
-| P1: savepoint-held void | Awaiting approval | Specified | Passed (Phase 0) | Not done |
-| P2: short-write handling | Awaiting approval | Specified | Passed (Phase 0) | Not done |
-| P3: row lock as the journal mutex | Awaiting approval | Specified | Passed (Phase 0 and 0.5, one host) | Not done |
-| P4: incremental verification | Awaiting approval | Specified, with content re-hash | Passed up to 1,000,000 records (Phase 0.5) | Not done |
-| P5: unknown `COMMIT` resolution | Awaiting approval | Specified, with failure classification | Passed, 5 wire-protocol scenarios (Phase 0.5) | Not done (the real driver mapping) |
-| P6: clearance | Awaiting approval | Specified | Passed up to 1,000,000 actions (Phase 0.5) | Not done |
-| P7: native Linux durability | Awaiting approval | Specified | **Not tested** | **Not tested** |
-| P8: database guard | **Approved in principle** (16 November 2026) | Specified (§6.5) | Passed as a demonstration trigger (Phase 0.5) | Not done; the integration tests are listed |
-| P8a: separate migration and runtime roles | **Approved in principle** (16 November 2026) | Specified (§6.5), with the required refusal checks | Not tested | Not done |
-| P8b: emergency guard removal | **Rejected** (16 November 2026) | — | — | — |
+| P1: savepoint-held void | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified | Passed (Phase 0) | Not done |
+| P2: short-write handling | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified | Passed (Phase 0) | Not done |
+| P3: row lock as the journal mutex | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified | Passed (Phase 0 and 0.5, one host) | Not done |
+| P4: incremental verification | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified, with content re-hash | Passed up to 1,000,000 records (Phase 0.5) | Not done |
+| P5: unknown `COMMIT` resolution | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified, with failure classification | Passed, 5 wire-protocol scenarios (Phase 0.5) | Not done (the real driver mapping) |
+| P6: clearance | Approved design direction (17 November 2026), subject to implementation review, security review and integration tests | Specified | Passed up to 1,000,000 actions (Phase 0.5) | Not done |
+| P7: native Linux durability | **NOT APPROVED** (17 November 2026): a mandatory validation gate, not waived | Specified | **Not tested** | **Not tested** |
+| P8: database guard | **Approved in principle** (16 November 2026; confirmed 17 November), subject to production validation | Specified (§6.5) | Passed as a demonstration trigger (Phase 0.5) | Not done; the integration tests are listed |
+| P8a: separate migration and runtime roles | **Approved in principle** (16 November 2026; confirmed 17 November), subject to role and migration testing | Specified (§6.5), with the required refusal checks | Not tested | Not done |
+| P8b: emergency guard removal | **Rejected** (16 November 2026; confirmed 17 November) | — | — | — |
 
 **Reviewed for P8 and P8a** (design §6.5): trigger enforcement; the role separation, including the runtime role's inability to disable or drop the trigger; and how each of these behaves:
 - an older API and an older worker;
@@ -150,19 +150,21 @@ Both remain **approved in principle, not production-validated.** Production migr
 
 ## 7. Backup retention
 
-- **Proposed: 30 days.** A **proposal only, not approved.**
+- **30 days, approved provisionally** (17 November 2026). **Validation conditions:** confirm the storage capacity, and confirm that journal retention covers the oldest restorable backup.
 - Journal retention stays at least as long as the oldest restorable backup.
 - The off-host journal copy is read-only.
 - The journal and the database are never restored from the same recovery set.
 
-## 8. Accepted risks (acceptance pending explicit approval)
+## 8. Accepted limitations (accepted 17 November 2026)
+
+These are accepted as explicit **limitations** of the single-host design. They are **not** solved or protected against.
 
 - **Coordinated database and journal snapshot rollback:** undetected. A snapshot or clone of both volumes from the same moment leaves both sides agreeing.
 - **Journal truncation to a trusted head:** undetected. [Phase 0 evidence] Case 15 shows it trusted.
 - **No external cryptographic anchor:** D3 (off-host anchor) and N7 (keyed integrity) are deferred.
 - **No multi-host guarantee:** N10. One API host only.
 
-## 9. Maximum installation size: proposal
+## 9. Maximum installation size
 
 **Evidence:** clearance passed up to **1,000,000 actions, 2,000 organisations and 1,400,000 approvals**, on one development machine (Docker Desktop, Apple silicon):
 - 10.3 s in one transaction;
@@ -171,36 +173,43 @@ Both remain **approved in principle, not production-validated.** Production migr
 
 Nothing was measured on the supported platform.
 
-**Proposal** (awaiting your decision):
-- **Treat 1,000,000 actions as the tested envelope, not a capacity guarantee.**
-- **Confirm or revise it** by repeating the P6 clearance tests on the supported Linux platform, at **at least twice** the largest installation you expect. Record the clearance time, memory, and claim and route lock waits.
+**Decision** (17 November 2026, provisional with a validation condition):
+- **1,000,000 actions is the tested envelope, not a capacity guarantee.**
+- **Validation condition:** repeat the P6 clearance tests on the supported Linux platform at **twice** the largest expected installation size. Record the clearance time, memory, and claim and route lock waits.
 - **Set the supported maximum from those results.** Recommended criteria: clearance completes in one transaction within a duration you're willing to accept during a recovery, and route waits stay below an agreed bound.
 
 ## 10. Remaining production blockers
 
-1. **P7, native Linux durability:** not tested (section 2 lists the infrastructure needed).
-2. **Product-owner decisions:**
-   - V2 (24 hours, to confirm);
-   - V3 (pending);
-   - V1, P1–P7 (awaiting approval);
-   - the backup retention duration (30 days proposed);
-   - acceptance of the risks in section 8;
-   - the maximum installation size (section 9);
-   - final approval of the revised design;
-   - the production implementation scope.
-3. **Production integration testing** of everything, since nothing is implemented. That includes:
-   - the P8 and P8a integration tests;
-   - the P5 driver mapping;
-   - the V1 overflow path;
-   - V2's quarantine column and locked confirmation;
-   - V3.
-4. **Phase 0 evidence:** the 11 exact original inputs and 4 post-experiment files exist only locally. Committing them needs authorisation (see the Phase 0 report's erratum).
+1. **P7, native Linux durability: NOT APPROVED and NOT TESTED; a mandatory gate, not waived.** Section 2 lists the infrastructure needed; none is available on this machine.
+2. **Validation conditions attached to the 17 November decisions:**
+   - the V1 overflow and recovery tests, mandatory before production acceptance;
+   - production implementation review, security review and integration tests for P1–P6;
+   - production validation of P8, and role and migration testing for P8a;
+   - V2: that any verification failure quarantines all API processes (the quarantine column and locked confirmation are not prototyped);
+   - V3: superseding every current approval (not yet tested);
+   - backup retention: the storage capacity, and journal coverage of the oldest restorable backup;
+   - installation size: the supported-platform tests at twice the largest expected installation.
+3. **Not given:**
+   - final approval of the design as a whole (not given while P7 is open);
+   - authorisation of the production implementation scope.
+4. **Phase 0 evidence:** the 11 exact original inputs and 4 post-experiment files exist only locally. Committing them needs separate authorisation (see the Phase 0 report's erratum).
+
+**Decisions recorded on 17 November 2026:**
+
+| Category | Items |
+|---|---|
+| Approved design decisions | V1, V2 (24 hours), V3; P1–P6 as design direction |
+| Approved in principle, with conditions | P8 (production validation), P8a (role and migration testing) |
+| Provisional, with validation conditions | Backup retention 30 days; installation size 1,000,000 actions as the tested envelope |
+| Rejected | P8b |
+| Outstanding mandatory validation gate | **P7** (not approved, not tested, not waived) |
+| Accepted limitations | Coordinated snapshot rollback; truncation exactly to a trusted head; no independent external cryptographic anchor; no multi-host guarantee |
 
 ## 11. Recommendation
 
-**Proceed with the remaining decisions and the native Linux durability test. Do not start production implementation yet.**
+**Proceed with the native Linux durability test (P7) and the validation conditions in section 10. Do not start production implementation yet.**
 
-The design is complete enough to take the decisions above:
+The design decisions are now taken (section 10). The evidence behind them:
 - P4, P5 and P6 passed in prototypes up to 1,000,000 records and actions;
 - the downgrade gap has an approved-in-principle remedy (P8, P8a).
 
@@ -209,8 +218,8 @@ Nothing found argues for stopping or for another design revision. Physical durab
 ---
 
 **Files changed** (documentation only):
-- `docs/post-restore-remediation-safety-design.md`: V2 proposal, P8, P8a, P8b statuses, retention proposal, named risks;
-- `docs/post-restore-remediation-safety-decision-review.md`: the dated product-owner statuses;
+- `docs/post-restore-remediation-safety-design.md`: the decisions of 16 and 17 November 2026 (V1–V3, P1–P8, P8a, P8b, retention, installation size, accepted limitations), with the V2 coordination design;
+- `docs/post-restore-remediation-safety-decision-review.md`: the dated product-owner decisions;
 - this report.
 
 **What was not done:**
