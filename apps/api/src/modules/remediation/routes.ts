@@ -115,7 +115,7 @@ remediationRouter.post('/:id/request-approval', requirePermission('remediation:p
   const unverified = source.required && !source.verified;
   if (unverified && !acknowledgeUnverifiedSource) throw conflict(sourceMessage(source, action.proposedByType));
   const hash = approvalHash(action, bindingOf(settings, unverified));
-  if (!(await submitForApproval(action.id, auth.userId, requiredApprovals(settings, action.risk, 'state_changing'), hash))) throw conflict('This action was already submitted');
+  if (!(await submitForApproval(action, auth.userId, requiredApprovals(settings, action.risk, 'state_changing'), hash))) throw conflict('This action was already submitted');
   await audit(req, 'remediation.request_approval', 'remediation_action', action.id, { risk: action.risk, contentHash: hash, sourceRequired: source.required, sourceVerified: !unverified, ...(unverified ? { acknowledgedUnverifiedSource: true, sourceReasons: source.reasons } : {}) });
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Approval requested for: ${action.title}`, auth, { actionId: action.id });
   await notifyRoles(action.risk === 'HIGH' ? ['OWNER', 'ADMIN'] : ['OWNER', 'ADMIN', 'ENGINEER'], { organizationId: auth.organizationId, type: 'remediation.approval_requested', title: `Approval needed: ${action.title}`, body: `${auth.label} requested approval for a ${action.risk.toLowerCase()}-risk action.`, link: `/remediation/${action.id}` }, auth.userId);
@@ -252,18 +252,23 @@ remediationRouter.post('/:id/execute', requirePermission('remediation:execute'),
   }
   // Claim the action atomically so it cannot be executed twice, only with the content that was
   // checked, and only if enough approvals count under the settings as they are at this moment.
-  const claim = await claimExecution(action.id, auth.organizationId, action.status, readOnly ? null : approvedHash, auth.userId);
+  const claim = await claimExecution(action.id, auth.organizationId, action.status, readOnly ? null : approvedHash, auth.userId, readOnly ? null : executionTarget(settings));
+  if (!claim.claimed && claim.reason === 'destination_changed') {
+    // The webhook address was changed after the route read it. The approvals were given for the earlier destination.
+    await requireFreshApproval(req, auth, action, 'remediation.approval_invalid', { approvedHash: action.contentHash, reason: 'destination_changed', validApprovals: 0, stage: 'claim' }, `"${action.title}" needs approval again: where it would be carried out changed after it was approved`);
+    throw conflict(`${STALE_MESSAGES.changed} Nothing was executed.`);
+  }
   if (!claim.claimed && claim.reason === 'moved_on') throw conflict('This action is already being executed, or changed since it was checked. Reload it. Nothing was executed.');
   if (!claim.claimed) {
     await audit(req, 'remediation.approval_insufficient', 'remediation_action', action.id, { contentHash: hash, risk: action.risk, validApprovals: claim.valid, required: claim.required, recorded: action.requiredApprovals, newStatus: claim.newStatus, stage: 'claim' });
     throw conflict(`This ${action.risk.toLowerCase()}-risk action needs ${claim.required} approvals and has ${claim.valid}. It is waiting for approval again; nothing was executed.`);
   }
   if (!readOnly) approvers = claim.approvers;
-  const mode = readOnly ? 'diagnostic' : settings.remediationWebhookUrl ? 'webhook' : 'manual';
+  const mode = readOnly ? 'diagnostic' : claim.destination.url ? 'webhook' : 'manual';
   await audit(req, 'remediation.execute_start', 'remediation_action', action.id, { mode, effect: action.effect, contentHash: hash, approvalHash: readOnly ? null : approvedHash, attempt: action.attempts + 1, approvedBy: approvers.map((a) => a.approverId), approvedAt: approvers.map((a) => a.approvedAt.toISOString()), ...(sourceState ? { sourceRequired: sourceState.required, sourceVerified: sourceState.verified, ...(sourceState.required && !sourceState.verified ? { approvedOnAcknowledgedReview: true } : {}) } : {}) });
 
   const startedAt = new Date();
-  const result = await execute({ ...action, attempts: action.attempts + 1 }, { userId: auth.userId, label: auth.label }, approvers, body.notes, hash);
+  const result = await execute({ ...action, attempts: action.attempts + 1 }, { userId: auth.userId, label: auth.label }, approvers, body.notes, hash, claim.destination);
   const attempt = action.attempts + 1;
   if (!(await recordOutcome(action.id, { ...result, contentHash: hash, attempt, approvedBy: approvers, startedAt, finishedAt: new Date() }))) {
     // This attempt was recorded as interrupted (or reconciled) while it was running. Its outcome is
