@@ -1,7 +1,10 @@
 import { type Server, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { auditIn } from '../src/lib/audit';
 import { netConfig } from '../src/lib/netguard';
+import { claimExecution, recordApproval } from '../src/modules/remediation/approvals';
+import { executionTarget } from '../src/modules/remediation/content';
 import { reapStranded } from '../src/modules/system';
 import { createOrg, createService, prisma } from './helpers';
 
@@ -268,5 +271,54 @@ describe('informational events stay best-effort', () => {
     expect(res.status).toBe(201);
     expect((await row(res.body.id)).status).toBe('PROPOSED');
     expect(await audits(res.body.id, 'remediation.propose')).toBe(0);
+  });
+});
+
+describe('an audit error caught inside its transaction (the mistake CLAUDE.md forbids)', () => {
+  // PostgreSQL aborts the transaction at the failed insert and turns its COMMIT into a ROLLBACK.
+  // If the callback swallows the error, Prisma resolves the transaction as if it had committed.
+  // Nothing is stored, so atomicity holds, but the caller is told the opposite: code that trusted
+  // the resolved value would dispatch a webhook for an action that was never claimed. The routes
+  // never catch inside these transactions, so the error reaches them and nothing is dispatched.
+  const swallowing = <T,>(work: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<T>, org: Org, action: string, id: string) =>
+    prisma.$transaction(async (tx) => {
+      const result = await work(tx);
+      try {
+        await auditIn(tx, { organizationId: org.organizationId, actorType: 'user', action, resourceType: 'remediation_action', resourceId: id });
+      } catch {
+        // swallowed: the mistake under test
+      }
+      return result;
+    });
+
+  it('a swallowed failure resolves as a successful claim, yet the claim was rolled back: dispatch must not follow it', async () => {
+    const org = await createOrg();
+    await webhook(org);
+    const { id } = await action(org);
+    const stored = await row(id);
+    await failAudit(org, 'remediation.execute_start');
+    const settings = await prisma.organizationSettings.findUniqueOrThrow({ where: { organizationId: org.organizationId } });
+    const claim = await swallowing((tx) => claimExecution(id, org.organizationId, 'APPROVED', stored.contentHash!, org.ownerId, executionTarget(settings), tx), org, 'remediation.execute_start', id);
+    // What the caller is told: claimed, with a destination to dispatch to.
+    expect(claim).toMatchObject({ claimed: true, destination: { url: hookUrl() } });
+    // What is stored: nothing. The action is not executing and no attempt was counted.
+    expect(await row(id)).toMatchObject({ status: 'APPROVED', attempts: 0, executedById: null });
+    expect(await audits(id, 'remediation.execute_start')).toBe(0);
+    expect(hook.hits).toBe(0);
+    // The route, which lets the error through, refuses and dispatches nothing (see the claim case above).
+    expect((await org.owner.post(`${path(id)}/execute`).send({})).status).toBe(500);
+    expect(await row(id)).toMatchObject({ status: 'APPROVED', attempts: 0 });
+    expect(hook.hits).toBe(0);
+  });
+
+  it('a swallowed failure resolves as a recorded approval, yet no approval was stored', async () => {
+    const org = await createOrg();
+    const { id, admin } = await action(org, false);
+    const stored = await row(id);
+    await failAudit(org, 'remediation.approve');
+    const result = await swallowing((tx) => recordApproval({ id, requiredApprovals: 1 }, admin.userId, stored.contentHash!, undefined, tx), org, 'remediation.approve', id);
+    expect(result).toMatchObject({ approved: true, granted: 1 });
+    expect(await row(id)).toMatchObject({ status: 'PENDING_APPROVAL', approvals: [] });
+    expect(await audits(id, 'remediation.approve')).toBe(0);
   });
 });
