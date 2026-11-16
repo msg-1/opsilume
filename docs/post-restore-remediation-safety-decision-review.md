@@ -133,12 +133,20 @@ A second isolated prototype was run: [post-restore-remediation-safety-phase05-va
 | P5: unknown `COMMIT` resolution | No | Design §6.3, with classification before, inside and after the transaction callback | Phase 0.5: 5 wire-protocol fault scenarios | The real driver's error mapping; production integration | **Yes** |
 | P6: one bounded-memory clearance transaction | No | Design §9.1 | Phase 0.5: 100,000 actions in 0.92 s / 147 MB; 1,000,000 in 10.3 s / 246 MB; 6 failure scenarios fully cleared or unchanged; claims waited for the whole clearance; routes at most 2.9 s | Larger installations; production integration | **Yes** |
 | P7: native Linux durability | No | Design §16.1 (environment, procedure, expected results) | — | **Native Linux and power loss: NOT TESTED** | **Yes** |
-| **P8: database-enforced downgrade protection** | No | Design §6.5 | Phase 0.5: a demonstration trigger refused an older application's claim, with no effect on newer claims or the sweep | Older real application builds, migration atomicity, role separation, overhead | **Yes** |
-| P8a: separate migration and runtime roles | No | Design §6.5 | — | Everything | **Yes** |
-| P8b: emergency removal of the guard | No | Design §6.5: recommended none | — | — | **Yes** |
+| **P8: database-enforced downgrade protection** | **Yes** (16 November 2026); not production-validated | Design §6.5 | Phase 0.5: a demonstration trigger refused an older application's claim, with no effect on newer claims or the sweep | Older real application builds, migration atomicity, role separation, overhead | **Yes** |
+| P8a: separate migration and runtime roles | **Yes** (16 November 2026); not production-validated | Design §6.5 | — | Everything | **Yes** |
+| P8b: emergency removal of the guard | **Rejected** (16 November 2026) | Design §6.5 | — | — | No: decided |
 | V1: bounded void memory (64) | No | Design §6.2.1 | The bound was used; the fail-closed path **not exercised** | The fail-closed path | **Yes** |
-| V2: full-verification schedule | No | Design §6.2.2: options, with a daily background check suggested as a starting point | Full-verification cost measured | — | **Yes: the interval is not chosen** |
+| V2: full-verification schedule | No | Design §6.2.2: **24 hours proposed**, plus start-up, before clearance, after inconsistencies; immediate quarantine on failure | Full-verification cost measured | The quarantine column and the locked confirmation | **Yes: 24 hours awaits confirmation** |
 | V3: supersede every current approval at clearance | No | Design §9, rule 1 | **Not tested.** Phase 0.5 found the gap that motivates it | Everything | **Yes** |
+
+**Product-owner statuses recorded on 16 November 2026** (from the M16 final approval preparation brief):
+- **P8 and P8a:** approved in principle, not production-validated.
+- **P8b:** rejected.
+- **V2:** a 24-hour interval proposed, awaiting confirmation.
+- **Backup retention:** 30 days proposed. **A proposal only, not approved.**
+- **V3:** pending. The decision brief is in the [final readiness report](post-restore-remediation-safety-final-readiness-report.md).
+- **P1–P7 and V1:** still awaiting approval.
 
 **Revised technical assessments:**
 - **N9 (no downgrades, approved in principle) is not enforceable as a policy alone.** Phase 0.5 shows an older application executing while ignoring the journal, with the installation still trusted. P8 is the proposed enforcement.
@@ -516,14 +524,19 @@ Even after the design and this review:
 
 **Decided on 16 November 2026:** see "Decision outcome" above.
 
-**Still open:**
-- the absolute backup retention duration;
-- acceptance of the coordinated-snapshot and truncation risks;
+**Still open** (16 November 2026):
+- the backup retention duration: 30 days proposed, not approved;
+- the full-verification interval (V2): 24 hours proposed, not confirmed;
+- V3 (decision brief in the final readiness report);
+- P1 to P7 and V1;
+- acceptance of the named risks: coordinated database and journal snapshot rollback, journal truncation to a trusted head, no external cryptographic anchor, no multi-host guarantee;
 - the maximum supported installation size;
-- the full-verification interval (V2);
-- P1 to P8, P8a, P8b, V1 and V3 (above);
-- final approval of the design as revised after Phase 0.5;
+- final approval of the revised design;
 - explicit approval of the production implementation scope (design §19, the 15-item readiness gate).
+
+**Decided:**
+- P8 and P8a: approved in principle;
+- P8b: rejected.
 
 **As originally listed for decision:**
 - **From the design:** D1–D11, journal retention and backup retention (section 2).

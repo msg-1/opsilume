@@ -356,11 +356,22 @@ The interval is **not decided**. The options:
 | Claim-count-based (for example every N claims) | Up to N claims | One full read per N claims | Follows activity; idle installations are never checked |
 | Time-based **or** claim-count-based, whichever comes first | The smaller of the two | As above | The two combined |
 
-**Recommendation** [Proposed; **awaiting product-owner approval**]:
-- a background full verification at a fixed time interval, **plus** the mandatory events;
-- run **outside** the claim lock, as an unlocked reader ([Phase 0.5 evidence]: unlocked reads never saw a corrupt state);
-- **a failure invalidates every cache and quarantines** until a person reviews it;
-- a **daily** interval is suggested as a starting point, to be confirmed against measurements on the supported platform. The interval is **not** chosen here.
+**Proposal: a 24-hour interval** [Proposed by the product owner on 16 November 2026; **awaiting confirmation**, not approved].
+
+**Full verification runs:**
+- **at start-up,** before the API reports ready;
+- **before recovery clearance** (`inspect` and `clear` always verify from the start);
+- **after any identity or replacement inconsistency:** a device or inode change, a shrunk file, a changed last record, an identity file that differs, or any verification failure (confirmed by a full verification before it is reported);
+- **in the background every 24 hours,** if the interval is approved.
+
+**Immediate quarantine on failure** [Proposed]. A failed scheduled verification records the failure in `InstallationState` (a quarantine reason), inside a transaction holding the `InstallationState` row lock. Every claim reads that row under the same lock and refuses while a reason is set, until clearance resets it. So the failure stops claims in **every** API process at once, not only in the process that found it. [Unverified] It is a column in the proposed `InstallationState` table, and not prototyped.
+
+**Coordination with appends:**
+- The background verification reads **without** the lock, so it never delays a claim. [Phase 0.5 evidence] In 95,890 unlocked checks during 2,000 appends, an in-progress append showed up as a torn tail once, and never as corruption.
+- A torn tail seen by the background check is **not** a failure: the next claim's own check decides.
+- **Before quarantining,** the background check repeats the full verification **under the row lock**. A failure found during a concurrent append is then confirmed against a stable file, so a race can't cause a false quarantine.
+
+**Cost:** about 1.4 s and 106 MB at 1,000,000 records, measured on Docker Desktop, once per interval per API process.
 
 ### 6.3 Unknown commit result (P5)
 
@@ -416,7 +427,7 @@ What each stage records, and what it proves. [Proposed; the distinctions confirm
 
 **The gap.** [Phase 0.5 evidence] An older application, written before this feature, knows nothing of the journal. Against a database that has the feature, its claim **succeeded and dispatched**. The journal never saw it, the heads still matched, and the installation still looked trusted, so a later restore would not reveal that execution. The no-downgrade **policy** (N9) does nothing against this, and **a version check in application code can't help either:** the older application doesn't have that check.
 
-**The guard** [Proposed; P8, **awaiting approval**; the prototype trigger is **not** production-ready]:
+**The guard** [P8: **approved in principle** by the product owner on 16 November 2026; **not production-validated**; the prototype trigger is **not** production-ready]:
 - **What it does:** a PostgreSQL trigger on the remediation action table, `BEFORE INSERT OR UPDATE`, refuses any row **entering** `EXECUTING` (from any other status, or inserted as `EXECUTING`) unless the transaction has proved it followed the journal protocol.
 - **The proof** [Proposed]: the claim transaction sets a transaction-local setting, `set_config('opsilume.claim_seq', <seq>, true)`, **after** advancing `InstallationState.journalSeq` to `<seq>` in the same transaction. The trigger requires the setting to equal the current `journalSeq`.
   - The setting is transaction-local, so it can't leak to another transaction or session.
@@ -446,14 +457,14 @@ What each stage records, and what it proves. [Proposed; the distinctions confirm
 
 **Privilege boundary** [Verified for the current deployment, then proposed]:
 - [Verified] The application connects as the same database role that owns the tables (`docker-compose.yml`: one `opspilot` role, used both for migrations and at runtime). The table owner can `ALTER TABLE … DISABLE TRIGGER` or drop the trigger.
-- [Proposed; pending decision] Separate a **migration role** (owner) from a **runtime role** (not the owner). Then the running application, any version, can't disable or drop the guard.
+- [P8a: **approved in principle** on 16 November 2026; not production-validated] Separate a **migration role** (owner) from a **runtime role** (not the owner). Then the running application, any version, can't disable or drop the guard. **Required check:** connected as the runtime role, `ALTER TABLE … DISABLE TRIGGER`, `DROP TRIGGER` and `DROP FUNCTION` must each be refused. In PostgreSQL only the table owner, or a superuser, can do these, so the runtime role must be neither.
 - Until then, the guard protects against older application code, **not** against a compromised application or a person with the owner role.
 
 **Migration rollback and downgrade:**
 - Prisma migrations are forward-only.
 - Removing the guard means a person deliberately dropping it with owner rights. That isn't a supported downgrade path; it would need to be audited and is a decision in its own right (below).
 - Running an older application against a newer database leaves the guard in place, so remediation execution is unavailable until the application is upgraded again.
-- **Recovery when the guard exists but the application is incompatible:** upgrade the application. A documented, audited "remove the guard" procedure for emergencies is a decision for the product owner (recommended: none, consistent with D7).
+- **Recovery when the guard exists but the application is incompatible:** upgrade the application. An emergency "remove the guard" procedure (P8b) was **rejected** by the product owner on 16 November 2026, consistent with D7.
 
 **Limitations:**
 - it relies on the migration having run;
@@ -847,7 +858,13 @@ Proposed analysis:
 
 ## 17. Remaining risks
 
-**Accepted risks** (from the deferred decisions D3, D10 and D11; the owner has accepted them, not mitigated them):
+**Accepted risks**, named explicitly. They come from the deferred decisions D3, D10, D11 and N7, and acceptance is **pending the product owner's explicit approval**:
+- **coordinated database and journal snapshot rollback** goes undetected;
+- **journal truncation to a trusted head** goes undetected;
+- **there is no external cryptographic anchor** (D3 and N7 deferred);
+- **there is no multi-host guarantee** (N10).
+
+Detail:
 - **D3:** without an off-host anchor, a rollback or copy of both volumes, or a truncation by someone with host access, is undetected.
 - **D10:** settings and memberships rolled back by a restore are found only by the manual checklist in section 11.
 - **D11:** receivers get no installation id or journal sequence to detect repeats themselves.
@@ -895,7 +912,7 @@ Recorded on 16 November 2026. "Approved in principle" means approved as design d
 | N10 | Enforcing a single API host | **Enforcement deferred** | Phase 0 prototypes two-container locking on one host; no multi-host support is claimed |
 | N11 | Supported platforms for the durability claim | **Deferred** | No broad durability claim until tested |
 | — | Retention of the journal and of clearance records | See N6 | — |
-| — | Backup retention duration | **Requires product-owner selection** | No absolute duration is chosen here |
+| — | Backup retention duration | **Proposed: 30 days. A proposal only; not approved** | Journal retention stays at least as long as the oldest restorable backup |
 
 **New technical decisions raised by Phase 0.** These are engineering recommendations, **not approvals:**
 
@@ -913,20 +930,26 @@ Recorded on 16 November 2026. "Approved in principle" means approved as design d
 
 | # | Decision | Status | Recommendation |
 |---|---|---|---|
-| P8 | A database guard refusing any entry into `EXECUTING` not made through the journal protocol, created in the same migration as `InstallationState` (section 6.5) | **Awaiting approval** | Adopt. The prototype trigger is a demonstration; production needs the integration tests in section 6.5 |
-| P8a | Separate the migration (owner) role from the runtime role, so the application can't disable the guard | **Awaiting approval** | Adopt, as part of, or before, P8 |
-| P8b | An audited emergency procedure to remove the guard when the application is incompatible | **Awaiting approval** | None (consistent with D7): upgrade the application instead |
+| P8 | A database guard refusing any entry into `EXECUTING` not made through the journal protocol, created in the same migration as `InstallationState` (section 6.5) | **Approved in principle** (16 November 2026); not production-validated | The prototype trigger is a demonstration; production needs the integration tests in section 6.5 |
+| P8a | Separate the migration (owner) role from the runtime role, so the application can't disable the guard | **Approved in principle** (16 November 2026); not production-validated | As part of, or before, P8 |
+| P8b | An audited emergency procedure to remove the guard when the application is incompatible | **Rejected** (16 November 2026) | Upgrade the application instead (consistent with D7) |
 | V1 | Bounded void memory: 64 remembered claims; fail closed beyond (section 6.2.1) | **Awaiting approval** | Adopt |
-| V2 | The full-verification schedule (section 6.2.2) | **Awaiting product-owner decision** | Background, time-based, plus mandatory events; daily suggested as a starting point, not chosen |
+| V2 | The full-verification schedule (section 6.2.2) | **Proposed: 24 hours. Awaiting product-owner confirmation** | Background every 24 hours, plus start-up, before clearance, and after any identity or replacement inconsistency; immediate quarantine on failure |
 | V3 | Clearance supersedes every current approval, whatever the action's status (section 9) | **Awaiting approval** | Adopt |
 
-**Still awaiting the product owner:**
-- the backup retention duration;
-- acceptance of the coordinated-snapshot and truncation risks;
+**Still awaiting the product owner** (status on 16 November 2026):
+- the backup retention duration: 30 days **proposed**, not approved;
+- the full-verification interval (V2): 24 hours **proposed**, not confirmed;
+- V3, superseding every current approval at clearance: **pending**. The decision brief is in the [final readiness report](post-restore-remediation-safety-final-readiness-report.md);
+- P1 to P7 and V1: **awaiting approval**;
+- acceptance of the accepted risks: coordinated database and journal snapshot rollback, journal truncation to a trusted head, no external cryptographic anchor, and no multi-host guarantee;
 - the maximum supported installation size;
-- the full-verification interval (V2);
 - final approval of this revised design;
 - the production implementation scope.
+
+**Recorded on 16 November 2026:**
+- P8 and P8a: **approved in principle** (not production-validated);
+- P8b: **rejected**.
 
 ## 19. Implementation milestones
 
@@ -1017,15 +1040,15 @@ Production implementation can't be authorised until every item is complete. Thre
 | 2 | P1: savepoint behaviour | Specified (§6) | Passed (Phase 0, two containers) | Not done |
 | 3 | P2: short-write handling | Specified (§6) | Passed (Phase 0, full disk) | Not done |
 | 4 | P3: database row lock as the journal mutex | Specified (§6.1) | Passed (Phase 0 and 0.5, one host) | Not done |
-| 5 | P4: incremental verification, and the full-verification schedule | Specified (§6.2); **schedule pending (V2)** | Passed up to 1,000,000 records (Phase 0.5) | Not done |
+| 5 | P4: incremental verification, and the full-verification schedule | Specified (§6.2); **24 hours proposed (V2), not confirmed** | Passed up to 1,000,000 records (Phase 0.5) | Not done |
 | 6 | P5: unknown `COMMIT` resolution | Specified (§6.3), with failure classification | Passed, 5 wire-protocol scenarios (Phase 0.5) | Not done (the real driver mapping) |
 | 7 | P6: clearance, and invalidating every approval | Specified (§9, §9.1) | Clearance passed up to 1,000,000 actions; the every-approval rule (V3) **not yet tested** | Not done |
-| 8 | P7: native Linux durability | Specified (§16.1) | **NOT TESTED** | **NOT TESTED** |
-| 9 | P8: database-enforced downgrade protection | Specified (§6.5); **awaiting approval** | Passed as a demonstration trigger (Phase 0.5) | Not done (integration tests listed in §6.5) |
+| 8 | P7: native Linux durability | Specified (§16.1) | **NOT TESTED:** no native Linux environment available (final readiness report) | **NOT TESTED** |
+| 9 | P8 and P8a: database-enforced downgrade protection, with separate roles | Specified (§6.5); **approved in principle** | P8 passed as a demonstration trigger (Phase 0.5); P8a not tested | Not done (integration tests listed in §6.5) |
 | 10 | Bounded void memory (V1) | Specified (§6.2.1) | Bound used; the fail-closed path **not exercised** | Not done |
 | 11 | Recovery and clone restrictions (D8, N8) | Specified (§7, §11) | Not tested (the new-installation path wasn't built) | Not done |
-| 12 | Backup retention selected | — | — | — (**awaiting the product owner**) |
-| 13 | Accepted risks explicitly approved: coordinated snapshot, truncation | Documented (§17) | Truncation shown undetected (Phase 0, case 15) | — (**awaiting the product owner**) |
+| 12 | Backup retention selected | 30 days **proposed**, not approved | — | — (**awaiting the product owner**) |
+| 13 | Accepted risks explicitly approved: coordinated snapshot rollback, truncation to a trusted head, no external cryptographic anchor, no multi-host guarantee | Documented (§17) | Truncation shown undetected (Phase 0, case 15) | — (**awaiting the product owner**) |
 | 14 | Maximum installation size selected | — | Evidence up to 1,000,000 actions on one development machine | — (**awaiting the product owner**) |
 | 15 | Production implementation scope explicitly approved | — | — | — (**awaiting the product owner**) |
 
