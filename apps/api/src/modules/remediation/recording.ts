@@ -18,8 +18,8 @@ export interface ExecutionRecord extends ExecutionResult {
  * interrupted, reconciled or retried does not overwrite that: it returns false, and the caller
  * puts it in the audit log for a person to reconcile.
  */
-export async function recordOutcome(actionId: string, record: ExecutionRecord): Promise<boolean> {
-  const { count } = await prisma.remediationAction.updateMany({ where: { id: actionId, status: 'EXECUTING', attempts: record.attempt }, data: { status: record.success ? 'EXECUTED' : 'FAILED', executedAt: new Date(), executionResult: record as unknown as Prisma.InputJsonValue } });
+export async function recordOutcome(actionId: string, record: ExecutionRecord, db: Prisma.TransactionClient | typeof prisma = prisma): Promise<boolean> {
+  const { count } = await db.remediationAction.updateMany({ where: { id: actionId, status: 'EXECUTING', attempts: record.attempt }, data: { status: record.success ? 'EXECUTED' : 'FAILED', executedAt: new Date(), executionResult: record as unknown as Prisma.InputJsonValue } });
   return count > 0;
 }
 

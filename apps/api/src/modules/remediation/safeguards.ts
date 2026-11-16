@@ -1,7 +1,7 @@
 import type { RiskLevel } from '@prisma/client';
 import type { Request } from 'express';
 import type { ActionEffect } from '../../lib/actionEffect';
-import { audit } from '../../lib/audit';
+import { type AuditInput, auditEntry, auditIn } from '../../lib/audit';
 import { prisma } from '../../lib/prisma';
 import type { AuthContext } from '../../middleware/auth';
 import { conflict } from '../../lib/errors';
@@ -29,8 +29,11 @@ export const currentRisk = (action: Detailed) => effectiveRisk(action.organizati
  * still what the caller read. Otherwise nothing changes and it throws, so no caller ever audits a
  * transition that did not happen. A risk given is only ever raised from the current one. Returns
  * how many approvals were superseded and the risk before and after, as they were under the lock.
+ * The audit row `log` builds from that is written in the same transaction: no supersession
+ * commits without it, and a failed audit write rolls the supersession back.
  */
-const restart = (action: Detailed, raiseTo?: RiskLevel, minRequired = 0) =>
+type Applied = { superseded: number; previousRisk: RiskLevel; risk: RiskLevel };
+const restart = (action: Detailed, log: (applied: Applied) => AuditInput | null, raiseTo?: RiskLevel, minRequired = 0) =>
   prisma.$transaction(async (tx) => {
     const row = await lockAction(tx, action.id);
     const current = row && (await tx.remediationAction.findUnique({ where: { id: action.id } }));
@@ -41,27 +44,27 @@ const restart = (action: Detailed, raiseTo?: RiskLevel, minRequired = 0) =>
     const { count } = await supersedeApprovals(action.id, tx);
     // The number of approvals needed never goes down (effect.ts, approvalThreshold).
     await tx.remediationAction.update({ where: { id: action.id }, data: { risk, requiredApprovals: Math.max(row.requiredApprovals, minRequired), status: 'PROPOSED', contentHash: null, requestedById: null, requestedAt: null } });
-    return { superseded: count, previousRisk: current.risk, risk };
+    const applied = { superseded: count, previousRisk: current.risk, risk };
+    await auditIn(tx, log(applied));
+    return applied;
   });
 
 /** The risk is part of what was approved: raising it means the approvals no longer cover the action. */
 export async function raiseRisk(req: Request, auth: AuthContext, action: Detailed, risk: RiskLevel, settings: Awaited<ReturnType<typeof getSettings>>) {
-  const applied = await restart(action, risk, requiredApprovals(settings, risk, 'state_changing'));
   // The risk as it was and became under the lock, not as this request read it.
-  await audit(req, 'remediation.risk_raised', 'remediation_action', action.id, { previousRisk: applied.previousRisk, newRisk: applied.risk, previousStatus: action.status, supersededApprovals: applied.superseded });
+  const log = (a: Applied) => auditEntry(req, 'remediation.risk_raised', 'remediation_action', action.id, { previousRisk: a.previousRisk, newRisk: a.risk, previousStatus: action.status, supersededApprovals: a.superseded });
+  const applied = await restart(action, log, risk, requiredApprovals(settings, risk, 'state_changing'));
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `Risk of "${action.title}" raised from ${applied.previousRisk.toLowerCase()} to ${applied.risk.toLowerCase()} under the current rules${applied.superseded ? `; ${applied.superseded} approval(s) no longer count` : ''}`, auth, { actionId: action.id });
 }
 
 /** Sends an action back to PROPOSED with its approvals kept on record and no longer counting, and says why in the audit log. */
 export async function requireFreshApproval(req: Request, auth: AuthContext, action: Detailed, auditAction: string, meta: Record<string, unknown>, timeline: string) {
-  const { superseded } = await restart(action);
-  await audit(req, auditAction, 'remediation_action', action.id, { ...meta, previousStatus: action.status, supersededApprovals: superseded });
+  await restart(action, (a) => auditEntry(req, auditAction, 'remediation_action', action.id, { ...meta, previousStatus: action.status, supersededApprovals: a.superseded }));
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', timeline, auth, { actionId: action.id });
 }
 
 /** The approvals were given while the source looked sound, and it no longer does: they stop counting until people review it again. */
 export async function requireSourceReview(req: Request, auth: AuthContext, action: Detailed, check: SourceCheck) {
-  const { superseded } = await restart(action);
-  await audit(req, 'remediation.source_review_required', 'remediation_action', action.id, { reasons: check.reasons, previousStatus: action.status, supersededApprovals: superseded });
+  await restart(action, (a) => auditEntry(req, 'remediation.source_review_required', 'remediation_action', action.id, { reasons: check.reasons, previousStatus: action.status, supersededApprovals: a.superseded }));
   if (action.incidentId) await addIncidentEvent(action.incidentId, 'remediation', `"${action.title}" needs a fresh review: the investigation behind it does not support a production change`, auth, { actionId: action.id });
 }

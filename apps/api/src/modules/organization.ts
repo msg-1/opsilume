@@ -1,7 +1,7 @@
 import type { Prisma } from '@prisma/client';
 import { Router } from 'express';
 import { z } from 'zod';
-import { audit } from '../lib/audit';
+import { audit, auditEntry, auditIn } from '../lib/audit';
 import { encrypt, randomToken, sha256 } from '../lib/crypto';
 import { badRequest, forbidden, notFound } from '../lib/errors';
 import { csvCell, httpUrl, paged, paginate, paginationQuery, param, timeParam } from '../lib/http';
@@ -234,8 +234,10 @@ settingsRouter.patch('/', requirePermission('settings:manage'), async (req, res)
   const { name, remediationWebhookSecret, ...rest } = settingsBody.parse(req.body);
   if (rest.remediationWebhookUrl) await assertSafeOutboundUrl(rest.remediationWebhookUrl);
   await getSettings(organizationId);
-  await prisma.$transaction([
-    prisma.organizationSettings.update({
+  // The settings hold the webhook destination, its secret and the approval thresholds: they change
+  // only together with their audit row (lib/audit.ts, auditIn).
+  await prisma.$transaction(async (tx) => {
+    await tx.organizationSettings.update({
       where: { organizationId },
       data: {
         ...rest,
@@ -243,15 +245,15 @@ settingsRouter.patch('/', requirePermission('settings:manage'), async (req, res)
           ? { remediationWebhookSecretEncrypted: remediationWebhookSecret ? encrypt(remediationWebhookSecret) : null }
           : {}),
       },
-    }),
-    ...(name ? [prisma.organization.update({ where: { id: organizationId }, data: { name } })] : []),
-  ]);
-  await audit(req, 'settings.update', 'organization', organizationId, {
-    ...rest,
-    ...(name ? { name } : {}),
-    // The address can carry a token in its path or query: only that it changed is recorded.
-    ...(rest.remediationWebhookUrl !== undefined ? { remediationWebhookUrl: rest.remediationWebhookUrl ? '[changed]' : '[removed]' } : {}),
-    ...(remediationWebhookSecret !== undefined ? { remediationWebhookSecret: '[changed]' } : {}),
+    });
+    if (name) await tx.organization.update({ where: { id: organizationId }, data: { name } });
+    await auditIn(tx, auditEntry(req, 'settings.update', 'organization', organizationId, {
+      ...rest,
+      ...(name ? { name } : {}),
+      // The address can carry a token in its path or query: only that it changed is recorded.
+      ...(rest.remediationWebhookUrl !== undefined ? { remediationWebhookUrl: rest.remediationWebhookUrl ? '[changed]' : '[removed]' } : {}),
+      ...(remediationWebhookSecret !== undefined ? { remediationWebhookSecret: '[changed]' } : {}),
+    }));
   });
   res.json(await settingsView(organizationId));
 });

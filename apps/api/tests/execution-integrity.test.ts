@@ -13,10 +13,18 @@ vi.mock('../src/modules/remediation/approvals', async (original) => {
     ...actual,
     claimExecution: async (...args: Parameters<typeof actual.claimExecution>) => {
       if (hooks.beforeClaim) await hooks.beforeClaim();
-      const claim = await actual.claimExecution(...args);
-      // The claim has committed; the dispatch has not started.
+      return actual.claimExecution(...args);
+    },
+  };
+});
+vi.mock('../src/modules/remediation/execution', async (original) => {
+  const actual = await original<typeof import('../src/modules/remediation/execution')>();
+  return {
+    ...actual,
+    execute: async (...args: Parameters<typeof actual.execute>) => {
+      // The claim and its audit row have committed; the dispatch has not started.
       if (hooks.afterClaim) await hooks.afterClaim();
-      return claim;
+      return actual.execute(...args);
     },
   };
 });

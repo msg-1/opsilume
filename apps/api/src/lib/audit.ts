@@ -28,24 +28,24 @@ export async function writeAudit(entry: AuditInput, db: Pick<typeof prisma, 'aud
 const actorTypeOf = (auth: AuthContext): AuditInput['actorType'] =>
   auth.kind === 'user' ? 'user' : auth.kind === 'api_key' ? 'api_key' : 'ai_agent';
 
-export function audit(
-  req: Request,
-  action: string,
-  resourceType: string,
-  resourceId?: string | null,
-  metadata?: Prisma.InputJsonValue,
-) {
+/** The audit row for this request, or null when it is not authenticated. */
+export function auditEntry(req: Request, action: string, resourceType: string, resourceId?: string | null, metadata?: Prisma.InputJsonValue): AuditInput | null {
   const auth = req.auth;
-  if (!auth) return Promise.resolve();
-  return writeAudit({
-    organizationId: auth.organizationId,
-    actorType: actorTypeOf(auth),
-    actorId: auth.actorId,
-    actorLabel: auth.label,
-    action,
-    resourceType,
-    resourceId,
-    metadata,
-    ip: req.ip,
-  });
+  if (!auth) return null;
+  return { organizationId: auth.organizationId, actorType: actorTypeOf(auth), actorId: auth.actorId, actorLabel: auth.label, action, resourceType, resourceId, metadata, ip: req.ip };
+}
+
+/** Best-effort audit of a request: written on its own, after the change it records (see writeAudit). */
+export function audit(req: Request, action: string, resourceType: string, resourceId?: string | null, metadata?: Prisma.InputJsonValue) {
+  const entry = auditEntry(req, action, resourceType, resourceId, metadata);
+  return entry ? writeAudit(entry) : Promise.resolve();
+}
+
+/**
+ * Durable audit: written with the caller's transaction client, so the row commits with the change
+ * it records or not at all. A failed insert is not caught: PostgreSQL has aborted the transaction,
+ * the error reaches its owner and the change rolls back. Never open a transaction here.
+ */
+export async function auditIn(tx: Prisma.TransactionClient, entry: AuditInput | null) {
+  if (entry) await tx.auditLog.create({ data: entry });
 }
