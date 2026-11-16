@@ -10,6 +10,22 @@ This is a design only. Nothing described as **proposed** exists. Every statement
 
 **Decision status (16 November 2026).** The product owner has approved the main decisions in principle, with conditions, and deferred others. Section 18 records each one, and the review ([post-restore-remediation-safety-decision-review.md](post-restore-remediation-safety-decision-review.md)) gives the reasoning. "Approved in principle" means approved as design direction: nothing is implemented, and Phase 0 (section 19) must confirm the technical assumptions first.
 
+**Revision after Phase 0 (16 November 2026).** The isolated prototype ([post-restore-remediation-safety-phase0-prototype-report.md](post-restore-remediation-safety-phase0-prototype-report.md)) supported the architecture and exposed two defects in this design. This revision takes in its evidence:
+- the void is appended under a savepoint (section 6);
+- a short write is a journal failure (section 6);
+- one journal mutex (section 6.1);
+- incremental verification (section 6.2);
+- an unknown commit result (section 6.3);
+- the dispatch lifecycle (section 6.4);
+- clearance at scale (section 9.1);
+- durability and supported platforms (section 16.1).
+
+The new technical decisions are P1 to P7 (section 18), and a production readiness gate follows in section 19.
+
+Throughout this revision:
+- **[Phase 0 evidence]** marks what the prototype showed, on one Docker Desktop installation on Apple silicon only.
+- **Nothing here is production-validated.** Production implementation is **not** authorised.
+
 ## 1. Executive summary
 
 **Root cause.** [Verified] Everything OPSILUME knows about what it has executed lives in the same PostgreSQL database that a restore replaces. A restore therefore erases the memory of every execution made after the backup, while the external systems keep the changes.
@@ -36,7 +52,7 @@ Each execution is journalled twice before any byte is sent: a `claim` line insid
 
 These are accepted risks while an off-host anchor (D3) is deferred (section 17).
 
-The decisions are recorded in section 18.
+The decisions are recorded in section 18. Phase 0 changed the design in two places that its guarantees depend on (P1, P2) and added five further requirements (P3 to P7). See the revision note above.
 
 ## 2. Current remediation lifecycle
 
@@ -158,7 +174,7 @@ Each scenario below assumes the protections of section 2, with nothing proposed.
 **Components** [all Proposed]:
 - **A state volume** `opspilot-state`, mounted into the API container only. Nothing else dispatches: the worker's sweep never sends anything ([Verified] `system.ts:50-66`). Also mounted into the one-off container that runs the recovery command.
 - **`installation.json`** on that volume: a random `installationId` and the time it was created. Written once by provisioning; never by the application during normal work.
-- **`journal.log`** on that volume: one line per event, opened append-only (`O_APPEND`), never rewritten in place, each line followed by `fsync`. Line types:
+- **`journal.log`** on that volume: one line per event, opened append-only (`O_APPEND`), never rewritten in place. Each line is written with **one** `write` call whose returned byte count is checked (P2), then `fsync`ed. Line types:
   - `claim`: sequence number, action id, organisation id, attempt, approval fingerprint, destination digest, time. Written inside the claim transaction, before commit.
   - `void`: a sequence number whose claim transaction is known to have rolled back.
   - `dispatch` (N2): sequence number and time. Written after the claim commits and **before the first byte is sent**, or before a manual attestation is recorded. It records the **intent to dispatch**. It does **not** show that the request reached the receiver or that the external change happened.
@@ -181,12 +197,30 @@ Each scenario below assumes the protections of section 2, with nothing proposed.
    - the row's `journalSeq` equals the journal head.
 
    Anything else returns a new claim result, `quarantined`, with a reason. Nothing is claimed, the action is unchanged, and the refusal is audited in the transaction.
-4. If trusted: `seq = journalSeq + 1`. **Append the `claim` line for `seq` and `fsync` it while the transaction is still open,** then update the row and commit.
-5. If the transaction then **is known to have rolled back** (an audit insert fails, for example), append `void seq`.
-6. If the result of the commit is **unknown** (the connection drops during `COMMIT`): write nothing more and **do not dispatch**. The journal and the database then disagree whichever way it went, so the next comparison quarantines.
-7. After commit: append and `fsync` the `dispatch` line, then send. If the `dispatch` line can't be written, nothing is sent. The action stays `EXECUTING` until the sweep records `unknown`, and the journal shows a claim with no dispatch.
+4. If trusted: `seq = journalSeq + 1`. **Take a savepoint** (P1). **Append the `claim` line for `seq`, check that every byte was written (P2), and `fsync` it while the transaction is still open.** Then update the row, write the audit row, and commit.
+5. **If a database statement after the savepoint fails** (an audit insert, a constraint, a lock timeout):
+   1. roll back **to the savepoint**;
+   2. append `void seq`, while the `InstallationState` lock is still held;
+   3. rethrow, so that the whole transaction still rolls back.
 
-Dispatch starts only after commit and after the `dispatch` line is on disk. The journal writes are not database statements, so the Milestone 14 rule (never catch a database error inside the transaction) is unaffected. A failed `claim` write throws, the transaction rolls back, and nothing is sent.
+   **Why the savepoint.** [Phase 0 evidence] PostgreSQL aborts a transaction, **and releases its locks,** at the first failed statement. Without the savepoint the `void` was written without the lock. With two API containers that forked the hash chain: the journal was corrupt in both first runs, and B1 had 266 spurious quarantine refusals. Rolling back to a savepoint taken after the lock keeps the lock; the runs after this fix were clean. [Unverified in production] It must be tested again in the implementation.
+
+   **If something in step 5 itself fails** [Proposed]:
+   - **The rollback to the savepoint fails:** the connection is unusable. Do not append `void`; rethrow. The journal is then one claim ahead, so the next comparison quarantines (safe).
+   - **The `void` append fails** (including a short write): rethrow. The journal is ahead, or has a torn tail, so it quarantines or refuses appends (safe).
+
+   **In every case,** nothing is dispatched, and nothing commits after an error: the Milestone 14 rule is kept.
+6. **If the result of the commit is unknown** (the connection drops during `COMMIT`), see section 6.3. **Correction:** the original text said the journal and the database "disagree whichever way it went". They do not when the commit did happen: the heads are then equal and the claim is trusted. That is still safe, because nothing has been dispatched, but recovery must not rely on a mismatch to notice it.
+7. After a commit that is known to have succeeded: append and `fsync` the `dispatch` line (bytes checked), then send. If the `dispatch` line can't be written completely, nothing is sent. The action stays `EXECUTING` until the sweep records `unknown`, and the journal shows a claim with no dispatch, meaning not sent.
+
+Dispatch starts only after a commit known to have succeeded, and after the `dispatch` line is completely on disk. The journal writes are not database statements, and nothing commits after a database error, so the Milestone 14 rule (never catch a database error inside the transaction and carry on) is kept. A failed `claim` write throws, the transaction rolls back, and nothing is sent.
+
+**Short writes (P2).** [Phase 0 evidence] On a full 64 KiB filesystem, Node's `fs.writeSync` returned 343 of 461 bytes **without throwing**. The prototype's append first counted that as a success, leaving a torn record behind a "successful" append. Required [Proposed]:
+- the byte count of every journal write is compared with the record's length, and any difference is a **journal failure**;
+- nothing is dispatched after one;
+- a failed `claim` append rolls the transaction back (no `void` is needed: the claim never became a complete record);
+- the partial bytes are a torn tail (N1). Further appends are refused until the repair tool records them;
+- the file is **never** truncated, rewritten or recreated to "fix" it. [Phase 0 evidence] A deleted journal was refused (`JOURNAL_MISSING`), not recreated.
 
 **Crash windows and failures** [Proposed analysis]. Two guarantees hold:
 - no request is sent without a `claim` line on disk;
@@ -199,13 +233,108 @@ A claim alone never proves that anything was sent, and a `dispatch` line never p
 | Crash before the `claim` append | Nothing changed | None |
 | **Failure 1: the journal append succeeds, then the database transaction rolls back** (an audit insert fails, a lock times out) | `claim seq` on disk, then `void seq` | Heads equal (the voided claim doesn't count): trusted. Nothing was sent. If the `void` write also fails, the journal is ahead, so quarantine (safe) |
 | Crash after the `claim` append, before commit | Journal head `seq`, database `seq-1` | Mismatch, so quarantine: a false positive, rare and safe. **While the original database still exists**, recovery sees the action not claimed, so the claim was never committed and nothing was sent. **After a restore** that can't be told apart from a claim that committed and was then erased; the absence of a `dispatch` line is what shows nothing was sent |
-| Commit result unknown | Either side may be ahead | No `void`, no dispatch, so quarantine at the next comparison |
+| Commit result unknown | If the commit did **not** happen: journal ahead. If it **did**: heads equal, action `EXECUTING`, no `dispatch` line | No `void`, no dispatch. The first case quarantines; the second is trusted, and the action is settled by the sweep as `unknown` (journal: not sent). Section 6.3 |
 | **Failure 2: the database commit succeeds, then the process crashes before dispatch** | Equal heads; action `EXECUTING`; `claim` without `dispatch` | Trusted (heads equal). The sweep records `unknown` once stale. Recovery can say **certainly not sent**, because there is no `dispatch` line, so a person can reconcile it as `not_applied` |
 | Crash after the `dispatch` line, before or during sending | `claim` and `dispatch`, no `outcome` | The sweep records `unknown`. The request may or may not have reached the receiver: a person must check the target system |
 | After sending | As today, plus an `outcome` line if it was written | As today |
 | A torn final line (crash or a full disk during an append) | A last line without its newline, or with a bad hash | **N1:** because commit only follows a successful `fsync`, a torn final line was never committed. It is treated as absent and repaired only by the recovery tooling. Corruption anywhere else means quarantine |
 
 **Why the journal is written before commit and not after.** [Proposed] Writing after commit would leave a window in which a second API process sees the database ahead of the journal and quarantines falsely. Holding the `InstallationState` lock through append and commit orders all claims.
+
+### 6.1 The journal mutex (P3)
+
+**Recommendation** [Proposed; P3, awaiting approval]: one authoritative mutex for **every** journal append, namely the PostgreSQL `InstallationState` row lock (`SELECT … FOR UPDATE`).
+- **Claims** append inside their own transaction while holding it.
+- **Every other record** (`dispatch`, `outcome`, `reconciled`, `cleared`, `repair`) is appended in a short transaction that takes the same lock, appends, `fsync`s and closes the file before commit.
+- **`flock` is not used.**
+
+**Evidence** [Phase 0 evidence]:
+- **The row lock:**
+  - 626 claims from two containers, and from eight processes, gave an intact chain with no duplicate sequences;
+  - the journal head equalled the database head;
+  - there were no deadlocks.
+- **`flock(1)`:** it also kept 1,000 cross-container appends intact. But killing the lock holder did **not** release the lock while a child process that had inherited the locked descriptor was alive. It was released only when the descriptor was not inherited.
+
+**Why the row lock:**
+
+| Concern | Row lock | `flock` |
+|---|---|---|
+| Lock order | One lock, already taken **first** by claims and clearance (N5): no second lock to order against it | A second lock whose order against the row lock would need defining everywhere |
+| Claim and clearance | Serialised by the same lock that also protects the sequence | Needs both locks; a wrong order risks deadlock |
+| Transaction failure | Held through the savepoint rollback and the `void` append (P1) | Independent of the transaction; doesn't cover the sequence |
+| Process or container killed | PostgreSQL ends the session and releases it ([Phase 0 evidence] B3, B4) | Released only if no child inherited the descriptor; needs `O_CLOEXEC` and no child processes as a permanent invariant |
+| Operations | Nothing new to run | Lock files on the volume, inheritance rules |
+
+**Consequences of choosing the row lock:**
+- **When the database is unavailable,** no journal record can be appended. Claims need the database anyway. A `dispatch` record that can't be appended means the request is **not sent**: the action stays `EXECUTING` and the sweep later records `unknown` (not sent). `outcome` and `reconciled` records are evidence only; when they can't be written, recovery has less evidence but trust is unaffected.
+- **The repair tool and clearance** must also take the row lock.
+- **The file is opened, written, `fsync`ed and closed inside the lock.** No process keeps a journal descriptor open between appends.
+- **No multi-host support.** The row lock is global, but the journal file isn't shared between hosts. Two API hosts would each write their own journal and quarantine each other. Only one API host is supported (N10).
+
+### 6.2 Incremental verification (P4)
+
+**The problem.** [Phase 0 evidence] Verifying the whole journal on every claim took about 162 ms at 100,000 records (25.6 MB), and the prototype's append (which re-parses to find the last hash) grew from 0.43 ms to 1.19 ms p50 over the first 1,000 records. That cost grows without bound.
+
+**Proposed strategy** [Proposed; P4, awaiting approval; **not prototyped**]:
+- **A per-process cache,** never shared between processes and never persisted:
+  - the file's device and inode;
+  - the verified byte offset;
+  - the hash of the last verified record and that record's start offset;
+  - the head and the last claim (sequence and action).
+- **At each check, under the row lock:**
+  1. `fstat` the journal.
+  2. **A different device or inode** (the file was replaced): full verification.
+  3. **The file is smaller than the verified offset** (it shrank): full verification. That will normally end in quarantine.
+  4. **Otherwise,** re-read the **last verified record** (from its start offset to the verified offset) and check that its hash is still the cached one. This catches an in-place edit of the tail.
+  5. Then read and verify **only the bytes after the verified offset,** with the normal rules: the chain continues from the cached hash, the sequence follows, and a torn tail is not counted. Advance the cache only over complete, valid records.
+- **Anchor the head hash in the database too** [Proposed]: `InstallationState` stores the hash of the record at the database head, not only its sequence number. The trust comparison then checks the sequence and the hash. A replaced journal with the same head number but different content is then refused. [Unverified] Not prototyped. It is a schema addition, so it needs approval.
+- **Several API processes:** each has its own cache. Another process's appends simply appear as new bytes after this process's offset, and are verified like any others. A cache is a performance aid, never a source of trust: a cache that disagrees with the file is discarded and verification starts over.
+
+**When a complete verification is mandatory:**
+- at process start;
+- when the cache is empty or invalid;
+- on a device or inode change, or when the file shrank;
+- after any verification failure, before reporting corruption;
+- before `inspect` and `clear`, which always verify from the start;
+- after a torn-tail repair;
+- on a schedule (the interval is to be decided). This catches in-place edits **in the middle** of the file, which the incremental check can't see.
+
+**Limit.** Between scheduled full checks, an in-place edit of an earlier record that changes neither the size nor the last record is not seen. That requires write access to the volume, which is already an accepted risk (section 12).
+
+### 6.3 Unknown commit result (P5)
+
+**Status:** a production blocker. **Not tested in Phase 0.** It needs fault-proxy testing (`apps/api/tests/faults.ts`).
+
+**Situation.** The `claim` record for `seq` is on disk, `COMMIT` was sent, and the connection dropped before the reply. PostgreSQL may or may not have committed. **A missing confirmation is never taken to mean "failed".**
+
+**Proposed handling** [Proposed; P5, awaiting approval]:
+1. **Do not dispatch, and do not write `void`.** The request ends with an error saying the outcome of the claim is uncertain.
+2. **Resolve it now, if the database is reachable:** reconnect and, in a new transaction, lock `InstallationState` and read `journalSeq` and the action's status and attempts.
+   - **`journalSeq = seq` and the action is `EXECUTING` with this attempt:** the claim **committed**. It stays undispatched: the action is left `EXECUTING`, and the sweep records `unknown`, with the journal showing no `dispatch`, meaning not sent. A person can then reconcile it as `not_applied` and retry.
+   - **`journalSeq = seq - 1` and the action is unchanged:** the claim **did not commit**. Append `void seq` while holding the lock. The heads are then equal again.
+   - **Anything else** (another sequence, a changed action): leave it alone. The comparison will quarantine, and a person resolves it.
+3. **If the database stays unreachable:** do nothing more. The journal keeps the `claim` with no `dispatch`. When the database returns, either the heads differ (quarantine) or they are equal with the action `EXECUTING` (the sweep records `unknown`, not sent).
+4. **After a process restart,** there is no in-memory state to recover: the same rules apply. A start-up check may run step 2 for a last claim that has no `dispatch` and no `void`. **It must not void automatically on any other evidence.**
+
+**Rejected: automatically healing any "journal one ahead".** [Assessment] A restored database that is behind by exactly one undispatched claim looks the same. Healing it would hide the restore, and with it the settings and memberships the restore rolled back.
+
+**Not chosen: dispatching after confirming that the commit happened.** [Assessment] The claim is ours and nothing was sent, so this would be safe in principle. But the request has already failed for the user, and an uncertain commit should be rare. Leaving it for reconciliation is the conservative choice. [Unresolved, P5] Recorded for the owner.
+
+### 6.4 Dispatch lifecycle
+
+What each stage records, and what it proves. [Proposed; the distinctions confirmed by Phase 0 experiment D]
+
+| Stage | Recorded as | Proves |
+|---|---|---|
+| Claim recorded | `claim` record, before commit | Only that a claim was attempted. Not that it committed or was sent |
+| Claim committed | `journalSeq` and the action `EXECUTING`, in the database | The attempt is ours; nothing sent yet |
+| Dispatch intent | `dispatch` record, before the first byte | Intent only. [Phase 0 evidence] S3: a `dispatch` record existed and the receiver received **nothing** |
+| Request sent | Nothing on its own (the receiver's records) | Not knowable to OPSILUME after a crash: S4 and S5 left identical journals |
+| Response observed | The outcome in the database | What the receiver answered, not what it did |
+| Outcome recorded | Database first, then the `outcome` record | The recorded outcome. [Phase 0 evidence] In the reversed order (S6b), the journal said `applied` while the database stayed `unknown`; the journal is evidence only |
+| Human reconciliation | Database, then the `reconciled` record | A person's finding |
+
+**Unknown outcomes are never retried automatically.** [Phase 0 evidence] No crash at any of the 11 tested boundaries made a retry possible. A retry still requires `not_applied`.
 
 ## 7. Installation identity strategy
 
@@ -294,6 +423,37 @@ The interface only shows it; there is no frontend-only control.
 5. Journal claims for action ids the database doesn't have are listed in the clearance audit, with their organisation id, attempt and time. They can't be attached to anything.
 6. `InstallationState` is set to the journal's id and head. The `cleared` line is appended and `fsync`ed **before** the transaction commits, so it is never missing after a commit. The audit rows are written in the same transaction.
 
+### 9.1 Clearance at scale (P6)
+
+**Measured** [Phase 0 evidence], with one transaction and the prototype's implementation:
+
+| Actions | Clearance | Inspection | Peak process memory |
+|---|---|---|---|
+| 1,000 | 33 ms | 49 ms | 87 MB |
+| 10,000 | 160 ms | 78 ms | 117 MB |
+| 100,000 | 1,693 ms | 519 ms | 389 MB |
+
+Memory grew with size, because inspection loads every affected action into the process, and the actions that ran after the backup were updated one by one.
+
+**Options:**
+
+| | One atomic transaction | Several digest-bound batches |
+|---|---|---|
+| Atomicity | All rules and every audit row commit together, or nothing does | Each batch commits on its own. Needs a persisted "clearance in progress" record (digest, cursor) and must **block** submit, edit and reconcile until it finishes. Otherwise the inspected state changes between batches |
+| Digest consistency | Recomputed once, inside the transaction | Must stay valid across batches. Every route that could change it must be refused for the duration |
+| Crash recovery | Nothing changed; run it again ([Phase 0 evidence] E, interrupted) | Resume from the cursor; partial states are visible meanwhile |
+| Lock duration | The `InstallationState` lock and the touched action rows, for the whole transaction. During quarantine no claim runs anyway, but other routes touching those rows wait | Short locks per batch |
+| Complexity | Low | High: a new blocking state across routes |
+
+**Recommendation** [Proposed; P6, awaiting approval]: **keep one atomic transaction, and make it bounded in memory:**
+- compute the inspection digest **in the database** (an ordered, server-side hash over the affected rows) instead of loading them into the process;
+- apply every rule as a **set-based** update. The actions that ran after the backup come from the journal, which is streamed into a temporary table in fixed-size chunks;
+- audit rows: one per organisation, as now, inserted with one statement.
+
+The process's memory is then bounded by the chunk size, not the installation size. The transaction duration still grows with the number of affected rows.
+
+**Maximum supported size: not chosen.** [Unresolved] No evidence exists beyond 100,000 actions on Docker Desktop. Before a limit is stated, the bounded-memory version must be measured on the supported platform, at sizes above the largest expected installation, including the lock wait seen by other routes during clearance. Batching is the fallback, if a single transaction proves too long there.
+
 ## 10. Execution reconciliation workflow
 
 [Proposed] Reconciliation stays the existing per-attempt route. Nothing new decides an outcome automatically.
@@ -349,7 +509,7 @@ Unknown outcomes are never retried automatically; a retry still requires `not_ap
 Proposed analysis:
 - **Claims are serialised** through the `InstallationState` row lock. Execution volume is low: a few per incident. [Assumption] The cost is negligible at that volume.
 - **Two API processes on one host** share the volume; the row lock orders their appends.
-  - Journal appends also take an advisory file lock (`flock`), so a line is never interleaved. [Unverified] Phase 0 tests this between two API containers.
+  - Every journal append happens under the `InstallationState` row lock (P3, section 6.1), so a line is never interleaved and the chain never forks. `flock` is not used. [Phase 0 evidence] Shown with two containers on one host, 626 claims each in two configurations.
   - **Two hosts are not supported** (N10, enforcement deferred): the volume is not shared. Phase 0 tests two containers on one host only, and nothing claims multi-host support.
 - **The worker** doesn't dispatch and doesn't need the volume. Starting it during quarantine changes nothing: the sweep still settles `EXECUTING` as `unknown`, which is safe.
 - **Recovery against execution:** `clear` takes the same row lock, so a claim and a clearance never interleave.
@@ -414,6 +574,22 @@ Proposed analysis:
 12. After clearance: a fresh approval executes once. Retry after an explicit `not_applied` works.
 13. Migration on a pre-feature database: quarantined, never trusted by default.
 
+**Added after Phase 0** [Proposed]:
+14. **P1:** a statement fails after the `claim` append; the `void` is written while the lock is held; no other process can append in between (two processes, barriers); and the chain stays intact.
+15. **P2:** a short write on a bounded filesystem leads to no dispatch, a torn tail and refused appends; nothing is truncated or recreated.
+16. **P4:** incremental verification detects:
+    - a replaced file (new inode);
+    - a shrunk file;
+    - an edit of the last record;
+    - a torn tail;
+    - corruption in new bytes;
+    - a stale cache in a second process.
+
+    A scheduled full check detects an edit in the middle.
+17. **P5:** using the fault proxy, the connection is cut during `COMMIT`, both after a real commit and without one. There is no dispatch in either case. Resolution gives committed (left for the sweep) or not committed (voided). With the database unreachable, the state is left for the comparison.
+18. **P6:** clearance runs bounded in memory at sizes above the largest expected installation, on the supported platform, with the lock waits of other routes measured.
+19. **P7:** the durability test on native Linux, with a hard reset (section 16.1).
+
 **Isolated-stack drill (`npm run drill:backup`, extended):**
 - back up;
 - execute against a stand-in;
@@ -445,12 +621,30 @@ Proposed analysis:
   - an **off-host, read-only copy** of the journal is maintained, so that after host loss recovery still has a list of what ran;
   - that copy is used for inspection only. The journal is **never restored together with the database,** and never over a newer journal. Doing either defeats detection.
   - The absolute duration of **backup retention** (and therefore journal retention) is **not chosen here**: it needs product-owner selection.
-- **Durability claims (N11, deferred):** `fsync` durability is claimed only for Linux hosts with a local filesystem, once Phase 0 has measured it. Docker Desktop (macOS) is development only until tested.
+- **Durability claims (N11, deferred):** see section 16.1. No durability claim is made yet.
 - **Losing it means quarantine:** no data is lost, but everything is reviewed.
-- **Per execution:** two `fsync`ed appends (`claim` and `dispatch`), plus best-effort `outcome` lines. [Unverified] Phase 0 measures the latency; nothing about it is claimed yet.
+- **Per execution:** two `fsync`ed appends (`claim` and `dispatch`), plus best-effort `outcome` lines. [Phase 0 evidence] On Docker Desktop (Apple silicon), one append and `fsync` on a Docker volume took p50 0.26 ms and p99 0.56 ms. Claim latency was p50 4.8 ms with two containers and p50 19.2 ms with eight processes; the single lock is the bottleneck. These numbers are not a production estimate.
 - **Claims run one at a time** installation-wide.
 - **Operator time:** one recovery review per restore, and one clearance on the first upgrade and on every new host.
 - **No external service and no paid infrastructure** in the recommended form. An off-host journal (D3) would add one.
+
+### 16.1 Durability and supported platforms (P7)
+
+**What has been measured** [Phase 0 evidence]: `fsync` **latency** only, on Docker Desktop on Apple silicon, where a named volume is ext4 on the virtual machine's virtual disk (`/dev/vda1`).
+
+**What remains unverified:** whether an acknowledged `fsync` reaches stable storage there. A p50 of 0.26 ms through a virtual disk is consistent with the flush stopping at the host's cache. The prototype's own result is **inconclusive**.
+
+**Required before any durability claim** [Proposed; P7, awaiting approval]:
+- a test on **native Linux**, with the journal on a **local** filesystem (ext4 or XFS) on a named volume or bind mount, never the container's writable layer;
+- a **power-loss or VM-crash test:** append and `fsync` acknowledged, then a hard reset of the machine (not a process kill). Every acknowledged record must be present and the chain intact; any torn tail must follow N1;
+- the result recorded with the kernel, filesystem, mount options and storage.
+
+**Claims that can't be made yet:**
+- durability on any platform;
+- support for network filesystems (NFS, SMB);
+- Docker Desktop (macOS or Windows) as anything but development;
+- the container overlay as journal storage;
+- multi-host.
 
 ## 17. Remaining risks
 
@@ -504,11 +698,27 @@ Recorded on 16 November 2026. "Approved in principle" means approved as design d
 | — | Retention of the journal and of clearance records | See N6 | — |
 | — | Backup retention duration | **Requires product-owner selection** | No absolute duration is chosen here |
 
+**New technical decisions raised by Phase 0.** These are engineering recommendations, **not approvals:**
+
+| # | Decision | Status | Recommendation |
+|---|---|---|---|
+| P1 | Append `void` under a savepoint taken after the `InstallationState` lock (section 6, step 5) | **Awaiting approval** | Adopt: required for the chain to stay intact (Phase 0 B1) |
+| P2 | Treat every short write as a journal failure, with no dispatch and no truncation (section 6) | **Awaiting approval** | Adopt: required (Phase 0 A) |
+| P3 | The single journal mutex: the `InstallationState` row lock, not `flock` (section 6.1) | **Awaiting approval** | The row lock |
+| P4 | Incremental verification, with the head hash anchored in the database (section 6.2) | **Awaiting approval** | Adopt; design to be tested; the database anchor is a schema addition |
+| P5 | Unknown commit handling: resolve when reachable, otherwise fail closed; never dispatch after an uncertain commit (section 6.3) | **Awaiting approval** | Adopt; fault-proxy testing required |
+| P6 | Clearance in one bounded-memory transaction; batching only as a fallback; maximum size not yet chosen (section 9.1) | **Awaiting approval** | Adopt; measure on the supported platform |
+| P7 | Durability: native Linux, a local filesystem, and a power-loss or VM-crash test before any claim (section 16.1) | **Awaiting approval** | Adopt |
+
 ## 19. Implementation milestones
 
 [Proposed] Order and scope only; nothing started.
 
 ### Phase 0: prototype on the isolated stack
+
+**Status: run on 16 November 2026.** Results: [post-restore-remediation-safety-phase0-prototype-report.md](post-restore-remediation-safety-phase0-prototype-report.md). The prototype code is on the branch `prototype/m16-recovery-safety-phase0` and is not merged. Its findings are taken into this revision (P1 to P7).
+
+The scope it was run against, kept as written:
 
 A time-boxed prototype in a throwaway branch, on the isolated stack only, against local stand-in webhooks. It produces measurements and a revised design, **not production code**. Nothing from it is merged.
 
@@ -552,6 +762,25 @@ A time-boxed prototype in a throwaway branch, on the isolated stack only, agains
    - The runbook in `docs/backup-and-restore.md`: the settings checklist (D10), the clone rule (N8), journal copies and retention (N6), and the downgrade policy (N9).
 
 **Release gate.** Phases 1 to 3 may merge to `develop` separately, but no release may contain phase 1 without phase 3.
+
+**Phase 1 now includes** P1 to P5: the savepoint and void, the short-write check, the row-lock mutex for every append, incremental verification with the database head anchor, and the unknown-commit handling. **Phase 3 includes** P6.
+
+### Production readiness gate
+
+Production implementation can't be authorised until every item below is complete. Design completion and test completion are tracked separately; "—" means not applicable.
+
+| # | Gate | Design | Test |
+|---|---|---|---|
+| 1 | Revised design approved by the product owner | Revised (this document) | — |
+| 2 | Savepoint and short-write requirements specified (P1, P2) | Specified (section 6) | Prototype only (Phase 0); to be repeated in the implementation |
+| 3 | Journal mutex selected (P3) | Recommended: row lock (section 6.1) | Prototype only (two containers, one host) |
+| 4 | Incremental verification designed and tested (P4) | Designed (section 6.2) | **Not tested** |
+| 5 | Unknown commit handling designed and fault-injection tested (P5) | Designed (section 6.3) | **Not tested** (needs the fault proxy) |
+| 6 | Native Linux durability test completed (P7) | Specified (section 16.1) | **Not done** |
+| 7 | Large-installation clearance validated (P6) | Designed (section 9.1); maximum size open | **Not tested** (bounded-memory version) |
+| 8 | Backup retention duration selected | — | — (**awaiting the product owner**) |
+| 9 | Security and downgrade behaviour reviewed (N9; accepted risks D3, N7) | Documented (sections 13, 17) | Downgrade **not tested** |
+| 10 | Production implementation scope explicitly approved | — | — (**awaiting the product owner**) |
 
 5. **Optional, after decisions:**
    - an off-host journal anchor (D3);

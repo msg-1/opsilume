@@ -64,6 +64,56 @@ The product owner decided as follows. Both documents were updated to match; the 
 - provisioning moves into phase 1, with a release gate for phases 1 to 3;
 - the Phase 0 prototype is added with its acceptance criteria.
 
+## Phase 0 evidence and revised recommendations (16 November 2026)
+
+The isolated prototype was run, and its results are in [post-restore-remediation-safety-phase0-prototype-report.md](post-restore-remediation-safety-phase0-prototype-report.md). This section records, for each decision it touched:
+- what was previously approved in principle;
+- what Phase 0 showed;
+- the revised **engineering** recommendation.
+
+**No status changes here.** Every decision keeps the status given in "Decision outcome" above, and every new decision awaits explicit product-owner approval. Phase 0 ran on one Docker Desktop installation on Apple silicon; nothing below is production-validated.
+
+### Decisions affected by Phase 0
+
+| Decision | Previously (in principle) | New evidence from Phase 0 | Revised recommendation | Status |
+|---|---|---|---|---|
+| N1 (torn tail and corruption) | Approved | 13 of the 14 damage cases refused the claim; the 14th (case 15, a journal truncated exactly to a restored database's head) was trusted, which is the accepted risk. A torn tail was ignored, appends were refused until repair, and repair kept the fragment (nothing truncated). A full disk produced a torn tail by a **short write** | Keep N1. Define the repair record format (design §6), and add P2 | Unchanged: approved in principle |
+| N2 (dispatch record, outcomes, reconciliations) | Approved | S3: a dispatch record with **no** request received. S6b: a journal `applied` while the database was `unknown` | Keep: dispatch is intent, outcomes are evidence only (design §6.4) | Unchanged: approved in principle |
+| N4 (inspection digest) | Approved | A stale digest was refused; two concurrent clearances resulted in one success; an interrupted clearance invalidated the old digest | Keep. Include the journal's last record hash in the digest (design §6, §9.1) | Unchanged: approved in principle |
+| N5 (`InstallationState` locked first) | Approved | No deadlocks: claims against claims, and claims against a clearance holding the lock 3 s (B5) | Keep, and make the same lock the single journal mutex (P3) | Unchanged: approved in principle |
+| N10 (single API host) | Enforcement deferred | Two containers on **one** host were correct with the row lock. `flock` releases only if no child inherited the descriptor | Keep deferred. No multi-host claim | Unchanged: enforcement deferred |
+| N11 (durability claims) | Deferred | `fsync` p50 0.26 ms on Docker Desktop. **Inconclusive:** it may stop at the host cache | Keep deferred, and make native Linux plus a power-loss or VM-crash test a precondition (P7) | Unchanged: deferred |
+| D3 and N7 (off-host anchor; keyed integrity) | Deferred, accepted risks | Case 15: a journal truncated exactly to a restored database's head was **trusted**. That is the accepted risk, shown in practice | Keep deferred; the accepted risk is now demonstrated, not just argued | Unchanged: deferred |
+| N8 (no state volume in clones) | Approved | Not tested (equivalent to case 15) | Keep | Unchanged: approved in principle |
+
+### New technical decisions raised by Phase 0
+
+Each is an engineering recommendation awaiting explicit product-owner approval. The details are in the design sections cited.
+
+| # | Decision | Phase 0 basis | Recommendation | Status |
+|---|---|---|---|---|
+| P1 | Savepoint-based `void` handling | A failed statement released the lock. The chain forked in both first two-container runs, and B1 saw 266 spurious refusals. With the savepoint, both runs were clean | Adopt (design §6, step 5) | **Awaiting approval** |
+| P2 | Short-write protection | `fs.writeSync` wrote 343 of 461 bytes on a full disk without throwing | Adopt (design §6) | **Awaiting approval** |
+| P3 | Journal mutex | Row lock: 626 claims, intact, no deadlocks. `flock`: the inherited-descriptor hazard | The `InstallationState` row lock; no `flock` (design §6.1) | **Awaiting approval** |
+| P4 | Incremental verification | Full verification took 162 ms per claim at 100,000 records | Per-process cache, inode and shrink checks, re-hash of the last record, mandatory full checks, the head hash anchored in the database (design §6.2) | **Awaiting approval** (not prototyped) |
+| P5 | Unknown commit result | Not tested | Resolve by reading the locked database state; otherwise fail closed; never dispatch after an uncertain commit; no automatic "heal" (design §6.3) | **Awaiting approval** (needs fault-proxy testing) |
+| P6 | Large-installation clearance | 100,000 actions: 1.7 s, 389 MB in one transaction | One transaction, bounded in memory (digest in the database, set-based updates, journal streamed in chunks); batching as a fallback; no maximum size chosen (design §9.1) | **Awaiting approval** |
+| P7 | Native Linux durability validation | Docker Desktop only; inconclusive | A native Linux, local-filesystem, power-loss or VM-crash test before any durability claim (design §16.1) | **Awaiting approval** |
+
+**Accepted risks and deferred items, unchanged:**
+- **Coordinated snapshot or journal truncation:** undetected, now demonstrated (case 15).
+- **Off-host journal anchor (D3):** deferred. The off-host read-only copy (N6) informs recovery after host loss. It doesn't detect anything.
+- **Keyed integrity (N7):** deferred.
+- **No multi-host guarantee (N10).**
+
+**Retention:** unchanged.
+- The journal is kept at least as long as the oldest restorable database backup.
+- The off-host copy is read-only.
+- The journal is never restored together with the database.
+- The **absolute backup retention duration is still awaiting product-owner selection.**
+
+**Readiness gate:** design §19, "Production readiness gate".
+
 ## 2. D1–D11 decision table
 
 The decision wording is quoted exactly from the design's section 18. "Alternatives" are those the design itself describes. Each **Final decision** line records the product owner's decision of 16 November 2026. "Approved in principle" means approved as design direction, with conditions; nothing is implemented, and Phase 0 must confirm the technical assumptions first.
@@ -422,7 +472,9 @@ Even after the design and this review:
 
 **Still open:**
 - the absolute backup retention duration;
-- before implementation starts, approval of the Phase 0 results and of the design as revised by them.
+- the new Phase 0 decisions P1 to P7 (above);
+- approval of the design as revised after Phase 0;
+- explicit approval of the production implementation scope (design §19, readiness gate).
 
 **As originally listed for decision:**
 - **From the design:** D1–D11, journal retention and backup retention (section 2).
