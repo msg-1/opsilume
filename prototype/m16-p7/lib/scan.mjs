@@ -100,3 +100,21 @@ export function scanJournal(file, { windowFrom = 0 } = {}) {
 export function repairBytes(tornBytes, lastHash, at = new Date().toISOString()) {
   return `#\n${serialize({ type: 'repair', ignoredBytes: tornBytes + 1, reason: 'P7: torn final line (N1)', at }, lastHash)}`;
 }
+
+/** True when the repair for a torn fragment that ended at `endOfFragment` is already in the file (recovery re-entrancy). */
+export function repairAppliedAt(file, endOfFragment, tornBytes) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const buf = Buffer.alloc(4096);
+    const n = fs.readSync(fd, buf, 0, buf.length, endOfFragment);
+    const text = buf.toString('utf8', 0, n);
+    if (!text.startsWith('#\n')) return false;
+    const line = text.slice(2, text.indexOf('\n', 2));
+    const e = JSON.parse(line);
+    return e.type === 'repair' && e.ignoredBytes === tornBytes + 1;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}

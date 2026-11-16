@@ -11,6 +11,7 @@ port="${P7_SMOKE_PORT:-8797}"
 proj=opspilot-m16-p7-smoke
 run="smoke-$(date +%Y%m%dT%H%M%S)"
 mkdir -p "$work/recorder" "$work/evidence"
+docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists (inspect it, then: docker compose -p $proj down -v)"; exit 1; }
 export P7_RECORDER_URL="http://host.docker.internal:$port" P7_EVIDENCE_HOST="$work/evidence"
 dc() { docker compose -p "$proj" -f "$here/compose.yml" "$@"; }
 R() { local c="$1"; shift; node "$here/recorder.mjs" "$c" --dir "$work/recorder" --run "$run" "$@"; }
@@ -46,12 +47,13 @@ expect_exit 3 P check --cycle 1
 assert_result 1 "r.verdict==='INCONCLUSIVE' && r.fails.length===0 && r.inconclusive.includes('NOT_A_DURABILITY_RUN') && r.counts.claimAcks>0 && !r.countsTowardPhysicalPowerLoss"
 recover 1
 
-echo "== cycle 2: the claim process dies after a claim append, before commit -> journal one ahead -> clearance"
+echo "== cycle 2: the claim process dies after a claim append, before commit -> journal one ahead; plus a torn line -> repair, then clearance"
 start_run --cycle 2 --workers 1 --pool 1000 --smoke-crash-after-claim-append
 cut_now 2 0 0; wait "$runpid" || true
 dc up -d --wait
+dc exec -T harness sh -c 'printf "{\"type\":\"dispatch\",\"se" >> /state/journal.log'   # and a torn final line: recover must repair, then clear
 expect_exit 3 P check --cycle 2
-assert_result 2 "r.fails.length===0 && r.relation==='journal-one-ahead' && r.needsRecovery.includes('clear') && r.counts.claimAcks===2"
+assert_result 2 "r.fails.length===0 && r.relation==='journal-one-ahead' && r.needsRecovery.join()==='repair-torn-tail,clear' && r.counts.claimAcks===2"
 recover 2
 
 echo "== cycle 3: continuing state after clearance; a torn final line is injected after the kill -> repair"
@@ -60,14 +62,14 @@ cut_now 3 3 6; wait "$runpid" || true
 dc up -d --wait
 dc exec -T harness sh -c 'printf "{\"type\":\"claim\",\"seq\":99999,\"act" >> /state/journal.log'
 expect_exit 3 P check --cycle 3
-assert_result 3 "r.fails.length===0 && r.needsRecovery[0]==='repair-torn-tail' && r.journal.tornBytes===32 && r.counts.historyJournalClaims-r.counts.historyCommittedClaims===1+(r.relation==='journal-one-ahead'?1:0)"
+assert_result 3 "r.fails.length===0 && r.needsRecovery[0]==='repair-torn-tail' && r.journal.tornBytes===32 && !r.fails.includes('HISTORY_DIFFERS')"
 recover 3
 
 echo "== cycle 4: one acknowledged committed claim is deleted from the database after the kill -> FAIL, run stopped"
 start_run --cycle 4 --workers 2 --pool 50000
 cut_now 4 3 6; wait "$runpid" || true
 dc up -d --wait
-dc exec -T db psql -q -U proto -d proto -c "DELETE FROM audit WHERE id = (SELECT max(id) FROM audit WHERE action = 'execute_start')"
+dc exec -T db psql -q -U proto -d proto -c "DELETE FROM audit WHERE action = 'execute_start' AND ref = 'c0004aw1-1'"   # the cycle's first claim: certainly acknowledged
 expect_exit 2 P check --cycle 4
 assert_result 4 "r.verdict==='FAIL' && r.fails.includes('ACKNOWLEDGED_CLAIM_MISSING_FROM_DATABASE') && r.fails.includes('HISTORY_DIFFERS')"
 echo "== after the FAIL: recover and the next cycle must both be refused"

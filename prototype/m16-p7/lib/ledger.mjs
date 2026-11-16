@@ -7,6 +7,11 @@ export function fsyncDir(dir) {
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
+export function fsyncFile(file) {
+  const fd = fs.openSync(file, 'r+');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
 /** One JSON line, one write, byte count checked, fsync. Throws on a short write. */
 export function appendDurable(file, obj) {
   const line = `${JSON.stringify(obj)}\n`;

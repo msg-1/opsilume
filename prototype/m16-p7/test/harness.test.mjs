@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GENESIS, serialize } from '../../m16-phase05/lib/journal.mjs';
-import { addFp, fp, hex, repairBytes, scanJournal } from '../lib/scan.mjs';
+import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal } from '../lib/scan.mjs';
 import { classifyCycle, compareCycle, physicalStreak } from '../lib/verdict.mjs';
 import { appendDurable, readLedger, writeOnce } from '../lib/ledger.mjs';
 import { createRecorder, runStore } from '../recorder.mjs';
@@ -295,7 +295,7 @@ describe('recorder', () => {
     assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: 1, actionId: 'a-1' })).status, 409);
     assert.equal((await call('POST', '/runs/r1/cycles/1/start', { proc: 'a', dbHead: 0, journalHead: 0, workers: 1 })).status, 200);
     assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: 1, actionId: 'a-1' })).status, 200);
-    assert.deepEqual(runStore(dir, 'r1').acks().map((a) => [a.cycle, a.kind, a.seq, a.actionId]), [[1, 'claim', 1, 'a-1']]);
+    assert.deepEqual(runStore(dir, 'r1').acks(1).map((a) => [a.cycle, a.kind, a.seq, a.actionId]), [[1, 'claim', 1, 'a-1']]);
     assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: '2', actionId: 'a-2' })).status, 400);
     assert.equal((await call('POST', '/runs/r1/event', { cycle: 1, kind: 'cut_sent' })).status, 400, 'cut events only from the operator command');
   });
@@ -322,5 +322,51 @@ describe('recorder', () => {
   test('run ids cannot escape the storage directory', async () => {
     assert.equal((await call('GET', '/runs/..%2Fx')).status, 400);
     assert.equal((await call('GET', '/runs/unknown')).status, 404);
+  });
+});
+
+describe('review fixes', () => {
+  test('repair detection: a second recovery call sees the repair already applied (re-entrancy)', () => {
+    const base = journalOf(claimsAndDispatches(1, 2), { tail: '{"type":"claim","seq":3' });
+    const torn = scanJournal(base.file);
+    const end = torn.fileBytes;
+    assert.equal(repairAppliedAt(base.file, end, torn.tornBytes), false);
+    fs.appendFileSync(base.file, repairBytes(torn.tornBytes, torn.lastHash, AT));
+    assert.equal(repairAppliedAt(base.file, end, torn.tornBytes), true);
+    assert.equal(repairAppliedAt(base.file, end, torn.tornBytes + 1), false, 'a different fragment length is not this repair');
+  });
+
+  describe('recorder at volume and recorder-owned labels', () => {
+    const dir = path.join(tmp, 'recorder-2');
+    let server, base;
+    before(async () => {
+      server = createRecorder(dir);
+      await new Promise((r) => server.listen(0, '127.0.0.1', r));
+      base = `http://127.0.0.1:${server.address().port}`;
+      runStore(dir, 'vol').create({ run: 'vol', failureModel: 'POWER-CUT', storage: RUN.storage });
+      runStore(dir, 'vm').create({ run: 'vm', failureModel: 'VM-CRASH', storage: RUN.storage });
+    });
+    after(() => server.close());
+    const post = (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+
+    test('3,000 acknowledgements over two cycles are all stored, each cycle in its own file', async () => {
+      await post('/runs/vol/cycles/1/start', { dbHead: 0 });
+      for (let seq = 1; seq <= 1500; seq++) assert.equal((await post('/runs/vol/ack', { cycle: 1, kind: 'claim', seq, actionId: `a-${seq}` })).status, 200);
+      await post('/runs/vol/cycles/1/result', { verdict: 'PASS', needsRecovery: [] });
+      await post('/runs/vol/cycles/2/start', { dbHead: 1500 });
+      for (let seq = 1501; seq <= 3000; seq++) assert.equal((await post('/runs/vol/ack', { cycle: 2, kind: 'claim', seq, actionId: `a-${seq}` })).status, 200);
+      const s = runStore(dir, 'vol');
+      assert.equal(s.acks(1).length, 1500);
+      assert.equal(s.acks(2).length, 1500);
+      assert.deepEqual(s.acks(2).slice(0, 1).map((a) => a.seq), [1501]);
+    });
+    test('the recorder, not the test machine, decides the failure model and whether a PASS counts', async () => {
+      await post('/runs/vm/cycles/1/start', { dbHead: 0 });
+      await post('/runs/vm/cycles/1/result', { verdict: 'PASS', failureModel: 'POWER-CUT', countsTowardPhysicalPowerLoss: true, needsRecovery: [] });
+      const r = runStore(dir, 'vm').result(1);
+      assert.equal(r.failureModel, 'VM-CRASH');
+      assert.equal(r.reportedFailureModel, 'POWER-CUT');
+      assert.equal(r.countsTowardPhysicalPowerLoss, false);
+    });
   });
 });

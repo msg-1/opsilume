@@ -10,8 +10,8 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect, journalAt } from '../m16-phase05/lib/proto.mjs';
 import { trustProblem } from '../m16-phase05/lib/journal.mjs';
-import { writeOnce } from './lib/ledger.mjs';
-import { addFp, fp, hex, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
+import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
+import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
 const REC = process.env.P7_RECORDER_URL;
@@ -155,8 +155,10 @@ async function cmdCheck(a) {
   for (const [src, name] of [[j.file, 'journal-as-found.jsonl'], [j.idFile, 'installation-as-found.json']]) {
     if (!fs.existsSync(src)) { files[name] = null; continue; }
     fs.copyFileSync(src, path.join(dir, name), fs.constants.COPYFILE_EXCL);
+    fsyncFile(path.join(dir, name)); // the machine may be cut again, or left off after a FAIL: the copy must be on disk
     files[name] = { bytes: fs.statSync(src).size, sha256: sha256File(path.join(dir, name)), sourceSha256: sha256File(src) };
   }
+  fsyncDir(dir);
   const p = db();
   const s = await settings(p);
   const row = await stateRow(p);
@@ -207,6 +209,8 @@ async function cmdRecover(a) {
     const done = await p.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM installation_state WHERE id = 1 FOR UPDATE`;
       const before = j.state({ forceFull: true });
+      // Re-entrant: an earlier call (e.g. the one that printed the clearance digest) may already have repaired it.
+      if (before.status === 'ok' && before.head === r.journal.head && repairAppliedAt(j.file, r.journal.fileBytes, r.journal.tornBytes)) return { ok: true, after: before, head: before.head, alreadyApplied: true };
       if (before.status !== 'torn_tail' || before.tornBytes !== r.journal.tornBytes) return { ok: false, before };
       const bytes = repairBytes(before.tornBytes, before.lastHash);
       const fd = fs.openSync(j.file, 'a');
@@ -219,10 +223,17 @@ async function cmdRecover(a) {
       return { ok: true, after: j.state({ forceFull: true }), head: before.head };
     }, { timeout: 120_000 });
     if (!done.ok || done.after.status !== 'ok' || done.after.head !== done.head) await fail(`torn-tail repair did not verify (${JSON.stringify(done).slice(0, 200)})`);
-    steps.push({ step: 'repair-torn-tail', ignoredBytes: r.journal.tornBytes + 1, journalHead: done.after.head });
+    steps.push({ step: 'repair-torn-tail', ignoredBytes: r.journal.tornBytes + 1, journalHead: done.after.head, alreadyApplied: !!done.alreadyApplied });
   }
   let uncommitted = null, digest = null;
-  const problem = trustProblem(await stateRow(p), j.state({ forceFull: true }));
+  const row = await stateRow(p);
+  const problem = trustProblem(row, j.state({ forceFull: true }));
+  if (!problem && r.relation === 'journal-one-ahead') {
+    // Re-entrant: cleared by an earlier call whose report to the recorder didn't arrive. The claim is still accepted as uncommitted.
+    if (row.journal_seq < r.uncommitted.seq) await fail('trusted, but the database head is below the uncommitted claim');
+    uncommitted = r.uncommitted;
+    steps.push({ step: 'clear', alreadyApplied: true });
+  }
   if (problem) {
     if (r.relation !== 'journal-one-ahead') await fail(`history not trusted after repair: ${problem}`);
     const ins = await inspect(p, j);
@@ -242,7 +253,7 @@ async function cmdRecover(a) {
     const again = trustProblem(await stateRow(p), j.state({ forceFull: true }));
     if (again) await fail(`not trusted after clearance: ${again}`);
   }
-  writeOnce(path.join(dir, 'recovery.json'), { steps, uncommitted, at: new Date().toISOString() });
+  writeOnce(path.join(dir, `recovery-${Date.now()}.json`), { steps, uncommitted, at: new Date().toISOString() });
   await rec('POST', `/runs/${a.run}/cycles/${cycle}/recovered`, { steps, uncommitted, digest });
   console.log(JSON.stringify({ recovered: cycle, steps }));
   await p.$disconnect();

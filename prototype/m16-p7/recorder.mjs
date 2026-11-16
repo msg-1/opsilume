@@ -28,12 +28,13 @@ export function runStore(dir, run) {
     run: () => JSON.parse(fs.readFileSync(f('run.json'), 'utf8')),
     stopped: () => (fs.existsSync(f('STOPPED.json')) ? JSON.parse(fs.readFileSync(f('STOPPED.json'), 'utf8')) : null),
     events: () => readLedger(f('events.jsonl')).entries,
-    acks: () => readLedger(f('acks.jsonl')).entries,
+    acks: (n) => readLedger(f(`acks/cycle-${pad(n)}.jsonl`)).entries, // one file per cycle: the ack path never re-reads earlier cycles
     accepted: () => readLedger(f('accepted.jsonl')).entries,
     result: (n) => (fs.existsSync(f(`results/cycle-${pad(n)}.json`)) ? JSON.parse(fs.readFileSync(f(`results/cycle-${pad(n)}.json`), 'utf8')) : null),
     results: () => (fs.existsSync(f('results')) ? fs.readdirSync(f('results')).sort().map((x) => JSON.parse(fs.readFileSync(f(`results/${x}`), 'utf8'))) : []),
     event: (e) => appendDurable(f('events.jsonl'), { ...e, at: new Date().toISOString(), atMs: Date.now() }),
-    ack: (a) => appendDurable(f('acks.jsonl'), { ...a, at: new Date().toISOString() }),
+    ack: (a) => { fs.mkdirSync(f('acks'), { recursive: true }); appendDurable(f(`acks/cycle-${pad(a.cycle)}.jsonl`), { ...a, at: new Date().toISOString() }); },
+    hasResult: (n) => fs.existsSync(f(`results/cycle-${pad(n)}.json`)),
     accept: (u) => appendDurable(f('accepted.jsonl'), { ...u, at: new Date().toISOString() }),
     stop: (s) => { if (!store.stopped()) writeOnce(f('STOPPED.json'), { ...s, at: new Date().toISOString() }); },
     saveResult: (n, r) => { fs.mkdirSync(f('results'), { recursive: true }); writeOnce(f(`results/cycle-${pad(n)}.json`), r); },
@@ -54,7 +55,7 @@ export function cycleView(s, n) {
   return {
     cycle: n,
     starts: events.filter((e) => e.kind === 'cycle_start'),
-    acks: s.acks().filter((a) => a.cycle === n),
+    acks: s.acks(n),
     events,
     cutSentAt: cut?.at ?? null,
     cutConfirmed: confirm?.powerWasCut,
@@ -110,9 +111,9 @@ export function createRecorder(dir) {
         if (rest === 'ack') {
           if (s.stopped()) return reply(409, { error: 'the run is stopped' });
           if (!['claim', 'dispatch'].includes(body.kind) || !Number.isInteger(body.seq) || typeof body.actionId !== 'string') return reply(400, { error: 'invalid acknowledgement' });
-          const v = cycleView(s, n);
-          // Accepted after `cut_sent` too: the power may take a moment to go (a manual cut), and the machine is still running.
-          if (!v.starts.length || v.result) return reply(409, { error: 'cycle not accepting acknowledgements' });
+          // Cheap checks only (the events file is small; acknowledgements are never re-read here). Accepted after
+          // `cut_sent` too: the power may take a moment to go (a manual cut), and the machine is still running.
+          if (s.hasResult(n) || !s.events().some((e) => e.cycle === n && e.kind === 'cycle_start')) return reply(409, { error: 'cycle not accepting acknowledgements' });
           s.ack({ cycle: n, kind: body.kind, seq: body.seq, actionId: body.actionId, proc: String(body.proc ?? ''), worker: body.worker });
           return reply(200, { ok: true }); // sent only after the fsync above
         }
@@ -124,7 +125,9 @@ export function createRecorder(dir) {
         if (cm?.[2] === 'result') {
           if (s.result(n)) return reply(409, { error: 'result already recorded' });
           if (!['PASS', 'FAIL', 'INCONCLUSIVE'].includes(body.verdict)) return reply(400, { error: 'invalid verdict' });
-          s.saveResult(n, { ...body, cycle: n, recordedAt: new Date().toISOString() });
+          // The failure model and whether the cycle counts come from THIS host's run record, never from the test machine.
+          const model = s.run().failureModel;
+          s.saveResult(n, { ...body, cycle: n, failureModel: model, reportedFailureModel: body.failureModel ?? null, countsTowardPhysicalPowerLoss: body.verdict === 'PASS' && model === 'POWER-CUT', recordedAt: new Date().toISOString() });
           if (body.verdict === 'FAIL') s.stop({ cycle: n, reason: 'cycle failed', fails: body.fails });
           return reply(200, { ok: true, stopped: !!s.stopped() });
         }
