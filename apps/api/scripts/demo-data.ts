@@ -675,17 +675,24 @@ async function seed() {
 
   // ── Remediation proposals, through the product's own proposal code ──
   // Proposed by people, as people would. Nothing is approved and nothing is executed here.
-  const { proposeRemediation, contentHash } = await import('../src/modules/remediation');
+  const { proposeRemediation } = await import('../src/modules/remediation');
+  const { approvalHash, executionTarget } = await import('../src/modules/remediation/content');
   const { requiredApprovals } = await import('../src/modules/remediation/effect');
   const { submitForApproval } = await import('../src/modules/remediation/approvals');
+  const { sourceCheck } = await import('../src/modules/remediation/source');
   const { addIncidentEvent } = await import('../src/modules/incidents');
   const { getSettings } = await import('../src/modules/organization');
   const { writeAudit } = await import('../src/lib/audit');
   const propose = (by: string, input: Parameters<typeof proposeRemediation>[1]) => proposeRemediation(organizationId, input, { type: 'user', userId: who(by).id, label: who(by).name });
   /** What POST /remediations/:id/request-approval does, with the same functions. */
   const submit = async (action: Awaited<ReturnType<typeof propose>>, by: string) => {
-    const hash = contentHash(action);
-    await submitForApproval(action, who(by).id, requiredApprovals(await getSettings(organizationId), action.risk, 'state_changing'), hash);
+    const settings = await getSettings(organizationId);
+    const source = await sourceCheck(action);
+    // The route would ask a person to acknowledge an unverified source; the seed never does that for them.
+    if (source.required && !source.verified) throw new Error(`Demo action "${action.title}" needs its source investigation reviewed; the seed cannot submit it.`);
+    // The fingerprint approvals are checked against: content, where it would be carried out, and the source review (content.ts).
+    const hash = approvalHash(action, { unverifiedSource: false, executionTarget: executionTarget(settings) });
+    await submitForApproval(action, who(by).id, requiredApprovals(settings, action.risk, 'state_changing'), hash);
     await writeAudit({ organizationId, actorType: 'user', actorId: who(by).id, actorLabel: who(by).name, action: 'remediation.request_approval', resourceType: 'remediation_action', resourceId: action.id, metadata: { risk: action.risk, contentHash: hash, via: MARKER } });
     await addIncidentEvent(action.incidentId!, 'remediation', `Approval requested for: ${action.title}`, { kind: 'user', actorId: who(by).id, label: who(by).name }, { actionId: action.id });
   };
