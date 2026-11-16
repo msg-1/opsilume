@@ -1,8 +1,10 @@
 # Post-restore remediation safety: decision review
 
-Milestone 16, design review. An independent review of [post-restore-remediation-safety-design.md](post-restore-remediation-safety-design.md) (referred to below as **the design**, read in full; SHA-256 `baf0a298…d231522` at the time of review). It prepares the product-owner decisions and challenges the proposed external execution journal.
+Milestone 16, design review. An independent review of [post-restore-remediation-safety-design.md](post-restore-remediation-safety-design.md) (referred to below as **the design**). It prepares the product-owner decisions and challenges the proposed external execution journal.
 
-Nothing here is implemented, prototyped or decided.
+The initial review was made against the **original design**, read in full (SHA-256 `baf0a298…d231522`). The design has since been revised to take in the review's findings and the product owner's decisions. Where this document describes a finding, it is a finding against the original design; section 1 states where each one stands in the revised design.
+
+Nothing here is implemented or prototyped. Decisions were recorded **in principle** on 16 November 2026 (see "Decision outcome"). That is approval of design direction, not authorisation to implement in production.
 
 **Tags used throughout:**
 - **[Repo]:** verified behaviour of the repository at `develop` `11cf150`.
@@ -14,25 +16,21 @@ Nothing here is implemented, prototyped or decided.
 
 **Keep the direction.** [Assessment] The design's core idea is right: a record of executions outside PostgreSQL, compared at every execution claim, failing closed on any disagreement. It is the only candidate that addresses scenario A2 (an action proposed before the backup and executed after it). [Design] Approval invalidation alone cannot.
 
-**Not ready to implement as written.** [Assessment] The review found gaps that would make it either bypassable or unworkable in practice.
+**Findings of the initial review (against the original design).** [Assessment] The original design was not ready to implement as written. The initial review found seven gaps that would have made it either bypassable or unworkable in practice. They are kept here as review history.
 
-**Bypass:**
-1. **Truncation defeats detection.** Cutting the journal back to the database's head leaves a valid hash chain and matching heads (section 4).
-2. **A clone that copies both volumes is never quarantined,** and can dispatch to production's webhook (section 6).
+The table gives each finding and the **revised design's current position**. "Addressed" means the revised design specifies a rule for it; nothing is implemented. "Accepted risk" means the limit remains and is documented.
 
-**Missing information:**
+| # | Initial finding (original design) | Current position in the revised design |
+|---|---|---|
+| 1 | **Bypass: truncation defeats detection.** Cutting the journal back to the database's head leaves a valid hash chain and matching heads (section 4) | **Accepted risk, still undetected.** The overstatement is corrected and the limit documented; only an off-host anchor (D3, deferred) detects it. Design §12, §17 |
+| 2 | **Bypass: a clone that copies both volumes is never quarantined,** and can dispatch to production's webhook (section 6) | **Accepted risk, still undetected.** Operator rule N8: never copy the state volume into a clone. Design §7, §17 |
+| 3 | **Missing information: after a restore, a `claim` line alone cannot say whether the request was sent,** so every such entry needs manual reconciliation (section 4, D) | **Addressed by the `dispatch` line (N2).** A claim without a `dispatch` line was certainly not sent. A `dispatch` line records **dispatch intent, not confirmed external execution.** Design §6 |
+| 4 | **Rule not specified: the clearance compare-and-set does not cover changes made between inspection and clearance** (section 7) | **Addressed by the inspection digest (N4),** recomputed inside the clearance transaction. Design §11, step 7 |
+| 5 | **Rule not specified: torn trailing lines,** and a commit whose result is unknown (section 4) | **Addressed:** the torn-tail rule (N1) and the unknown-commit rule (no `void`, no dispatch). Design §6 |
+| 6 | **Rule not specified: taking the new lock last creates a claim/clearance deadlock** that taking it first would avoid (section 5) | **Superseded.** The revised design takes `InstallationState` **first** in every claim and in clearance (N5), so the two can't deadlock. The deadlock described applied only to the original lock order. Design §6, step 1; §13 |
+| 7 | **Rollout: the phases as ordered would quarantine every test, stack and upgraded installation** before any way to clear exists (section 9) | **Addressed:** provisioning moved into phase 1, and a release gate makes phases 1 to 3 ship together. Design §19 |
 
-3. **After a restore, a `claim` line alone cannot say whether the request was sent,** so every such entry needs manual reconciliation (section 4, D).
-
-**Rules not yet specified:**
-
-4. **The clearance compare-and-set does not cover changes made between inspection and clearance** (section 7).
-5. **Torn trailing lines,** and a commit whose result is unknown, are not specified (section 4).
-6. **Taking the new lock last creates a claim/clearance deadlock** that taking it first would avoid (section 5).
-
-**Rollout:**
-
-7. **The phases as ordered would quarantine every test, stack and upgraded installation** before any way to clear exists (section 9).
+Sections 3 to 9 below keep the initial review's analysis as it was written. Read them with this table, the "Decision outcome" section, and design §18 and §19 for the current position.
 
 **Next step.** [Assessment] Suitable to proceed to a **time-boxed prototype on the isolated stack** (Phase 0, design §19). The owner has now decided D1–D11 and N1–N11 (see "Decision outcome"). The prototype should establish:
 - the `fsync` cost;
@@ -40,7 +38,7 @@ Nothing here is implemented, prototyped or decided.
 - torn-tail handling;
 - the dispatch marker.
 
-It should not proceed to production implementation until those results and these changes are in the design.
+The revised design now contains these changes. It should not proceed to production implementation until the Phase 0 results are in, and the product owner has approved the design as revised by them.
 
 ## Decision outcome (16 November 2026)
 
