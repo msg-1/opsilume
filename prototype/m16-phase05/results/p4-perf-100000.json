@@ -1,0 +1,35 @@
+{
+  "records": 100000,
+  "bytes": 23366682,
+  "coldFullVerifyMs": 145,
+  "coldStatus": "ok",
+  "fullVerifyMs": {
+    "n": 3,
+    "p50": 134.568,
+    "p95": 141.358,
+    "p99": 141.358,
+    "max": 141.358,
+    "mean": 135.612
+  },
+  "rssBeforeMB": 134,
+  "rssPeakDuringFullMB": 134,
+  "perClaimVerifyMs": {
+    "n": 1000,
+    "p50": 0.064,
+    "p95": 0.271,
+    "p99": 0.398,
+    "max": 2.128,
+    "mean": 0.097
+  },
+  "perClaimTotalMs": {
+    "n": 1000,
+    "p50": 1.781,
+    "p95": 2.449,
+    "p99": 4.135,
+    "max": 43.707,
+    "mean": 1.928
+  },
+  "verifyModes": {
+    "incremental": 1000
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "journalStatus": "ok",
+  "journalHead": 1000,
+  "databaseHead": 1000,
+  "headHashMatches": true,
+  "claims": 1000,
+  "uniqueSeqs": 1000,
+  "executing": 1000,
+  "problem": null,
+  "a": {
+    "verify": {
+      "n": 500,
+      "p50": 0.056,
+      "p95": 0.388,
+      "p99": 0.511,
+      "max": 0.682,
+      "mean": 0.104
+    },
+    "modes": {
+      "full": 1,
+      "incremental": 499
+    },
+    "counts": {
+      "full": 1,
+      "incremental": 1499
+    }
+  },
+  "b": {
+    "verify": {
+      "n": 500,
+      "p50": 0.077,
+      "p95": 0.386,
+      "p99": 0.53,
+      "max": 0.748,
+      "mean": 0.12
+    },
+    "modes": {
+      "full": 1,
+      "incremental": 499
+    },
+    "counts": {
+      "full": 1,
+      "incremental": 1499
+    }
+  }
+}

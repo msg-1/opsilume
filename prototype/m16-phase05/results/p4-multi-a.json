@@ -1,0 +1,18 @@
+{
+  "verify": {
+    "n": 500,
+    "p50": 0.056,
+    "p95": 0.388,
+    "p99": 0.511,
+    "max": 0.682,
+    "mean": 0.104
+  },
+  "modes": {
+    "full": 1,
+    "incremental": 499
+  },
+  "counts": {
+    "full": 1,
+    "incremental": 1499
+  }
+}

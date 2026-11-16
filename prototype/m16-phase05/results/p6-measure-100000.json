@@ -1,0 +1,41 @@
+{
+  "label": "100000",
+  "inspectMs": 182,
+  "inspectAgainMs": 131,
+  "digestStable": true,
+  "affected": 80000,
+  "ranAfterBackup": 6000,
+  "clear": {
+    "cleared": true,
+    "superseded": 140000,
+    "toProposed": 65000,
+    "toUnknown": 5000,
+    "executing": 0,
+    "audits": 200,
+    "unmatched": 1000,
+    "clearedRecord": "5b10075a5486",
+    "ms": 922
+  },
+  "auditRows": 200,
+  "organisations": 200,
+  "approvalsStillCurrent": 0,
+  "actionsStillExecutable": 0,
+  "trustedAfter": true,
+  "processMaxRssMB": 147,
+  "databaseLoadDuringInspection": {
+    "xact_commit": 1,
+    "tup_inserted": 0,
+    "tup_updated": 0,
+    "blks_read": 0,
+    "blks_hit": 31,
+    "temp_bytes": 0
+  },
+  "databaseLoadDuringClearance": {
+    "xact_commit": 4,
+    "tup_inserted": 298,
+    "tup_updated": 210004,
+    "blks_read": 17,
+    "blks_hit": 2734618,
+    "temp_bytes": 1478569
+  }
+}

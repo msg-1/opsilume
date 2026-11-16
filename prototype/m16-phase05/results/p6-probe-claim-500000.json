@@ -1,0 +1,6 @@
+{
+  "label": "500000",
+  "probe": "probe-claim",
+  "waitedMs": 4654,
+  "result": "moved_on"
+}

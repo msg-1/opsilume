@@ -1,0 +1,14 @@
+{
+  "label": "container-kill",
+  "journalStatus": "ok",
+  "tornBytes": 0,
+  "journalHead": 2169,
+  "databaseHead": 2169,
+  "committedClaims": 2169,
+  "committedClaimsMissingFromJournal": 0,
+  "trust": "trusted",
+  "environment": {
+    "kernel": "6.12.76-linuxkit",
+    "stateMount": "/dev/vda1 /state ext4 rw,relatime,discard 0 0"
+  }
+}

@@ -1,0 +1,47 @@
+# Phase 0.5 validation stack (Milestone 16). Its own Compose project, internal network, volumes and database.
+# Nothing is published to the host. The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime.
+name: opspilot-m16-p05
+
+x-runner: &runner
+  image: opspilot-isolated-api:latest
+  user: "0:0"
+  entrypoint: ["sleep", "infinity"]
+  working_dir: /proto
+  environment:
+    PROTO_DATABASE_URL: postgresql://proto:proto@proxy:6432/proto?sslmode=disable&connection_limit=4
+    PROTO_DIRECT_URL: postgresql://proto:proto@db:5432/proto?sslmode=disable&connection_limit=4
+    PROTO_STATE_DIR: /state
+    RECEIVER_URL: http://receiver:8080/hook
+    PROXY_URL: http://proxy:9000
+  volumes: [state:/state, ./:/proto:ro, ./results:/results]
+  networks: [p05]
+  depends_on: { db: { condition: service_healthy } }
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment: { POSTGRES_USER: proto, POSTGRES_PASSWORD: proto, POSTGRES_DB: proto }
+    command: ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [p05]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 30 }
+  proxy:
+    image: opspilot-isolated-api:latest
+    user: "0:0"
+    entrypoint: ["node", "/proto/proxy.mjs"]
+    volumes: ["./:/proto:ro"]
+    networks: [p05]
+  receiver:
+    image: opspilot-isolated-api:latest
+    user: "0:0"
+    entrypoint: ["node", "/proto/receiver.mjs"]
+    volumes: ["./:/proto:ro"]
+    networks: [p05]
+  api1: *runner
+  api2: *runner
+
+networks:
+  p05: { internal: true }
+volumes:
+  pgdata:
+  state:

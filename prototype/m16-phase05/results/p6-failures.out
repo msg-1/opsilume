@@ -1,0 +1,27 @@
+== route lock wait during a 1,000,000-action clearance (repeated row-lock attempts)
+{"label":"1000000","attempts":182,"maxWaitMs":2866,"medianWaitMs":2}
+== process killed EARLY in the clearance (2 s in), 250,000 actions
+{"label":"before-early-kill","db_head":25000,"live_approvals":350000,"cleared_audits":0,"proposed":25000,"clearedRecordsInJournal":0}
+killed
+{"label":"after-early-kill","db_head":25000,"live_approvals":350000,"cleared_audits":0,"proposed":25000,"clearedRecordsInJournal":0}
+{"label":"retry-after-early-kill","cleared":true,"superseded":350000,"toProposed":162500,"toUnknown":12500,"executing":0,"audits":500,"unmatched":2500,"clearedRecord":"21006acd93b6","ms":2764.995584011078}
+{"label":"after-retry","db_head":40000,"live_approvals":0,"cleared_audits":500,"proposed":187500,"clearedRecordsInJournal":1}
+== process killed after the cleared record, before commit, 250,000 actions
+exit=137
+{"label":"after-late-kill","db_head":25000,"live_approvals":350000,"cleared_audits":0,"proposed":25000,"clearedRecordsInJournal":1}
+{"label":"late-kill-old-digest","cleared":false,"reason":"the state changed since inspection","ms":472.02258399128914}
+{"label":"late-kill-new-digest","cleared":true,"superseded":350000,"toProposed":162500,"toUnknown":12500,"executing":0,"audits":500,"unmatched":2500,"clearedRecord":"6bac0dd82d9b","ms":2821.6205430030823}
+{"label":"after-late-retry","db_head":40000,"live_approvals":0,"cleared_audits":500,"proposed":187500,"clearedRecordsInJournal":2}
+== database interruption: the clearing backend terminated 1.5 s in, 250,000 actions
+{"terminatedBackend":3553,"ok":true}
+{"label":"db-kill","error":"Raw query failed. Code: `57P01`. Message: `FATAL: terminating connection due to administrator command`"}
+{"label":"after-db-kill","db_head":25000,"live_approvals":350000,"cleared_audits":0,"proposed":25000,"clearedRecordsInJournal":0}
+== two clearances at once with the same digest, 250,000 actions
+{"label":"concurrent-2","cleared":true,"superseded":350000,"toProposed":162500,"toUnknown":12500,"executing":0,"audits":500,"unmatched":2500,"clearedRecord":"f0cfbd7ce297","ms":2721.3435020148754}
+{"label":"concurrent-1","cleared":false,"reason":"the state changed since inspection","ms":3080.8077509999275}
+{"label":"after-concurrent","db_head":40000,"live_approvals":0,"cleared_audits":500,"proposed":187500,"clearedRecordsInJournal":1}
+== changed after inspection, then a repeated attempt, 250,000 actions
+{"label":"stale-digest","cleared":false,"reason":"the state changed since inspection","ms":377.4245830178261}
+{"label":"fresh-digest","cleared":true,"superseded":349998,"toProposed":162499,"toUnknown":12500,"executing":0,"audits":500,"unmatched":2500,"clearedRecord":"aa22e1bbb36f","ms":2704.525334984064}
+{"label":"repeated-same-digest","cleared":false,"reason":"the state changed since inspection","ms":396.7048749923706}
+{"label":"after-repeated","db_head":40000,"live_approvals":2,"cleared_audits":500,"proposed":187500,"clearedRecordsInJournal":1}

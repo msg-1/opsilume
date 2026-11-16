@@ -1,0 +1,116 @@
+{
+  "a: 2000 sequential claims": {
+    "verifyModes": {
+      "full": 1,
+      "incremental": 1999
+    },
+    "status": "ok",
+    "mode": "incremental",
+    "reason": null,
+    "head": 2000,
+    "problem": null
+  },
+  "c: new process": {
+    "status": "ok",
+    "mode": "full",
+    "reason": "no cache",
+    "head": 2000,
+    "problem": null
+  },
+  "d1: replaced by identical copy (new inode)": {
+    "status": "ok",
+    "mode": "full",
+    "reason": "file replaced (device or inode changed)",
+    "head": 2000,
+    "problem": null
+  },
+  "d2: replaced by an older copy": {
+    "status": "ok",
+    "mode": "full",
+    "reason": "file replaced (device or inode changed)",
+    "head": 1999,
+    "problem": "database head 2000 is ahead of the journal head 1999"
+  },
+  "d3: replaced by a different chain with the same head": {
+    "otherHead": 2000,
+    "status": "ok",
+    "mode": "full",
+    "reason": "file replaced (device or inode changed)",
+    "head": 2000,
+    "problem": "head hash differs between database and journal",
+    "note": "other journal 505786 bytes"
+  },
+  "e: shrunk in place": {
+    "status": "ok",
+    "mode": "full",
+    "reason": "file shrank",
+    "head": 1999,
+    "problem": "database head 2000 is ahead of the journal head 1999"
+  },
+  "f: last record rewritten in place": {
+    "status": "corrupt",
+    "mode": "full",
+    "reason": "last verified record changed",
+    "head": null,
+    "problem": "journal corrupt (record hash does not match its content)"
+  },
+  "g: torn final record": {
+    "status": "torn_tail",
+    "mode": "incremental",
+    "reason": null,
+    "head": 2000,
+    "problem": null,
+    "appendAfter": "refused: JOURNAL_TORN"
+  },
+  "h: earlier record edited in place": {
+    "incremental": {
+      "status": "ok",
+      "mode": "incremental",
+      "reason": null,
+      "head": 2000,
+      "problem": null
+    },
+    "scheduledFull": {
+      "status": "corrupt",
+      "mode": "full",
+      "reason": "forced",
+      "head": null,
+      "problem": "journal corrupt (record hash does not match its content)"
+    }
+  },
+  "i: database head behind": {
+    "status": "ok",
+    "mode": "incremental",
+    "reason": null,
+    "head": 2000,
+    "problem": "database head 1999 is behind the journal head 2000"
+  },
+  "j: another process appended 10 claims": {
+    "status": "ok",
+    "mode": "incremental",
+    "reason": null,
+    "head": 2010,
+    "problem": null
+  },
+  "j: another process replaced the file with an older copy": {
+    "status": "ok",
+    "mode": "full",
+    "reason": "file replaced (device or inode changed)",
+    "head": 2000,
+    "problem": "database head 2010 is ahead of the journal head 2000"
+  },
+  "fullVerificationCounts": {
+    "mainProcess": {
+      "full": 13,
+      "incremental": 4004
+    },
+    "A": {
+      "full": 2,
+      "incremental": 1
+    },
+    "B": {
+      "full": 1,
+      "incremental": 19
+    }
+  }
+}

@@ -1,0 +1,184 @@
+[
+  {
+    "scenario": "1: committed, response lost",
+    "claimResult": "uncertain",
+    "error": "Server has closed the connection.",
+    "dispatchedRequests": 0,
+    "atUncertain": {
+      "databaseHead": 1,
+      "action": {
+        "status": "EXECUTING",
+        "attempts": 1
+      },
+      "journalHead": 1,
+      "journalRecords": [
+        "claim"
+      ]
+    },
+    "resolution": {
+      "resolved": "committed",
+      "action": "left EXECUTING, not dispatched"
+    },
+    "afterSweep": {
+      "status": "FAILED",
+      "outcome": "unknown"
+    },
+    "automaticRetryPermitted": false,
+    "journalOnlyAppended": true,
+    "proxyEvents": [
+      "COMMIT seen (drop_after_commit_response) via 'Q'",
+      "server answered COMMIT [C]",
+      "closed both sockets: answer to COMMIT not delivered"
+    ]
+  },
+  {
+    "scenario": "2: rolled back at commit, response lost",
+    "claimResult": "uncertain",
+    "dispatchedRequests": 0,
+    "atUncertain": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 1,
+      "journalRecords": [
+        "claim"
+      ]
+    },
+    "resolution": {
+      "resolved": "not committed",
+      "action": "voided under the lock"
+    },
+    "afterResolution": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 0,
+      "journalRecords": [
+        "claim",
+        "void"
+      ]
+    },
+    "nextClaimTrusted": true,
+    "journalOnlyAppended": true,
+    "proxyEvents": [
+      "COMMIT seen (drop_after_commit_response) via 'Q'",
+      "server answered COMMIT [E]",
+      "closed both sockets: answer to COMMIT not delivered"
+    ]
+  },
+  {
+    "scenario": "3: connection dropped during COMMIT",
+    "claimResult": "uncertain",
+    "dispatchedRequests": 0,
+    "atUncertain": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 1,
+      "journalRecords": [
+        "claim"
+      ]
+    },
+    "resolution": {
+      "resolved": "not committed",
+      "action": "voided under the lock"
+    },
+    "afterResolution": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 0,
+      "journalRecords": [
+        "claim",
+        "void"
+      ]
+    },
+    "journalOnlyAppended": true,
+    "proxyEvents": [
+      "COMMIT seen (drop_before_commit) via 'Q'",
+      "closed both sockets before forwarding COMMIT"
+    ]
+  },
+  {
+    "scenario": "4+6: unavailable right after COMMIT, then available again",
+    "claimResult": "uncertain",
+    "resolutionWhileDown": {
+      "resolved": "unreachable",
+      "action": "nothing changed",
+      "error": "Server has closed the connection."
+    },
+    "claimWhileDown": "error: Please make sure your database server is running at `proxy:6432`.",
+    "stateWhileDown": {
+      "databaseHead": 1,
+      "action": {
+        "status": "EXECUTING",
+        "attempts": 1
+      },
+      "journalHead": 1,
+      "journalRecords": [
+        "claim"
+      ]
+    },
+    "resolutionWhenBack": {
+      "resolved": "committed",
+      "action": "left EXECUTING, not dispatched"
+    },
+    "dispatchedRequests": 0,
+    "journalOnlyAppended": true,
+    "proxyEvents": [
+      "COMMIT seen (drop_after_commit_response) via 'Q'",
+      "server answered COMMIT [C]",
+      "closed both sockets: answer to COMMIT not delivered",
+      "refused new connection",
+      "refused new connection"
+    ]
+  },
+  {
+    "scenario": "5: process restarts before resolution",
+    "firstProcess": {
+      "reason": "uncertain",
+      "uncertain": true
+    },
+    "atRestart": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 1,
+      "journalRecords": [
+        "claim"
+      ]
+    },
+    "startupResolution": {
+      "resolved": "not committed",
+      "action": "voided under the lock"
+    },
+    "afterResolution": {
+      "databaseHead": 0,
+      "action": {
+        "status": "APPROVED",
+        "attempts": 0
+      },
+      "journalHead": 0,
+      "journalRecords": [
+        "claim",
+        "void"
+      ]
+    },
+    "dispatchedRequests": 0,
+    "journalOnlyAppended": true,
+    "proxyEvents": [
+      "COMMIT seen (drop_before_commit) via 'Q'",
+      "closed both sockets before forwarding COMMIT"
+    ]
+  }
+]

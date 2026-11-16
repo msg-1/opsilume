@@ -1,0 +1,9 @@
+{
+  "records": 1000000,
+  "bytes": 235166685,
+  "emptyNodeMaxRssMB": 41,
+  "status": "ok",
+  "head": 500000,
+  "ms": 1398,
+  "maxRssMB": 106
+}

@@ -1,0 +1,14 @@
+{
+  "label": "process-kill",
+  "journalStatus": "ok",
+  "tornBytes": 0,
+  "journalHead": 2171,
+  "databaseHead": 2171,
+  "committedClaims": 2171,
+  "committedClaimsMissingFromJournal": 0,
+  "trust": "trusted",
+  "environment": {
+    "kernel": "6.12.76-linuxkit",
+    "stateMount": "/dev/vda1 /state ext4 rw,relatime,discard 0 0"
+  }
+}

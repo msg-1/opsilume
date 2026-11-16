@@ -1,0 +1,11 @@
+{
+  "cleared": true,
+  "superseded": 350000,
+  "toProposed": 162500,
+  "toUnknown": 12500,
+  "executing": 0,
+  "audits": 500,
+  "unmatched": 2500,
+  "clearedRecord": "6bac0dd82d9b",
+  "ms": 2821.6205430030823
+}

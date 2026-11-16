@@ -1,0 +1,10 @@
+import { fresh, seed } from './lib/fixtures.mjs';
+import { db, execute, journalAt } from './lib/proto.mjs';
+const { p: d } = await fresh();
+await seed(d, { orgs: 1, perOrg: 2 });
+const p = db(); const j = journalAt();
+const r = await execute(p, j, 'a-1-1', process.env.RECEIVER_URL);
+const again = await execute(p, j, 'a-1-1', process.env.RECEIVER_URL);
+const ev = await (await fetch(`${process.env.PROXY_URL}/events`)).json();
+console.log(JSON.stringify({ r: { claimed: r.claimed, seq: r.seq, verify: r.timing?.verifyMode }, again: again.reason, journal: j.state() }), 'proxyEvents', ev.length);
+await p.$disconnect(); await d.$disconnect();

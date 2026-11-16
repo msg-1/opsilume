@@ -1,0 +1,17 @@
+{
+  "readerChecks": {
+    "ok": 94624,
+    "torn_tail": 1,
+    "corrupt": 0,
+    "empty": 1265,
+    "other": 0
+  },
+  "final": {
+    "status": "ok",
+    "head": 2000
+  },
+  "readerCounts": {
+    "full": 1,
+    "incremental": 95890
+  }
+}

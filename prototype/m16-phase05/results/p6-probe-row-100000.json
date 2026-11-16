@@ -1,0 +1,6 @@
+{
+  "label": "100000",
+  "probe": "probe-row",
+  "waitedMs": 45,
+  "result": "row lock acquired"
+}

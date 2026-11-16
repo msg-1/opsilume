@@ -1,0 +1,31 @@
+{
+  "without a guard (the design as approved)": {
+    "newerApplicationClaim": true,
+    "olderApplicationClaim": {
+      "claimed": true
+    },
+    "olderActionStatus": "EXECUTING",
+    "olderActionInJournal": false,
+    "journalHead": 1,
+    "databaseHead": 1,
+    "trustAfterOlderClaim": "trusted (the older execution is invisible)",
+    "receiverRequests": 1,
+    "newerClaimAfterwards": true,
+    "sweepStillWorks": true
+  },
+  "with the database guard": {
+    "newerApplicationClaim": true,
+    "olderApplicationClaim": {
+      "claimed": false,
+      "error": "Raw query failed. Code: `P0001`. Message: `ERROR: remediation claim without a journal record: refused (is an older application running?)`"
+    },
+    "olderActionStatus": "APPROVED",
+    "olderActionInJournal": false,
+    "journalHead": 1,
+    "databaseHead": 1,
+    "trustAfterOlderClaim": "trusted (the older execution is invisible)",
+    "receiverRequests": 0,
+    "newerClaimAfterwards": true,
+    "sweepStillWorks": true
+  }
+}
