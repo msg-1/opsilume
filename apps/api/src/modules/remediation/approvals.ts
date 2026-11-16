@@ -2,7 +2,7 @@ import type { Prisma } from '@prisma/client';
 import { env } from '../../config/env';
 import { conflict } from '../../lib/errors';
 import { prisma } from '../../lib/prisma';
-import { type Content, contentHash } from './content';
+import { type Content, contentHash, executionTarget } from './content';
 import { requiredApprovals as requiredFor } from './effect';
 
 /**
@@ -63,10 +63,15 @@ export async function lockAction(tx: Prisma.TransactionClient, actionId: string)
  * number of approvals needed never goes down: it is what the current settings require, or what
  * the action already required, whichever is more. Returns false when it was already submitted.
  */
-export async function submitForApproval(actionId: string, requestedById: string, requiredApprovals: number, hash: string): Promise<boolean> {
+export async function submitForApproval(expected: Content & { id: string }, requestedById: string, requiredApprovals: number, hash: string): Promise<boolean> {
+  const actionId = expected.id;
   return prisma.$transaction(async (tx) => {
     const row = await lockAction(tx, actionId);
     if (row?.status !== 'PROPOSED') return false;
+    // `hash` was computed from the copy the submitter read. Under the lock, the action must still say
+    // the same thing, or the fingerprint stored would be for content nobody is submitting.
+    const current = await tx.remediationAction.findUniqueOrThrow({ where: { id: actionId } });
+    if (contentHash(current) !== contentHash(expected)) throw conflict('This action changed while it was being submitted. Reload it and review what you are submitting.');
     await tx.remediationAction.update({ where: { id: actionId }, data: { status: 'PENDING_APPROVAL', requestedById, requestedAt: new Date(), requiredApprovals: Math.max(row.requiredApprovals, requiredApprovals), contentHash: hash } });
     return true;
   });
@@ -158,9 +163,13 @@ export function awaitMoreApprovals(actionId: string, hash: string, required: num
 export const raiseRequiredApprovals = (actionId: string, required: number) =>
   prisma.$executeRaw`UPDATE "RemediationAction" SET "requiredApprovals" = GREATEST("requiredApprovals", ${required}) WHERE id = ${actionId}`;
 
+/** Where an approved action is carried out, as read under the claim's lock: a webhook address (and its signing secret), or by hand. */
+export type Destination = { url: string | null; secretEncrypted: string | null };
+
 export type Claim =
-  | { claimed: true; approvers: { approverId: string; approvedAt: Date }[] }
+  | { claimed: true; approvers: { approverId: string; approvedAt: Date }[]; destination: Destination }
   | { claimed: false; reason: 'moved_on' }
+  | { claimed: false; reason: 'destination_changed' }
   | { claimed: false; reason: 'insufficient'; required: number; valid: number; newStatus: 'PENDING_APPROVAL' | 'PROPOSED' };
 
 /**
@@ -171,15 +180,23 @@ export type Claim =
  * approvals count, nothing is claimed and the action goes back to waiting for approvals (or to
  * PROPOSED when it has no requester), its approvals left as they are. A read-only diagnostic
  * (`hash` null) is claimed on its status alone.
+ *
+ * The destination is read here too, from the same locked settings row, and must be the one the
+ * approvals were given for (`target`, the digest that is part of the approval fingerprint). The
+ * claim returns it, and the dispatch uses exactly that: the settings are not read again, so an
+ * address saved after the claim is never used for this attempt.
  */
-export function claimExecution(actionId: string, organizationId: string, status: string, hash: string | null, executedById: string): Promise<Claim> {
+export function claimExecution(actionId: string, organizationId: string, status: string, hash: string | null, executedById: string, target: string | null = null): Promise<Claim> {
   return prisma.$transaction(async (tx) => {
     const row = await lockAction(tx, actionId);
     if (!row || row.status !== status || (hash !== null && row.contentHash !== hash)) return { claimed: false, reason: 'moved_on' } as const;
     let approvers: { approverId: string; approvedAt: Date }[] = [];
+    let destination: Destination = { url: null, secretEncrypted: null };
     if (hash !== null) {
-      const [settings] = await tx.$queryRaw<{ approvalsLowRisk: number; approvalsMediumRisk: number; approvalsHighRisk: number }[]>`
-        SELECT "approvalsLowRisk", "approvalsMediumRisk", "approvalsHighRisk" FROM "OrganizationSettings" WHERE "organizationId" = ${organizationId} FOR SHARE`;
+      const [settings] = await tx.$queryRaw<{ approvalsLowRisk: number; approvalsMediumRisk: number; approvalsHighRisk: number; remediationWebhookUrl: string | null; remediationWebhookSecretEncrypted: string | null }[]>`
+        SELECT "approvalsLowRisk", "approvalsMediumRisk", "approvalsHighRisk", "remediationWebhookUrl", "remediationWebhookSecretEncrypted" FROM "OrganizationSettings" WHERE "organizationId" = ${organizationId} FOR SHARE`;
+      destination = { url: settings?.remediationWebhookUrl ?? null, secretEncrypted: settings?.remediationWebhookSecretEncrypted ?? null };
+      if (executionTarget({ remediationWebhookUrl: destination.url }) !== target) return { claimed: false, reason: 'destination_changed' } as const;
       const action = await tx.remediationAction.findUniqueOrThrow({ where: { id: actionId }, select: { risk: true, approvals: true } });
       const required = Math.max(1, row.requiredApprovals, settings ? requiredFor(settings as Parameters<typeof requiredFor>[0], action.risk, 'state_changing') : 1);
       const valid = validApprovals(action.approvals, hash, await databaseNow(tx));
@@ -195,6 +212,6 @@ export function claimExecution(actionId: string, organizationId: string, status:
       approvers = valid.map((a) => ({ approverId: a.approverId, approvedAt: a.createdAt }));
     }
     await tx.remediationAction.update({ where: { id: actionId }, data: { status: 'EXECUTING', executedById, attempts: { increment: 1 } } });
-    return { claimed: true, approvers } as const;
+    return { claimed: true, approvers, destination } as const;
   });
 }

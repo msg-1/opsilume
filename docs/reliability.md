@@ -100,6 +100,21 @@ Each is stated as a contradiction on the hypothesis. This was added after a run 
 
 **Lifecycle.** `PROPOSED → PENDING_APPROVAL → APPROVED → EXECUTING → EXECUTED | FAILED`, with `REJECTED`, and `CANCELLED` from any state before execution. A `FAILED` action carries an outcome: `not_applied` (certainly not done) or `unknown` (may or may not have been done).
 
+### Security policies
+
+These are product security policies, enforced in code and covered by tests. They are not defaults to tune casually.
+
+| Policy | Rule |
+|---|---|
+| **Approval validity** | An approval counts for 24 hours by default, configurable from 1 to 720 whole hours (`REMEDIATION_APPROVAL_VALIDITY_HOURS`). The operator chooses the value; 24 is not a measured optimum. Expiry is judged by the database clock |
+| **Distinct approvers** | Each approver counts once. The number needed comes from the action's risk and the organisation's settings, and never goes down for an action |
+| **Risk only increases** | An edit cannot lower an action's risk; the risk floor is re-applied on submission, approval and execution |
+| **Destination changes invalidate approvals** | A change of the organisation's webhook address, or between a webhook and carrying it out by hand, invalidates the approvals of every action approved before it |
+| **Rationale changes need fresh approval** | The rationale is part of what is approved, like the description, parameters, service, incident and source investigation |
+| **Unknown outcomes need a person** | A timeout, a server error, a dropped connection or a stopped process is recorded as unknown. A person reconciles it; the product never retries it by itself |
+| **Retry only after "not applied"** | A retry is accepted only for the latest attempt, once it is recorded as not applied: refused by the webhook, or recorded so by a person |
+| **Execution revalidates** | At execution the current risk floor, the source investigation, the approval fingerprint, the approvals, their age and their number are all checked again, and the claim re-checks the number and the destination under its locks |
+
 ### Approval
 
 - **Read-only diagnostics** need no approval. A person records that it was done and what was found. They are never sent to the webhook, so a misjudged text cannot change anything. The effect is recomputed at that moment; if the text now reads as a change, the action is reclassified and refused.
@@ -137,7 +152,8 @@ Each is stated as a contradiction on the hypothesis. This was added after a run 
   Sending back for review compares the action's content fingerprint (what it says, its risk included), not only its stored approval fingerprint, which a `PROPOSED` action does not have. So an edit made meanwhile is detected, and a risk is only ever raised from the one stored. What is not locked: reading an action and the organisation's settings to decide what to do. Every write that follows is conditional or keeps the higher value, and the execution claim reads the settings under a share lock.
 - **Audit records match what happened.** Sending an action back for review, invalidating its approvals and superseding expired ones happen in one transaction under the lock, and only if the action has not moved on. If it has, nothing changes, the request is refused, and nothing is audited. The audit records the number of approvals actually superseded, the risk actually found and applied, and, at execution, the status the action actually moved to (`newStatus`). Existing audit entries are never changed.
 
-  Limit: the audit is written after the transaction commits, and audit writes are best-effort (a failure is logged, not retried). So a transition can be recorded with no audit entry if that write fails. An audit entry is never written for a transition that did not commit.
+  Limit: the audit is written after the transaction commits, and audit writes are best-effort (a failure is logged, not retried). So a transition can be recorded with no audit entry if that write fails. An audit entry is never written for a transition that did not commit. See "Audit durability" below for the assessment and the recommendation.
+- **Submission checks content under the lock.** Submitting stores the approval fingerprint computed from the copy the submitter read. Under the row lock the action is read again; if its content fingerprint differs, because of an edit or a risk change in the meantime, the submission is refused (409) and nothing is stored.
 
 ### Approval validity: a security policy
 
@@ -147,9 +163,35 @@ An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS`, default 24. This i
 - **An expired approval stays expired.** It is superseded when found: it stays on record, never counts again whatever any clock says later, and its approver may decide again. Repeating an old approve request does not revive it either: it is a new approval, made now, by a signed-in person, for the fingerprint the action has now. The action returns to `PENDING_APPROVAL`. The audit records the time of each expired approval and the cutoff (`remediation.approval_expired`).
 - **Approvals are never extended.**
 
+### Audit durability: assessment
+
+**Question.** Should remediation audit events go through a transactional outbox?
+
+**Finding.** No. An outbox exists to deliver events reliably to another system: write the event in the same transaction as the change, and have a separate process deliver it, with retries and deduplication. Here the audit log is a table in the same PostgreSQL database as the actions. There is nothing to deliver. Durability needs only that the audit row be inserted in the same transaction as the transition. `writeAudit` already accepts a transaction client.
+
+| | Today | Recommended next step (not implemented here) |
+|---|---|---|
+| Write | After the transition commits, best-effort | In the same transaction as the transition, for the transitions below |
+| If the audit write fails | The transition stands with no audit entry; the failure is logged | The transition rolls back: no unaudited transition |
+| Delivery, retries, deduplication | Not needed | Not needed: one database, one transaction |
+| Tenant isolation | `organizationId` on every row | Unchanged |
+| Sensitive data | Metadata is built from field names, categories and hashes (see "Failures never name the destination") | Unchanged: the same metadata, written earlier |
+| Consumers | The audit log page and exports read `AuditLog` | Unchanged: same table, same shape |
+
+**Transitions that would warrant it:** an approval or rejection recorded, approvals superseded (edit, expiry, invalidation, sent back for review), the execution claim (`execute_start`), the recorded outcome, a reconciliation, and a retry.
+
+**Why it is not done in this change.** It makes a transition fail when its audit cannot be written. That is the right trade for these transitions, but it is a behaviour change, and it means threading the request's actor and metadata into each transaction in `approvals.ts`. No failure of an audit write has been observed. It is recorded here as a recommendation for the owner to decide. An outbox would become appropriate only if audit events had to reach an external system.
+
 ### Execution, outcome and reconciliation
 
 - **Once.** The action is claimed atomically, under the fingerprint that was checked; a second request at the same moment is refused.
+- **The destination approved is the destination used.** The approval fingerprint contains a digest of where the action would be carried out: a webhook address, or by hand. The claim does the following under its locks, on the settings row it already holds `FOR SHARE`:
+  1. it reads the address and its signing secret;
+  2. it compares the address's digest with the approved one;
+  3. if they differ, it refuses: nothing is sent, and the action goes back for fresh approval (`remediation.approval_invalid`, `reason: destination_changed`);
+  4. otherwise it hands that exact address to the dispatch.
+
+  The settings are not read again. An address saved after the claim is never used for that attempt, and an address changed before it is never used without fresh approval. A retry returns the action to `APPROVED` and goes through the same checks, so it cannot move to a new destination. The audit records that the destination changed, never the address.
 - **Outcome.** A 2xx from the webhook is `applied`. A 4xx, or an address refused before sending, is `not_applied`. A timeout, a dropped connection or a 5xx is `unknown`: the request was sent and nobody knows whether the change happened. That is recorded as unknown, never as executed and never as a clean failure, and no effect is written to the service history.
 - **Failures never name the destination.** Messages from the network library, DNS and TLS name the host, the address or the URL, with any credentials or query string in it. So the stored, shown and audited summary gives a category only. The category is worked out from error codes and names, across nested causes, and is also stored as `executionResult.detail.failure`:
   - `timeout`, `resolve`, `refused`, `reset`, `unreachable`, `tls`;
@@ -444,7 +486,16 @@ Other files:
   - execution requiring the stored number;
   - the claim: the settings raised between the route's checks and the claim (refused until the new number is met), and a settings change racing an execution.
 
-  The claim test changes the settings deterministically at that exact point. The share lock on the settings row is exercised only by the race test, which is timing-dependent.
+  The claim test changes the settings deterministically at that exact point.
+- `execution-integrity.test.ts` covers:
+  - the destination: changed before approval, after approval, at the moment of the claim (webhook to webhook, by hand to webhook, webhook to by hand), after the claim before the dispatch, and across a retry, with two local stand-in webhooks counting what each received;
+  - submission: a copy read before an edit (refused, nothing stored), and submissions racing an edit of the description or the risk;
+  - PostgreSQL locks, with transactions held open behind explicit barriers and assertions on `pg_locks`, not on elapsed time:
+    - a settings change held open while the claim waits, then committed (the claim enforces the new number) or rolled back (the claim proceeds);
+    - the claim holding the settings row while a settings change waits, then applying to the next claim;
+    - no lock left waiting and no transaction left open.
+
+  Removing `FOR SHARE` from the claim makes these fail.
 - The web test after a conflict checks that the page refetches at once, shows the message, and sends nothing again.
 - `reconciliation.test.ts` also walks reconcile, retry and execute, with each current rule refusing in turn (changed content, a risk below the floor, an expired approval, a source that no longer supports it), and concurrent retries and executions resulting in exactly one webhook call.
 - `config.test.ts` covers the validity bounds.

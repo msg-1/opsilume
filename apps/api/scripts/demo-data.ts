@@ -685,7 +685,7 @@ async function seed() {
   /** What POST /remediations/:id/request-approval does, with the same functions. */
   const submit = async (action: Awaited<ReturnType<typeof propose>>, by: string) => {
     const hash = contentHash(action);
-    await submitForApproval(action.id, who(by).id, requiredApprovals(await getSettings(organizationId), action.risk, 'state_changing'), hash);
+    await submitForApproval(action, who(by).id, requiredApprovals(await getSettings(organizationId), action.risk, 'state_changing'), hash);
     await writeAudit({ organizationId, actorType: 'user', actorId: who(by).id, actorLabel: who(by).name, action: 'remediation.request_approval', resourceType: 'remediation_action', resourceId: action.id, metadata: { risk: action.risk, contentHash: hash, via: MARKER } });
     await addIncidentEvent(action.incidentId!, 'remediation', `Approval requested for: ${action.title}`, { kind: 'user', actorId: who(by).id, label: who(by).name }, { actionId: action.id });
   };

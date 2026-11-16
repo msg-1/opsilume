@@ -3,7 +3,7 @@ import { env } from '../../config/env';
 import { decrypt, hmacSha256Hex } from '../../lib/crypto';
 import { AppError } from '../../lib/errors';
 import { UnsafeDestinationError, safeRequest } from '../../lib/netguard';
-import { getSettings } from '../organization';
+import type { Destination } from './approvals';
 
 /**
  * Carrying out an action. OPSILUME changes nothing itself: a read-only diagnostic is recorded
@@ -30,13 +30,14 @@ export interface ExecutionResult {
  *  - manually by the operator, who then attests in OpsPilot that it was done.
  * In both cases the effect is recorded on the service timeline.
  */
-export async function execute(action: RemediationAction, operator: { userId: string; label: string }, approvers: { approverId: string; approvedAt: Date }[], manualNotes?: string, fingerprint = ''): Promise<ExecutionResult> {
+export async function execute(action: RemediationAction, operator: { userId: string; label: string }, approvers: { approverId: string; approvedAt: Date }[], manualNotes: string | undefined, fingerprint: string, destination: Destination): Promise<ExecutionResult> {
   if (action.effect === 'read_only') {
     // Diagnostics are carried out by a person and never dispatched: nothing here can change a system.
     return { mode: 'diagnostic', success: true, outcome: 'applied', summary: `Read-only diagnostic carried out and recorded by ${operator.label}. Nothing was changed.`, detail: manualNotes ? { findings: manualNotes } : undefined };
   }
-  const settings = await getSettings(action.organizationId);
-  if (!settings.remediationWebhookUrl) {
+  // The destination the approvals were given for, as the claim read it under its lock (approvals.ts,
+  // claimExecution). The settings are not read again here: a newer address is never substituted.
+  if (!destination.url) {
     return { mode: 'manual', success: true, outcome: 'applied', summary: `Carried out manually and attested by ${operator.label}. OPSILUME did not change any external system.`, detail: manualNotes ? { notes: manualNotes } : undefined };
   }
   const body = JSON.stringify({
@@ -57,12 +58,12 @@ export async function execute(action: RemediationAction, operator: { userId: str
     approvedAt: new Date().toISOString(),
     executedBy: operator.label,
   });
-  const secret = settings.remediationWebhookSecretEncrypted ? decrypt(settings.remediationWebhookSecretEncrypted) : null;
+  const secret = destination.secretEncrypted ? decrypt(destination.secretEncrypted) : null;
   try {
     // The destination is checked as the connection is made, against the addresses it is made
     // to: a host name that resolved to a public address when it was saved, or a moment ago,
     // may not now. Redirects are not followed and the response body is not read.
-    const res = await safeRequest(settings.remediationWebhookUrl, {
+    const res = await safeRequest(destination.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'user-agent': 'opspilot', 'idempotency-key': action.id, 'x-opspilot-attempt': String(action.attempts), ...(secret ? { 'x-opspilot-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
       body,
