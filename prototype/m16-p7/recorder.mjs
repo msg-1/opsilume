@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import { randomBytes, randomInt } from 'node:crypto';
+import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -19,6 +19,7 @@ import { appendDurable, fsyncDir, readLedger, writeOnce } from './lib/ledger.mjs
 import { WINDOW_MS, keyFromHex, newKeyHex, nextStream, signResponse, streamKey, verifyRequest } from './lib/protocol.mjs';
 import { FAILURE_MODELS, QUALIFYING_MODELS, STORAGE_FIELDS, finalStatus, physicalStreak, storageProblems, storageQualifies } from './lib/verdict.mjs';
 import { REQUIRED_ATTESTATIONS, freshVolumeProblems } from './lib/preflight.mjs';
+import { bindingDiff, digestOf, recorderBinding, vetTestBinding } from './lib/readiness.mjs';
 
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const isCycle = (n) => Number.isInteger(n) && n >= 1 && n <= 10000;
@@ -60,6 +61,28 @@ function registry(dir) {
 }
 export const volumeOwner = (dir, pgSystemId) => registry(dir).find((v) => v.pgSystemId === String(pgSystemId)) ?? null;
 export const volumeOf = (dir, run) => registry(dir).find((v) => v.run === run) ?? null;
+
+// Recorder identity: one random id per recorder directory, written once when the directory's first run is created and
+// never rewritten. A directory that already holds runs but no identity (it predates this, or the file was removed) is
+// never given one: it can serve smoke runs, but no qualifying run is created or made ready on it.
+const idFile = (dir) => path.join(dir, 'recorder-id.json');
+export function recorderId(dir) {
+  try { const id = JSON.parse(fs.readFileSync(idFile(dir), 'utf8')).id; return /^[0-9a-f]{32}$/.test(id) ? id : null; } catch { return null; }
+}
+function ensureRecorderId(dir) {
+  const runsDir = path.join(dir, 'runs');
+  if (fs.existsSync(idFile(dir)) || (fs.existsSync(runsDir) && fs.readdirSync(runsDir).length)) return;
+  fs.mkdirSync(dir, { recursive: true });
+  writeOnce(idFile(dir), { id: randomBytes(16).toString('hex'), createdAt: new Date().toISOString() });
+}
+/** The recorder's half of a readiness record, as things are now. The registry is bound byte for byte. */
+export function recorderBindingOf(dir, run) {
+  const s = runStore(dir, run);
+  const bytes = fs.existsSync(registryFile(dir)) ? fs.readFileSync(registryFile(dir)) : Buffer.alloc(0);
+  return recorderBinding({ run: s.run(), recorderId: recorderId(dir), registry: { bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }, attestations: s.events().filter((e) => e.kind === 'attestation') });
+}
+export const latestReadiness = (events) => events.filter((e) => e.kind === 'readiness').at(-1) ?? null;
+
 export function registerVolume(dir, entry) { fs.mkdirSync(dir, { recursive: true }); appendDurable(registryFile(dir), { ...entry, at: new Date().toISOString() }); }
 const validState = (f) => !!f && typeof f.installationId === 'string' && f.installationId.length > 0 && Number.isInteger(f.head) && f.head >= 0 && /^[0-9a-f]{64}$/.test(f.headHash ?? '');
 const sameState = (f, g) => validState(f) && validState(g) && f.installationId === g.installationId && f.head === g.head && f.headHash === g.headHash;
@@ -93,11 +116,55 @@ export function runStore(dir, run) {
 }
 
 /** Operator command (recorder host). Decision 4: a qualifying run with unknown flush or FUA behaviour is refused. */
+// ───────────────────────────── the recorder directory: one for the whole experiment ─────────────────────────────
+const filesOf = (d) => (fs.existsSync(d) ? fs.readdirSync(d, { recursive: true }).filter((f) => fs.statSync(path.join(d, f)).isFile()).map((f) => f.split(path.sep).join('/')).sort() : []);
+/** 'missing', 'empty', or 'recorder' (it holds runs or an identity). */
+export function dirState(dir) {
+  if (!fs.existsSync(dir)) return 'missing';
+  const runsDir = path.join(dir, 'runs');
+  return fs.existsSync(idFile(dir)) || (fs.existsSync(runsDir) && fs.readdirSync(runsDir).length) ? 'recorder' : 'empty';
+}
+/** What an operator checks before and during the experiment. `problems` empty = identity present and history consistent. */
+export function dirReport(dir) {
+  const state = dirState(dir);
+  if (state !== 'recorder') return { dir, state, problems: [`the recorder directory is ${state}: if this should be the experiment's recorder, STOP; it has no history`] };
+  const bytes = fs.existsSync(registryFile(dir)) ? fs.readFileSync(registryFile(dir)) : Buffer.alloc(0);
+  const runsDir = path.join(dir, 'runs');
+  const runs = fs.existsSync(runsDir) ? fs.readdirSync(runsDir).sort() : [];
+  const problems = [];
+  if (!recorderId(dir)) problems.push('recorder-id.json is missing or unreadable: no qualifying run can be created or made ready here');
+  const rp = registryProblem(dir);
+  if (rp) problems.push(`volume registry: ${rp}`);
+  for (const r of runs) if (!fs.existsSync(path.join(dir, 'keys', `${r}.key`))) problems.push(`run ${r} has no key file`);
+  return { dir, state, recorderId: recorderId(dir), runs: runs.length, registry: { entries: bytes.toString().split('\n').filter(Boolean).length, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }, problems };
+}
+/**
+ * Compares a backup with the live directory, byte for byte. Exact: the two hold the same files with the same content
+ * (right after the backup was made). allowGrowth: the live directory may have moved on, but only by growing: every
+ * backed-up file is still there, ledgers (.jsonl) still begin with their backed-up bytes, everything else is unchanged.
+ */
+export function compareBackup(live, backup, { allowGrowth = false } = {}) {
+  const problems = [];
+  const b = filesOf(backup), l = new Set(filesOf(live));
+  if (!b.length) problems.push('the backup is empty or missing');
+  for (const f of b) {
+    if (!l.has(f)) { problems.push(`${f}: in the backup, missing from the live directory`); continue; }
+    const x = fs.readFileSync(path.join(backup, f)), y = fs.readFileSync(path.join(live, f));
+    if (x.equals(y)) continue;
+    if (allowGrowth && f.endsWith('.jsonl') && y.length > x.length && y.subarray(0, x.length).equals(x)) continue;
+    problems.push(`${f}: differs from the backup${f.endsWith('.jsonl') ? ' (earlier records were changed, not just appended to)' : ''}`);
+  }
+  const extra = [...l].filter((f) => !b.includes(f));
+  if (!allowGrowth) for (const f of extra) problems.push(`${f}: in the live directory, not in the backup`);
+  return { files: b.length, newerFiles: extra.length, problems };
+}
+
 export function createRun(dir, o) {
   if (!FAILURE_MODELS.includes(o.failureModel)) throw new Error(`failure model must be one of ${FAILURE_MODELS.join(', ')}`);
   const s = runStore(dir, o.run);
   if (s.exists() || fs.existsSync(s.keyFile)) throw new Error('run already exists');
   registry(dir); // no new run beside a registry that lost history
+  if (o.failureModel === 'POWER-CUT' && dirState(dir) === 'recorder' && !recorderId(dir)) throw new Error('refused: this recorder directory holds runs but has no identity (recorder-id.json). It predates readiness records, or the file was removed. A qualifying run needs a recorder directory with its identity intact')
   // The three run types never share state: a run continues only a run of its own type (decision: a POWER-CUT series
   // starts on fresh volumes and never adopts HARNESS-SMOKE or VM-CRASH state).
   if (o.continues) {
@@ -138,6 +205,7 @@ export function createRun(dir, o) {
     }
     continues = { run: o.continues, failureModel: old.run().failureModel, lastCycle: last, finalState: done.finalState, stopped: st ? { kind: st.kind, cycle: st.cycle } : null };
   }
+  ensureRecorderId(dir); // only now: a refused run leaves nothing behind, not even a new directory's identity
   fs.mkdirSync(path.dirname(s.keyFile), { recursive: true, mode: 0o700 });
   writeOnce(s.keyFile, `${newKeyHex()}\n`);
   fs.chmodSync(s.keyFile, 0o600);
@@ -212,7 +280,8 @@ export function runStatus(s) {
   const finals = s.results().map((r) => ({ cycle: r.cycle, verdict: r.verdict, status: finalStatus(r, recoveryOf(events, r.cycle)) }));
   const { run, ...rest } = s.run();
   const attestations = events.filter((e) => e.kind === 'attestation').map((e) => ({ item: e.item, evidence: e.evidence, at: e.at, attestation: 'operator' }));
-  return { run: { run, ...rest }, attestations, cyclesStarted: new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle)).size, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: s.rejections().length };
+  const ready = latestReadiness(events);
+  return { run: { run, ...rest }, readiness: ready ? { digest: ready.digest, at: ready.at, workload: ready.binding.test.workload } : null, attestations, cyclesStarted: new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle)).size, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: s.rejections().length };
 }
 
 // ───────────────────────────────────────────── server ─────────────────────────────────────────────
@@ -315,6 +384,21 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             const have = new Set(events.filter((e) => e.kind === 'attestation').map((e) => e.item));
             if (REQUIRED_ATTESTATIONS.some((x) => !have.has(x))) return refuse(409, 'attestations_missing');
           }
+          // A qualifying cycle starts only on exactly the configuration a successful preflight recorded for THIS run.
+          // The recorder's half is recomputed now; the test machine's half is what it reports for this start.
+          let bindingDigest = null;
+          if (run0.failureModel === 'POWER-CUT') {
+            const ready = latestReadiness(events);
+            if (!ready) return refuse(409, 'readiness_missing');
+            const { test, problems } = vetTestBinding(body.readiness);
+            if (problems.length) return refuse(409, `readiness_not_ready: ${problems[0]}`.slice(0, 200));
+            const current = { test, recorder: recorderBindingOf(dir, run0.run) };
+            const changed = bindingDiff(ready.binding, current);
+            if (changed.length || digestOf(current) !== ready.digest) return refuse(409, `readiness_stale: ${changed.join(', ') || 'digest'}`.slice(0, 200));
+            const w = test.workload;
+            if (body.workers !== w.workers || !/^[a-z]$/.test(body.proc ?? '') || body.proc.charCodeAt(0) - 97 >= w.procs) return refuse(409, 'start_differs_from_ready_workload');
+            bindingDigest = ready.digest;
+          } else if (body.readiness) bindingDigest = `unenforced:${digestOf(vetTestBinding(body.readiness).test)}`; // lets a rehearsal show whether the binding is stable
           if (run0.continues && body.dbHead < run0.continues.finalState.head) return refuse(409, 'head_below_predecessor');
           if (!/^[a-z]$/.test(body.proc ?? '') || !Number.isInteger(body.workers) || body.workers < 1 || body.workers > 12 || !Number.isInteger(body.dbHead) || body.dbHead < 0) return refuse(400, 'invalid_start');
           if (open && open !== n) return refuse(409, `cycle_${open}_is_open`);
@@ -329,7 +413,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           // leaves the database untouched and the same start can be retried.
           if (body.vet === true) return reply(200, { vetted: true });
           const cycleId = startsOf(events, n)[0]?.cycleId ?? randomBytes(16).toString('hex');
-          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
+          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bindingDigest, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
           return reply(200, { cycleId });
         }
 
@@ -383,6 +467,26 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           }
           s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...(body.kind === 'volume_claimed' ? { pgSystemId: String(body.volume.pgSystemId) } : {}), ...(body.kind === 'initialised' ? { installationId: String(body.installationId ?? '').slice(0, 64) } : {}), ...stamp });
           return reply(200, { ok: true });
+        }
+
+        if (rest === 'readiness') {
+          // Sent by `p7.mjs preflight` when its own verdict is ready. The recorder checks everything it can itself and
+          // stores the record in this run's ledger. It is never taken on the test machine's word, and never for another run.
+          if (run0.failureModel !== 'POWER-CUT') return refuse(409, 'readiness_is_for_power_cut_runs');
+          if (s.stopped()) return refuse(409, 'run_stopped');
+          if (events.some((e) => e.kind === 'cycle_start')) return refuse(409, 'readiness_only_before_the_first_cycle');
+          if (!recorderId(dir)) return refuse(409, 'recorder_identity_missing');
+          if (!storageQualifies(run0.storage)) return refuse(409, 'storage_not_qualifying');
+          if (!events.some((e) => e.kind === (run0.continues ? 'adopted' : 'initialised'))) return refuse(409, run0.continues ? 'not_adopted' : 'not_initialised');
+          const have = new Set(events.filter((e) => e.kind === 'attestation').map((e) => e.item));
+          if (REQUIRED_ATTESTATIONS.some((x) => !have.has(x))) return refuse(409, 'attestations_missing');
+          const { test, problems } = vetTestBinding(body.test);
+          if (problems.length) return refuse(409, `readiness_not_ready: ${problems.join('; ')}`.slice(0, 300));
+          if (volumeOf(dir, run0.rootRun ?? run0.run)?.pgSystemId !== test.pgSystemId) return refuse(409, 'volume_differs_from_series');
+          const binding = { test, recorder: recorderBindingOf(dir, run0.run) };
+          const digest = digestOf(binding);
+          s.event({ cycle: null, kind: 'readiness', binding, digest, ...stamp });
+          return reply(200, { digest, binding });
         }
 
         if (rest === 'volume-check') {
@@ -465,9 +569,23 @@ async function main() {
       'failure-model': { type: 'string' }, machine: { type: 'string' }, operator: { type: 'string' },
       'min-seconds': { type: 'string' }, 'max-seconds': { type: 'string' }, 'command-json': { type: 'string' }, 'power-was-cut': { type: 'string' }, evidence: { type: 'string' }, 'attested-from': { type: 'string' }, 'attested-to': { type: 'string' },
       'storage-json': { type: 'string' }, item: { type: 'string' }, continues: { type: 'string' }, 'stop-on-inconclusive': { type: 'boolean' },
+      'new-directory': { type: 'boolean' }, backup: { type: 'string' }, 'allow-growth': { type: 'boolean' },
     },
   });
   if (!a.dir) throw new Error('--dir is required');
+  if (cmd === 'verify-dir') {
+    // Read-only. Exit 1 on any problem: the operator stops (README, "The recorder directory").
+    const report = dirReport(a.dir);
+    if (a.backup) report.backup = { dir: a.backup, mode: a['allow-growth'] ? 'the live directory may only have grown' : 'exact copy', ...compareBackup(a.dir, a.backup, { allowGrowth: a['allow-growth'] }) };
+    console.log(JSON.stringify(report, null, 2));
+    if (report.problems.length || report.backup?.problems.length) process.exit(1);
+    return;
+  }
+  // A recorder directory is never created by accident: a missing or empty one means the experiment's history is not
+  // here (wrong path, unmounted disk, replaced directory). Only --new-directory starts a new one, and only when empty.
+  const state = dirState(a.dir);
+  if (a['new-directory'] && state === 'recorder') throw new Error(`refused: --new-directory, but ${a.dir} already holds a recorder. Use it without that flag`);
+  if (state !== 'recorder' && !(a['new-directory'] && ['serve', 'create-run'].includes(cmd))) throw new Error(`refused: the recorder directory ${a.dir} is ${state}. If it should hold this experiment's runs, STOP: it is missing or was replaced (restore nothing over it; see README). To start a new recorder, pass --new-directory to serve and to the first create-run`);
   if (cmd === 'serve') {
     createRecorder(a.dir).listen(Number(a.port), a.host, () => console.log(`P7 recorder on ${a.host}:${a.port}, storing in ${a.dir}`));
     return;
@@ -528,7 +646,7 @@ async function main() {
     console.log(`recorded operator attestation: ${a.item}`);
   } else if (cmd === 'status') {
     console.log(JSON.stringify(runStatus(s), null, 2));
-  } else throw new Error('commands: serve, create-run, attest, cut, confirm-cut, status');
+  } else throw new Error('commands: serve, create-run, attest, cut, confirm-cut, status, verify-dir');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((e) => { console.error(String(e.message)); process.exit(1); });

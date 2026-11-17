@@ -18,8 +18,9 @@
 | File | Runs on | Purpose |
 |---|---|---|
 | `storage-evidence.template.json` | Filled by the operator | The storage evidence checklist, passed to `create-run --storage-json` |
+| `lib/readiness.mjs`, `lib/netcheck.mjs`, `lib/gateway.mjs` | Both sides | The readiness binding, the network rules and the gateway, as pure code with injected probes so they are tested without Docker |
 | `recorder.mjs` | **Another host** (for example the Mac), never on the switched outlet | Authenticates every request; stores each accepted acknowledgement with `fsync` **before** replying; holds the failure model, storage attestation, cut times (its own clock), results, recoveries and the stop marker. Operator commands: `create-run`, `attest`, `cut`, `confirm-cut`, `status` |
-| `gateway.mjs` | The machine under test, `gateway` container | The harness's only way out: forwards TCP to one fixed address, the recorder |
+| `gateway.mjs` | The machine under test, `gateway` container | The harness's only way out: forwards TCP to one fixed address, the recorder. Port 8788 reports whether the gateway itself can reach a fixed list of destinations it must not reach |
 | `p7.mjs` | The machine under test, `harness` container | `boot-probe` (entrypoint), `netcheck`, `preflight` (read-only), `init` (once, on empty volumes; never wipes), `adopt` (a run that continues an earlier one), `run`, `check`, `recover` |
 | `firewall/` | The machine under test, on the host | `p7-firewall.sh` and its README: the mandatory host firewall. **Prepared, never applied** |
 | `host-evidence.sh` | The machine under test, on the host, as root | OS, kernel, virtualisation, mounts, devices, write cache, FUA, SMART, kernel log, PostgreSQL log. Read-only. **Not yet exercised on a real Linux machine** (required before qualifying cycles) |
@@ -52,6 +53,12 @@
   - **The test machine's own bridge address answers the harness.** Probes there came back `refused`: the host replied, and only the lack of a listener on those ports stopped the connection. A service listening on all addresses of the host (for example sshd) would be reachable.
   - **The gateway container and the host keep general outbound access.** The gateway runs fixed code that connects only to the recorder, but Docker doesn't confine it.
 - **A host firewall on the test machine is therefore mandatory before qualifying cycles** (`firewall/README.md`): drop traffic from the harness networks to the host, and allow the gateway only the recorder's address and port. In a `POWER-CUT` or `VM-CRASH` run `netcheck` is strict and fails while the host still answers on the bridge address. Nothing has verified this on a real Linux machine yet.
+- **Strict mode is an allowlist and fails closed** (`lib/netcheck.mjs`):
+  - A destination counts as blocked only if the probe timed out or the network said unreachable. `refused` means the packet arrived; any other answer is a failure too.
+  - The harness must find exactly its two bridge addresses (`p7db`, `p7gw`) and probe both. None, one, or an unexpected third fails.
+  - **The gateway checks its own way out.** Only the gateway has a route, so only it can show that the firewall limits it to the recorder. On port 8788 (internal network only) it probes a fixed list: four internet addresses, two other ports of the recorder host, and its own bridge addresses. It takes no input, so it can't be asked to connect anywhere. Strict mode fails if any of those is reachable, or if the list comes back empty, incomplete or not at all.
+  - A smoke run only reports a host that answers and an open gateway; on Docker Desktop both are expected.
+- **Tested with fake probes only** (`test/netcheck.test.mjs`). The gateway's self-check and the strict rules have never run in a container or against a real firewall.
 
 ## The rules it enforces
 
@@ -75,13 +82,31 @@
   - The new run's count starts at zero, at its own cycle 1. Claims an earlier clearance accepted as never committed carry over, so every history comparison still covers the whole journal.
   - A run that **failed**, or whose recovery failed, can never be continued. Nor can a run that isn't stopped. `init` refuses a non-empty database, and nothing in the harness wipes volumes.
   - No run starts a cycle on volumes it neither initialised nor adopted: the recorder refuses the first start otherwise.
-- **Workload sizing.** `run` needs `--max-seconds` (the longest planned time to the cut) and a claim rate: `--rate`, or `--target-rate` (a throttle), or the rate measured in the previous cycle. The pool per worker is `rate x max-seconds x headroom`, with headroom at least 2. A smaller `--pool` is refused before anything is seeded or started. `--workers` (1 to 12) and a second process (`--proc b`) set the burst size.
+- **Workload sizing.** `run` needs `--max-seconds` (the longest planned time to the cut) and a claim rate: `--rate`, or `--target-rate` (a throttle), or (smoke and supplementary runs only) the rate measured in the previous cycle. A `POWER-CUT` cycle always runs the workload of its readiness record. The pool per worker is `rate x max-seconds x headroom`, with headroom at least 2. A smaller `--pool` is refused before anything is seeded or started. `--workers` (1 to 12) and a second process (`--proc b`) set the burst size.
   - `recorder.mjs cut` refuses a delay that could run past the time the pools were sized for.
   - **Clearance envelope:** clearance was validated up to 1,000,000 affected actions (Phase 0.5), and every waiting APPROVED action is affected. `run` refuses to seed past that; use `--target-rate`, fewer workers or a shorter `--max-seconds`.
   - **Retiring unclaimed actions (approved housekeeping):** at the end of `recover`, the cycle's synthetic actions that were never claimed (`attempts = 0`, still APPROVED) become PROPOSED. It runs in one transaction that proves every other action of the cycle and every audit row is unchanged, checks the journal file is byte-identical, and confirms a second pass finds nothing. If it fails it rolls back, nothing is reported to the recorder, and the cycle stays not-recovered until `recover` is run again.
 - **`check` can be retried** without overwriting anything: a saved result is re-sent as it is, and a new attempt gets its own directory.
 - **Power-cut timing.** `confirm-cut` records the operator's attested time or interval (`--attested-from`, `--attested-to`). It is labelled an attestation everywhere; `independentlyConfirmed` is always false.
 - **Evidence** is write-once. Each cycle records: run and cycle ids, failure model, cut-request time, the bounds on the cut (last durable acknowledgement, first contact afterwards), last journal and database sequence, boot time, when PostgreSQL started and became reachable, verification and recovery times, quarantine and clearance results, and the verdict with reasons. The cut itself is **not independently observed**; the operator's confirmation is recorded as an attestation.
+
+## The recorder directory
+
+Everything the recorder knows is in one directory: every run's record and acknowledgements, the keys, the volume registry and the recorder's identity. **Use one recorder directory for the whole physical experiment**, from the smoke rehearsal to the last qualifying cycle.
+
+Procedure (recorder host):
+
+1. **Create it once, on purpose.** `recorder.mjs serve --new-directory ...` and the first `create-run --new-directory ...`. Without that flag every command refuses a missing or empty directory, so a wrong path or an unmounted disk can't silently start a recorder with no history.
+2. **Back it up before testing, to independent storage** (another disk or machine, not the same filesystem): after the smoke rehearsal and before the first qualifying `create-run`. For example `cp -a <recorder-dir> <backup>` or `rsync -a`. The directory contains the run keys (`keys/`, mode 0600): keep the backup on local media under the same care, with permissions preserved, and never in a shared or synced folder.
+3. **Verify the backup before the first qualifying run:** `node recorder.mjs verify-dir --dir <recorder-dir> --backup <backup>` must exit 0. It compares every file byte for byte and also checks the identity, the registry and that every run has its key. It prints no key.
+4. **During the series,** take further backups whenever you like and check that history was only added to: `verify-dir --dir <recorder-dir> --backup <backup> --allow-growth` accepts new files and longer ledgers, and reports any earlier record that changed or disappeared.
+5. **Stop if** `verify-dir` exits 1, if a command says the directory is missing or empty, or if any command answers `volume_registry_inconsistent`, `recorder_identity_missing` or `readiness_stale: recorder...`. Do not start a cycle, do not create a new directory, and **do not copy the backup over the live directory**: preserve both as they are and report. The harness never resets, rebuilds or recreates the registry or the identity.
+
+Limits, stated plainly:
+
+- **A new, empty recorder directory has no history.** The registry and the readiness records protect a series only inside the directory that holds them. That is why the directory is never created implicitly and why the procedure above exists.
+- **Removing a run's own record together with its registry line is not detected by the recorder.** Only the verified backup shows it (`verify-dir --backup ... --allow-growth` reports the missing files and the changed registry).
+- A directory that holds runs but no identity (one that predates the identity, such as the development smoke directory, or one whose `recorder-id.json` was removed) is never given a new identity. Smoke runs still work there; no qualifying run can be created or made ready in it.
 
 ## Run types never share state
 
@@ -101,7 +126,7 @@ How "fresh and dedicated" is enforced:
 - **Never run `docker compose down -v`, `docker volume rm`, `docker volume prune` or `docker system prune` on the test machine.** In the directory of `compose.yml`, a bare `down -v` removes the volumes of `opspilot-m16-p7`: the qualifying run's database and journal.
 - **Never answer yes if Compose offers to recreate a volume, and never pass `-y`/`--yes` to `docker compose up`.** Compose makes that offer when a volume's definition differs from the file, and recreating deletes the data. The volume definitions in `compose.yml` are fixed for that reason; `compose.smoke.yml` is for the smoke project only.
 - **The recorder never reads a damaged registry as "no history".** Every run that claimed volumes must still be in `volumes.jsonl` with the cluster its own ledger recorded. If the file was deleted, truncated, replaced or edited, every claim, start, adopt, volume check and `create-run` is refused (`volume_registry_inconsistent`) until the original file is restored; the recorder never rebuilds it.
-- **Limits:** the registry knows only runs recorded in the same recorder directory (a recorder started on a new, empty directory has no history: use one recorder directory for everything on a test machine); removing a run's own record together with its registry line isn't detected; beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
+- **Limits:** the registry knows only runs recorded in the same recorder directory, and removing a run's own record together with its registry line isn't detected (see "The recorder directory" for the procedure that covers both); beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
 - **A start is vetted before anything is seeded,** so a refused start leaves the database untouched and can be retried.
 
 ## Removing smoke state
@@ -150,11 +175,38 @@ The operator fills `storage-evidence.template.json` and passes it to `create-run
 
 FUA not advertised is accepted only with observed flushes **and** the vendor documentation.
 
-## Preflight (read-only)
+## Preflight and the readiness record
 
 `docker compose exec -T harness node p7.mjs preflight --max-seconds <s> --rate <r> [--workers n] [--procs n]`
 
-It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It changes nothing on the test machine, seeds nothing, and **never starts a workload or a cut**. On the recorder its only trace is the log of the two unauthenticated probes it sends on purpose. `READY_FOR_OPERATOR_REVIEW` is not approval, and it has never been produced end to end: that needs the real host.
+It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It changes nothing on the test machine, seeds nothing, and **never starts a workload or a cut**. `READY_FOR_OPERATOR_REVIEW` is not approval, and it has never been produced end to end: that needs the real host.
+
+**What it writes, all of it on the recorder:** the log of the unauthenticated probes it sends on purpose and, only when every check passes, one **readiness record** in the run's own ledger.
+
+### The readiness record
+
+A `POWER-CUT` cycle starts only while the configuration is exactly the one a successful preflight recorded for that run. The recorder refuses the start otherwise (`readiness_missing`, or `readiness_stale: <what changed>`), before anything is seeded.
+
+| Bound | From | Changes when |
+|---|---|---|
+| Run id and run type; the run it continues, if any | Recorder | Never: a record belongs to one run |
+| Database cluster system identifier | Test machine | Other database volume or a new cluster |
+| Journal volume identity (digest of the marker `init` wrote, and the installation id) | Test machine | Other journal volume |
+| Recorder identity (`recorder-id.json`) | Recorder | Other or copied recorder directory without its identity |
+| Registry state (`volumes.jsonl`, byte for byte) | Recorder | **Any** later claim on this recorder, or any edit |
+| Storage evidence digest | Recorder | The run record's storage evidence was altered |
+| PostgreSQL configuration (`fsync`, `full_page_writes`, `synchronous_commit`, `wal_sync_method`, `data_checksums`, server version) | Test machine | Any of them |
+| Firewall as observed: the destinations the strict network check probed (they carry the bridge addresses), all passed | Test machine | Bridge addresses or the probe set change; any probe fails |
+| What the operator attested, including `firewall-verified-on-host` and its evidence text | Recorder | Any attestation recorded again |
+| Workload: processes, workers per process, longest time to the cut, headroom, rate, throttle, pool per worker | Test machine | Any of them |
+
+- **Order:** `init` (or `adopt`) and the three attestations come first; then `preflight` records. A preflight before `init` can only report; it says to run it again afterwards.
+- **The recorder checks its own half itself** and re-checks the reported half. A bare statement that the machine is ready is never stored.
+- **One run only.** A record can't be used by another run, on other volumes, or by the run that continues the series after an INCONCLUSIVE cycle: that run needs its own attestations and its own preflight. A record copied into another run's ledger never matches.
+- **A qualifying cycle runs the recorded workload.** `run` takes it from the record; the flags may be left out, and a flag that differs is refused. The recorder also refuses a start with another worker count or a process beyond the recorded number (`--procs 2` allows `--proc a` and `--proc b`).
+- **No new record once the first cycle has started.** Undoing the change makes the record valid again. A change that can't be undone ends the run as a qualifying series: start a new run on fresh volumes.
+- **Because the registry is bound byte for byte, no other run may claim volumes on that recorder during the series** (no smoke or supplementary run on other volumes in between).
+- **Not bound, on purpose:** sequence heads, boot ids, WAL positions, times and probe outcomes (a timeout and "unreachable" both mean blocked). Whether the bound values really stay the same across a real power cut and reboot has not been observed; every start of a smoke or supplementary run notes the binding it ran on (`bindingDigest`, unenforced), so the host rehearsal will show it.
 
 | Check | Blocked when |
 |---|---|
@@ -167,14 +219,14 @@ It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and e
 | Workload sizing | No rate or duration given, the pool is too small, or it exceeds the clearance envelope |
 | Operator attestations | Any of `firewall-verified-on-host`, `manual-cut-rehearsed-on-host`, `host-evidence-reviewed` is missing |
 
-The attestations are recorded on the recorder host with `recorder.mjs attest --run <run> --item <item> --evidence "<what was done, when, where the output is>"`. They are the operator's statements, labelled as such; the recorder can't observe them. The recorder also refuses a `POWER-CUT` cycle start without all three.
+The attestations are recorded on the recorder host with `recorder.mjs attest --run <run> --item <item> --evidence "<what was done, when, where the output is>"`. They are the operator's statements, labelled as such; the recorder can't observe them. The recorder also refuses a `POWER-CUT` cycle start, and a readiness record, without all three.
 
 On Docker Desktop, preflight is always BLOCKED: the run isn't `POWER-CUT`, there is no storage evidence, the host answers on the bridge addresses, and nothing is attested.
 
 ## One cycle (physical power cut)
 
 ```bash
-# Recorder host, once:
+# Recorder host, once (the same directory as the smoke rehearsal; see "The recorder directory": back it up and verify the backup first):
 node recorder.mjs serve --dir <recorder-dir> --host <LAN address> --port 8787
 node recorder.mjs create-run --dir <recorder-dir> --run p7-1 --failure-model POWER-CUT \
   --storage-json <filled storage-evidence.template.json> --machine "<model, disk>"
@@ -184,11 +236,12 @@ export P7_RUN=p7-1 P7_RECORDER_TARGET=<recorder address>:8787 P7_KEY_FILE_HOST=<
 docker compose up -d --wait && sudo ./host-evidence.sh p7-1 baseline --flush-probe
 # apply and verify the host firewall (firewall/README.md)
 # record the three operator attestations (recorder host), then:
-docker compose exec -T harness node p7.mjs preflight --max-seconds 660 --rate <r>   # must print READY_FOR_OPERATOR_REVIEW
 docker compose exec -T harness node p7.mjs init
-# Each cycle N:
-docker compose exec -T harness node p7.mjs run --cycle N --proc a --workers 2 --max-seconds 660 --rate <claims/s per worker>
-#   bursts: also --proc b in a second shell. From cycle 2 the rate may be left out: the previous cycle's measured rate is used
+docker compose exec -T harness node p7.mjs preflight --procs 2 --workers 2 --max-seconds 660 --rate <claims/s per worker>
+#   must print READY_FOR_OPERATOR_REVIEW with "readiness": { "recorded": true }. Review it; it is not approval.
+# Each cycle N (the workload is the recorded one; nothing else is accepted):
+docker compose exec -T harness node p7.mjs run --cycle N --proc a
+#   bursts: also --proc b in a second shell
 node recorder.mjs cut --dir <recorder-dir> --run p7-1 --cycle N --min-seconds 5 --max-seconds 600 \
   [--command-json '["<plug command>", "..."]']                                    # recorder host
 # ... power returns, the machine boots, the stack restarts by itself ...

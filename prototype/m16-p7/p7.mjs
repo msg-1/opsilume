@@ -19,12 +19,13 @@ import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
 import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
 import { measuredRate, sizePool, sizePlan } from './lib/sizing.mjs';
 import { preflightVerdict } from './lib/preflight.mjs';
+import { runNetcheck } from './lib/netcheck.mjs';
+import { CLEARANCE_ENVELOPE, testBinding } from './lib/readiness.mjs';
 import { storageProblems } from './lib/verdict.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
 const EVIDENCE = process.env.P7_EVIDENCE_DIR ?? '/evidence';
-const CLEARANCE_ENVELOPE = 1_000_000;
 const pad = (n) => String(n).padStart(4, '0');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lastLine = (e) => String(e?.message ?? e).split('\n').filter(Boolean).at(-1)?.slice(0, 200);
@@ -62,6 +63,9 @@ function markerProblem(j, pgSystemId) {
     return m.pgSystemId === pgSystemId ? null : `the journal volume belongs to database cluster ${m.pgSystemId}, not ${pgSystemId}`;
   } catch { return 'the journal volume has no P7 volume marker'; }
 }
+
+/** sha256 of the marker `init` wrote into the journal volume: the journal volume's identity. '' when there is none. */
+const markerSha = (j) => { try { return sha256File(path.join(j.dir, MARKER)); } catch { return ''; } };
 
 const RETIRE_NOTE = 'p7: unclaimed, retired after its cycle';
 /**
@@ -165,40 +169,15 @@ function tcp(host, port, ms = 1500) {
  * recorder host directly, the host or bridge gateways). `refused` from an internet address would mean a route exists.
  */
 export async function netcheck(run, { strict = false } = {}) {
-  const probes = [];
-  const add = (name, expect, outcome, ok, note) => probes.push({ name, expect, outcome, ok, ...(note ? { note } : {}) });
-  const NAME = 'the name does not resolve here; this shows no DNS, it is not a routing test';
-  try { await call('GET', `/runs/${run}`); add('recorder through the gateway, authenticated', 'reachable', 'authenticated', true); } catch (e) { add('recorder through the gateway, authenticated', 'reachable', lastLine(e), false); }
-  const unsigned = await fetch(`${process.env.P7_RECORDER_URL}/runs/${run}`, { signal: AbortSignal.timeout(5000) }).then((r) => r.status, (e) => `error:${e.cause?.code ?? e.name}`);
-  add('recorder without authentication', 'rejected (401)', unsigned, unsigned === 401);
-  const d = await tcp('db', 5432);
-  add('postgresql (db:5432, internal network)', 'reachable', d, d === 'connected');
-  const [th, tp] = [(process.env.P7_RECORDER_TARGET ?? '').replace(/:\d+$/, ''), Number(/:(\d+)$/.exec(process.env.P7_RECORDER_TARGET ?? '')?.[1])];
-  if (th && tp) { const o = await tcp(th, tp); add(`recorder host directly (${th}:${tp}), bypassing the gateway`, 'blocked', o, o !== 'connected', /EAI_AGAIN|ENOTFOUND/.test(o) ? NAME : undefined); }
-  for (const [h, port] of [['1.1.1.1', 443], ['8.8.8.8', 53], ['9.9.9.9', 443], ['140.82.112.3', 443]]) {
-    const o = await tcp(h, port);
-    add(`internet ${h}:${port}`, 'blocked', o, o !== 'connected' && o !== 'refused');
-  }
-  const r = await dns.lookup('example.com').then((x) => `resolved:${x.address}`, (e) => `error:${e.code}`);
-  add('external DNS (example.com)', 'blocked', r, !r.startsWith('resolved'));
-  for (const port of [22, 80, 443, 5432]) { const o = await tcp('gateway', port); add(`gateway:${port} (only 8787 is forwarded)`, 'blocked', o, o !== 'connected'); }
-  // Host and bridge gateways: the first address of every subnet this container is on.
-  const hosts = new Set();
-  for (const ifs of Object.values(os.networkInterfaces())) for (const i of ifs ?? []) if (i.family === 'IPv4' && !i.internal) {
-    const ip = i.address.split('.').map(Number), mask = i.netmask.split('.').map(Number);
-    hosts.add(ip.map((b, k) => (k === 3 ? (b & mask[k]) + 1 : b & mask[k])).join('.'));
-  }
-  // `refused` here means the HOST answered: the harness can reach the test machine's own bridge address, and only the
-  // absence of a listener on that port stopped it. A qualifying run therefore requires a host firewall that drops this
-  // traffic (strict: anything but a timeout or an unreachable error fails). A smoke run only reports it.
-  let hostAnswers = false;
-  for (const h of ['host.docker.internal', ...hosts]) for (const port of [22, 80, 443, 2375, 2376, 5432, 8787, tp].filter(Boolean)) {
-    const o = await tcp(h, port, 1000);
-    if (o === 'refused') hostAnswers = true;
-    add(`host or bridge ${h}:${port}`, strict ? 'dropped by the host firewall' : 'no service', o, o !== 'connected' && !(strict && o === 'refused'), /EAI_AGAIN|ENOTFOUND/.test(o) ? NAME : o === 'refused' ? 'the host answered: reachable, no listener on this port' : undefined);
-  }
-  if (strict && hosts.size === 0) add('host or bridge addresses', 'at least one probed', 'none found', false, 'no bridge address was probed, so the host firewall was not observed');
-  return { ok: probes.every((p) => p.ok), strict, hostAnswersOnBridge: hostAnswers, probes, at: new Date().toISOString(), bootId: bootId() };
+  const r = await runNetcheck({
+    strict, tcp, interfaces: os.networkInterfaces(), target: process.env.P7_RECORDER_TARGET,
+    resolves: (name) => dns.lookup(name).then((x) => `resolved:${x.address}`, (e) => `error:${e.code}`),
+    authenticated: () => call('GET', `/runs/${run}`).then(() => null, (e) => lastLine(e)),
+    unsigned: () => fetch(`${process.env.P7_RECORDER_URL}/runs/${run}`, { signal: AbortSignal.timeout(5000) }).then((x) => x.status, (e) => `error:${e.cause?.code ?? e.name}`),
+    // The gateway's self-check port, on the internal network. It takes no input and probes a fixed list.
+    egress: () => fetch('http://gateway:8788/', { signal: AbortSignal.timeout(60_000) }).then((x) => { if (!x.ok) throw new Error(`gateway self-check: HTTP ${x.status}`); return x.json(); }),
+  });
+  return { ...r, at: new Date().toISOString(), bootId: bootId() };
 }
 async function cmdNetcheck(a, { quiet = false } = {}) {
   const st = await rec('GET', `/runs/${a.run}`);
@@ -237,7 +216,7 @@ async function cmdPreflight(a) {
       const js = j.state({ forceFull: true });
       const problem = trustProblem(row, js) ?? markerProblem(j, vol.pgSystemId);
       const c = f.run.continues?.finalState;
-      Object.assign(f.volume, { head: row?.journal_seq ?? null, journalStatus: js.status, trusted: !problem && ['ok', 'empty'].includes(js.status), problem,
+      Object.assign(f.volume, { installationId: row?.installation_id ?? '', markerSha256: markerSha(j), head: row?.journal_seq ?? null, journalStatus: js.status, trusted: !problem && ['ok', 'empty'].includes(js.status), problem,
         matchesPredecessor: !!c && row?.installation_id === c.installationId && row?.journal_seq === c.head && row?.head_hash === c.headHash });
     }
   } catch (e) {
@@ -250,7 +229,24 @@ async function cmdPreflight(a) {
   const rate = a['target-rate'] ? Number(a['target-rate']) : a.rate ? Number(a.rate) : NaN;
   f.sizing = sizePlan({ workers: Number(a.workers ?? 1), procs: Number(a.procs ?? 1), envelope: CLEARANCE_ENVELOPE, ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
   const verdict = preflightVerdict(f);
-  console.log(JSON.stringify({ ...verdict, facts: f, at: new Date().toISOString() }, null, 1));
+  // The readiness record. Nothing is written on the test machine; when (and only when) everything above is in place,
+  // the configuration is sent to the recorder, which checks its own half and stores the record in this run's ledger.
+  // Every qualifying cycle start is then refused unless the configuration is still exactly this one.
+  const test = testBinding({ pgSystemId: f.volume.pgSystemId, journal: { markerSha256: f.volume.markerSha256, installationId: f.volume.installationId }, settings: f.settings, netcheck: n,
+    workload: { procs: f.sizing.procs, workers: f.sizing.workers, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), ratePerWorker: rate, targetRate: a['target-rate'] ? Number(a['target-rate']) : null, poolPerWorker: f.sizing.pool } });
+  let readiness = { recorded: false, why: 'not sent: the checks above are not all in place' };
+  if (verdict.status === 'READY_FOR_OPERATOR_REVIEW') {
+    try {
+      const r = await rec('POST', `/runs/${a.run}/readiness`, { test });
+      readiness = { recorded: true, digest: r.digest };
+    } catch (e) {
+      const why = e.data?.error ?? lastLine(e);
+      readiness = { recorded: false, why };
+      verdict.status = 'BLOCKED';
+      verdict.reasons.push(`readiness record: the recorder did not record it (${why})${/not_initialised|not_adopted/.test(why) ? `: run "${f.run.continues ? 'adopt' : 'init'}", then preflight again` : ''}`);
+    }
+  }
+  console.log(JSON.stringify({ ...verdict, readiness, binding: { test }, facts: f, at: new Date().toISOString() }, null, 1));
   process.exitCode = verdict.status === 'READY_FOR_OPERATOR_REVIEW' ? 0 : 6;
 }
 
@@ -328,15 +324,27 @@ async function cmdAdopt(a) {
  * ambiguous claim is never retried or acknowledged.
  */
 async function cmdRun(a) {
+  const st = await rec('GET', `/runs/${a.run}`);
+  // A qualifying cycle runs the workload its readiness record names, and no other: the flags may be left out, and a
+  // flag that differs is refused. (Other run types size the pool from the flags or the previous cycle's measured rate.)
+  if (st.run.failureModel === 'POWER-CUT') {
+    const w = st.readiness?.workload;
+    if (!w) throw new Error('refused: this run has no readiness record. Run "preflight" first (after init or adopt, with the operator attestations recorded)');
+    const recorded = { workers: w.workers, 'max-seconds': w.maxSeconds, headroom: w.headroom, pool: w.poolPerWorker, rate: w.targetRate === null ? w.ratePerWorker : undefined, 'target-rate': w.targetRate ?? undefined };
+    for (const [k, v] of Object.entries(recorded)) {
+      if (a[k] !== undefined && Number(a[k]) !== v) throw new Error(`refused: --${k} ${a[k]} differs from the readiness record (${v ?? 'not used there'}). A qualifying cycle runs the recorded workload`);
+      if (v === undefined) delete a[k]; else a[k] = String(v);
+    }
+  }
   const cycle = Number(a.cycle);
   const workers = Number(a.workers ?? 1);
   const proc = a.proc ?? 'a';
   if (!/^[a-z]$/.test(proc) || !(workers >= 1 && workers <= 12)) throw new Error('bad --proc or --workers (1-12)');
-  const st = await rec('GET', `/runs/${a.run}`);
   if (st.stopped) throw new Error(`run is stopped: ${JSON.stringify(st.stopped)}`);
   const smokeCrash = a['smoke-crash-after-claim-append'];
   if (smokeCrash && st.run.failureModel !== 'HARNESS-SMOKE') throw new Error('--smoke-crash-after-claim-append is only for HARNESS-SMOKE runs');
-  if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('refused: network isolation not verified (see evidence/netcheck)');
+  const net = await cmdNetcheck(a, { quiet: true });
+  if (!net.ok) throw new Error('refused: network isolation not verified (see evidence/netcheck)');
   // Ask the recorder BEFORE seeding anything, so a refusal (e.g. the previous cycle was not recovered) leaves no trace
   // in the database and is not counted against the cycle.
   if (cycle > 1) {
@@ -377,7 +385,11 @@ async function cmdRun(a) {
   if (mp) throw new Error(`refused: ${mp}`);
   const prefix = `${runTag(a.run)}c${pad(cycle)}${proc}`;
   // The recorder vets the start (adoption, volumes, attestations, cycle order) BEFORE anything is seeded.
-  const startBody = { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() };
+  // The configuration this start runs on, for the recorder to compare with the readiness record (enforced for a
+  // POWER-CUT run; only noted for the others, so a rehearsal shows whether it stays the same across reboots).
+  const readiness = testBinding({ pgSystemId, journal: { markerSha256: markerSha(j0), installationId: row.installation_id }, settings: s, netcheck: net,
+    workload: { procs: st.readiness?.workload.procs ?? null, workers, maxSeconds: sizing.maxSeconds, headroom: sizing.headroom, ratePerWorker: rate, targetRate, poolPerWorker: pool } });
+  const startBody = { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, readiness, bootId: bootId() };
   await rec('POST', `/runs/${a.run}/cycles/${cycle}/start`, { ...startBody, vet: true });
   // Clearance (inspect -> clear) was validated up to 1,000,000 affected actions (Phase 0.5). Every APPROVED action is
   // affected, so the actions waiting at any moment must stay inside that envelope.

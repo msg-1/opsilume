@@ -11,7 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
-import { createRecorder, createRun, cutRefusal, cycleView, registerVolume, registryProblem, runStore, volumeOf, volumeOwner } from '../recorder.mjs';
+import { compareBackup, createRecorder, createRun, cutRefusal, cycleView, dirReport, dirState, recorderBindingOf, recorderId, registerVolume, registryProblem, runStore, volumeOf, volumeOwner } from '../recorder.mjs';
+import { bindingDiff, digestOf, testBinding, vetTestBinding } from '../lib/readiness.mjs';
 import { REQUIRED_ATTESTATIONS } from '../lib/preflight.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-recorder-test-'));
@@ -20,12 +21,25 @@ const STORAGE = { driveModel: 'Example SSD 1TB', firmware: '1B2QEXM7', controlle
 const FS = { installationId: 'inst-1', head: 9, headHash: 'ab'.repeat(32) };
 /** A run whose volumes were initialised (what `p7.mjs init` reports after creating the schema on an empty database). */
 const pg = (run) => String(7000000000000000000n + BigInt(`0x${createHash('sha256').update(run).digest('hex').slice(0, 12)}`)); // a system identifier per test run
+/** What the test machine reports for a ready configuration (p7.mjs gathers these facts read-only). */
+const FACTS = (pgSystemId, workers = 1, over = {}) => ({
+  pgSystemId, journal: { markerSha256: 'aa'.repeat(32), installationId: 'inst-1' },
+  settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync', data_checksums: 'off', server_version: '16.14' },
+  netcheck: { strict: true, ok: true, bridges: ['172.22.0.1', '172.23.0.1'], probes: [{ name: 'host or bridge 172.22.0.1:22' }, { name: 'host or bridge 172.23.0.1:22' }] },
+  workload: { procs: 2, workers, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 120000 }, ...over,
+});
+const TB = (pgSystemId, workers, over) => testBinding(FACTS(pgSystemId, workers, over));
+/** Writes the readiness record a successful preflight leaves in the run's ledger (the endpoint itself has its own tests). */
+const makeReady = (dir, run, workers = 1, pgSystemId = pg(run)) => {
+  const binding = { test: TB(pgSystemId, workers), recorder: recorderBindingOf(dir, run) };
+  runStore(dir, run).event({ cycle: null, kind: 'readiness', binding, digest: digestOf(binding) });
+};
 const mk = (dir, o) => {
   const r = createRun(dir, o);
   registerVolume(dir, { pgSystemId: pg(o.run), run: o.run, failureModel: o.failureModel });
   const st = runStore(dir, o.run);
   st.event({ cycle: null, kind: 'initialised', detail: 'test' });
-  if (o.failureModel === 'POWER-CUT') for (const item of REQUIRED_ATTESTATIONS) st.event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' });
+  if (o.failureModel === 'POWER-CUT') { for (const item of REQUIRED_ATTESTATIONS) st.event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' }); }
   return r;
 };
 const T = (run, rest) => `${runTag(run)}${rest}`; // action ids carry the run's tag
@@ -42,6 +56,13 @@ const keyOf = (dir, run) => keyFromHex(fs.readFileSync(runStore(dir, run).keyFil
 const callerFor = (base, dir, run, key = keyOf(dir, run)) => {
   const c = makeClient({ baseUrl: base, key, run });
   return async (method, p, body) => {
+    // A start reports the test machine's current configuration; these tests report the ready one unless they say otherwise.
+    // Like the operator, they run "preflight" right before the first cycle of a qualifying run (once it is attested).
+    if (/\/start$/.test(p) && body && body.readiness === undefined) {
+      const st = runStore(dir, run), ev = st.events();
+      if (st.run().failureModel === 'POWER-CUT' && !ev.some((e) => e.kind === 'readiness' || e.kind === 'cycle_start') && REQUIRED_ATTESTATIONS.every((i) => ev.some((e) => e.kind === 'attestation' && e.item === i))) makeReady(dir, run, body.workers, body.pgSystemId);
+      body = { ...body, readiness: TB(body.pgSystemId, body.workers) };
+    }
     try { const r = await c(method, p, body); return { status: 200, data: r.data }; } catch (e) { return { status: e.status, data: e.data, unauthenticated: e.unauthenticated }; }
   };
 };
@@ -143,12 +164,12 @@ describe('recorder protocol and state machine', () => {
   });
 
   test('cycle ids: one per cycle, shared by processes; a process cannot start twice; cycles are consecutive', async () => {
-    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 0 })).status, 409);
+    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 0 })).status, 409);
     const a = await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 0, bootId: 'boot-1' });
     assert.match(a.data.cycleId, /^[0-9a-f]{32}$/);
     cycleId = a.data.cycleId;
-    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 0 })).data.error, 'process_already_started_in_cycle');
-    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'b', workers: 1, dbHead: 3 })).data.cycleId, cycleId);
+    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 0 })).data.error, 'process_already_started_in_cycle');
+    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'b', workers: 2, dbHead: 3 })).data.cycleId, cycleId);
   });
 
   test('two processes and three workers acknowledging concurrently: all accepted, each stream in order', async () => {
@@ -208,7 +229,7 @@ describe('recorder protocol and state machine', () => {
     const result = { cycleId, verdict: 'PASS', quarantineRequired: true, uncommitted: { seq: 9, actionId: act('a', 1, 9) }, needsRecovery: ['clear'] };
     assert.equal((await call('POST', '/runs/p/cycles/1/result', result)).status, 200);
     assert.equal(cycleView(runStore(dir, 'p'), 1).final, 'PENDING_RECOVERY');
-    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
+    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
     assert.equal((await call('POST', '/runs/p/event', { cycle: 1, cycleId, kind: 'quarantine_observed', detail: 'database head 8 is behind the journal head 9' })).status, 200);
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: false })).data.error, 'clearance_not_shown');
@@ -221,13 +242,13 @@ describe('recorder protocol and state machine', () => {
   });
 
   test('decision 1: an INCONCLUSIVE cycle in a qualifying run stops it and breaks the series', async () => {
-    const c2 = (await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
+    const c2 = (await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 9 })).data.cycleId;
     assert.equal((await call('POST', '/runs/p/cycles/2/result', { cycleId: c2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
+    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 9 })).data.error, 'run_stopped');
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId })).data.error, 'run_stopped', 'only the inconclusive cycle may still be recovered');
     assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { cycleId: c2 })).data.error, 'final_state_missing');
     assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { finalState: FS, cycleId: c2 })).status, 200, 'so that a new run can continue this state');
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
+    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
     const st = (await call('GET', '/runs/p')).data;
     assert.match(st.stopped.reason, /series broken/);
     assert.equal(st.stopped.kind, 'inconclusive');
@@ -563,13 +584,13 @@ describe('start vetting and operator commands', () => {
   after(() => srv.close());
 
   test('create-run --storage-json: the unfilled template is refused with every reason; a filled one is accepted', () => {
-    const r = run('create-run', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', template);
+    const r = run('create-run', '--new-directory', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', template);
     assert.notEqual(r.status, 0);
     assert.match(r.stderr, /driveModel is missing or unknown[\s\S]*vendorDoc is missing[\s\S]*writeCache must be/);
     assert.ok(!fs.existsSync(path.join(dir, 'keys', 'pc.key')));
     const filled = path.join(tmp, 'storage-filled.json');
     fs.writeFileSync(filled, JSON.stringify({ ...JSON.parse(fs.readFileSync(template, 'utf8')), ...STORAGE }));
-    const ok = run('create-run', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', filled);
+    const ok = run('create-run', '--new-directory', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', filled);
     assert.equal(ok.status, 0, ok.stderr);
     const out = JSON.parse(ok.stdout);
     assert.equal(out.run.storage.firmware, STORAGE.firmware);
@@ -591,6 +612,7 @@ describe('start vetting and operator commands', () => {
     assert.equal((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data.error, 'not_initialised');
     assert.equal((await call('POST', '/runs/pc/event', { kind: 'volume_claimed', volume: { pgSystemId: body.pgSystemId, publicRelations: 0, stateEntries: 0, walLsnBytes: 26_000_000 } })).status, 200);
     assert.equal((await call('POST', '/runs/pc/event', { kind: 'initialised', installationId: 'inst-pc' })).status, 200);
+    makeReady(dir, 'pc', 1, body.pgSystemId); // preflight, after init
     const eventsBefore = runStore(dir, 'pc').events().length;
     assert.deepEqual((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data, { vetted: true });
     assert.deepEqual((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data, { vetted: true }, 'vetting twice is fine');
@@ -690,5 +712,272 @@ describe('volume registry: preserved across runs, never reset, replaced or rebui
     assert.deepEqual([volumeOf(dir, 'pc1').pgSystemId, volumeOf(dir, 'pc1b')], [X2, null]);
     assert.deepEqual(frozen('pc1'), history, 'the original run\'s events, acknowledgements and results are unchanged');
     assert.equal(runStore(dir, 'pc1').acks(1).length, 1);
+  });
+});
+
+describe('readiness record: a qualifying cycle starts only on the exact configuration a preflight recorded', () => {
+  const dir = path.join(tmp, 'ready');
+  let srv;
+  const EMPTY = (id) => ({ pgSystemId: id, publicRelations: 0, stateEntries: 0, walLsnBytes: 25 * 1024 * 1024, serverVersion: '16.14' });
+  const S = { installationId: 'inst-1', head: 3, headHash: '9a'.repeat(32) };
+  const X = (n) => `75${String(n).padStart(17, '0')}`;
+  const post = (run, p, body) => callerFor(srv.base, dir, run)('POST', `/runs/${run}/${p}`, body);
+  const attest = (run) => { for (const item of REQUIRED_ATTESTATIONS) runStore(dir, run).event({ cycle: null, kind: 'attestation', item, evidence: `done for ${run}`, attestation: 'operator' }); };
+  // Every start below states its own `readiness` half, so the helper's automatic "preflight" never runs here.
+  const start = (run, id, over = {}, t = TB(id, 2)) => post(run, 'cycles/1/start', { pgSystemId: id, proc: 'a', workers: 2, dbHead: 0, vet: true, readiness: t, ...over });
+  /** claim, init, attest, then a real preflight record through the endpoint. */
+  async function ready(run, id, o = {}) {
+    createRun(dir, { run, failureModel: 'POWER-CUT', storage: STORAGE, ...o });
+    assert.equal((await post(run, 'event', { kind: 'volume_claimed', volume: EMPTY(id) })).status, 200);
+    assert.equal((await post(run, 'event', { kind: 'initialised', installationId: 'inst-1' })).status, 200);
+    attest(run);
+    const r = await post(run, 'readiness', { test: TB(id, 2) });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data;
+  }
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+
+  test('without a record a start is refused; the recorder records readiness only when it can confirm its own half', async () => {
+    createRun(dir, { run: 'q1', failureModel: 'POWER-CUT', storage: STORAGE });
+    assert.equal((await post('q1', 'readiness', { test: TB(X(1), 2) })).data.error, 'not_initialised');
+    await post('q1', 'event', { kind: 'volume_claimed', volume: EMPTY(X(1)) });
+    await post('q1', 'event', { kind: 'initialised', installationId: 'inst-1' });
+    assert.equal((await post('q1', 'readiness', { test: TB(X(1), 2) })).data.error, 'attestations_missing');
+    attest('q1');
+    assert.equal((await start('q1', X(1))).data.error, 'readiness_missing', 'ready facts at start are not a record');
+    const bad = {
+      'fsync, full_page_writes and synchronous_commit are not all on': { settings: { ...FACTS().settings, fsync: 'off' } },
+      'did not run in strict mode': { netcheck: { ...FACTS().netcheck, strict: false } },
+      'strict network check did not pass': { netcheck: { ...FACTS().netcheck, ok: false } },
+      'probed 1 bridge address\\(es\\), not 2': { netcheck: { ...FACTS().netcheck, bridges: ['172.22.0.1'] } },
+      'probed 0 bridge address': { netcheck: { ...FACTS().netcheck, bridges: [] } },
+      'network check has no probes': { netcheck: { ...FACTS().netcheck, probes: [] } },
+      'journal volume has no identity': { journal: { markerSha256: '', installationId: 'inst-1' } },
+      'workload: --workers must be a whole number': { workload: { ...FACTS('', 0).workload } },
+      'workload: pool 10 per worker is too small': { workload: { ...FACTS('', 2).workload, poolPerWorker: 10 } },
+      'workload: .*exceeds the 1000000': { workload: { ...FACTS('', 12).workload } },
+      'workload: ratePerWorker must be a positive number': { workload: { ...FACTS('', 2).workload, ratePerWorker: null } },
+      'workload: pool must be a positive integer': { workload: { ...FACTS('', 2).workload, poolPerWorker: null } },
+    };
+    for (const [why, over] of Object.entries(bad)) assert.match((await post('q1', 'readiness', { test: TB(X(1), over.workload?.workers ?? 2, over) })).data.error, new RegExp(`^readiness_not_ready: .*${why}`), why);
+    for (const junk of [undefined, null, 'READY', { status: 'READY_FOR_OPERATOR_REVIEW' }, []]) assert.match((await post('q1', 'readiness', { test: junk })).data.error, /^readiness_not_ready/, 'a bare claim of readiness is nothing');
+    assert.equal((await post('q1', 'readiness', { test: TB(X(9), 2) })).data.error, 'volume_differs_from_series');
+    assert.ok(!runStore(dir, 'q1').events().some((e) => e.kind === 'readiness'), 'no refused attempt left a record');
+    const rec = (await post('q1', 'readiness', { test: TB(X(1), 2) })).data;
+    assert.match(rec.digest, /^[0-9a-f]{64}$/);
+    const ev = runStore(dir, 'q1').events().filter((e) => e.kind === 'readiness');
+    assert.equal(ev.length, 1);
+    assert.deepEqual([ev[0].binding.recorder.run, ev[0].binding.recorder.failureModel, ev[0].binding.recorder.recorderId, ev[0].binding.test.pgSystemId], ['q1', 'POWER-CUT', recorderId(dir), X(1)]);
+    assert.deepEqual(ev[0].binding.recorder.attestations.items, [...REQUIRED_ATTESTATIONS].sort());
+    assert.equal(ev[0].digest, digestOf(ev[0].binding));
+    const status = (await callerFor(srv.base, dir, 'q1')('GET', '/runs/q1')).data;
+    assert.deepEqual([status.readiness.digest, status.readiness.workload.workers, status.readiness.workload.poolPerWorker], [rec.digest, 2, 120000]);
+    assert.deepEqual((await start('q1', X(1))).data, { vetted: true });
+    assert.match((await start('q1', X(1), { vet: undefined })).data.cycleId, /^[0-9a-f]{32}$/);
+    assert.equal(runStore(dir, 'q1').events().find((e) => e.kind === 'cycle_start').bindingDigest, rec.digest, 'the cycle records which readiness record it started under');
+    assert.equal((await post('q1', 'readiness', { test: TB(X(1), 2) })).data.error, 'readiness_only_before_the_first_cycle');
+  });
+
+  test('any change to the bound configuration invalidates the record, naming what changed; undoing the change restores it', async () => {
+    await ready('q2', X(2));
+    const stale = async (over, paths, workers = 2) => {
+      const r = await start('q2', X(2), { workers }, TB(X(2), workers, over));
+      assert.match(r.data.error ?? 'accepted', new RegExp(`^readiness_stale: ${paths}$`), JSON.stringify(over));
+      assert.deepEqual((await start('q2', X(2))).data, { vetted: true }, 'the recorded configuration is still accepted');
+    };
+    const F = FACTS(X(2), 2);
+    await stale({ journal: { markerSha256: 'bb'.repeat(32), installationId: 'inst-1' } }, 'test.journal.markerSha256');
+    await stale({ journal: { markerSha256: 'aa'.repeat(32), installationId: 'inst-2' } }, 'test.journal.installationId');
+    await stale({ settings: { ...F.settings, wal_sync_method: 'open_datasync' } }, 'test.postgresql.digest, test.postgresql.settings.wal_sync_method');
+    await stale({ settings: { ...F.settings, server_version: '16.15' } }, 'test.postgresql.digest, test.postgresql.settings.server_version');
+    await stale({ settings: { ...F.settings, data_checksums: 'on' } }, 'test.postgresql.digest, test.postgresql.settings.data_checksums');
+    await stale({ netcheck: { ...F.netcheck, bridges: ['172.22.0.1', '172.29.0.1'], probes: [{ name: 'host or bridge 172.22.0.1:22' }, { name: 'host or bridge 172.29.0.1:22' }] } }, 'test.firewall.bridges, test.firewall.digest');
+    await stale({ netcheck: { ...F.netcheck, probes: [...F.netcheck.probes, { name: 'one more destination' }] } }, 'test.firewall.digest, test.firewall.probes');
+    await stale({ workload: { ...F.workload, procs: 1 } }, 'test.workload.procs');
+    await stale({ workload: { ...F.workload, maxSeconds: 599 } }, 'test.workload.maxSeconds');
+    await stale({ workload: { ...F.workload, headroom: 2.5, poolPerWorker: 150000 } }, 'test.workload.headroom, test.workload.poolPerWorker');
+    await stale({ workload: { ...F.workload, ratePerWorker: 99 } }, 'test.workload.ratePerWorker');
+    await stale({ workload: { ...F.workload, poolPerWorker: 120001 } }, 'test.workload.poolPerWorker');
+    await stale({ workload: { ...F.workload, targetRate: 100 } }, 'test.workload.targetRate');
+    await stale({}, 'test.workload.workers', 3);
+    // A configuration that is no longer ready at all is refused as such, whatever the record says.
+    assert.match((await start('q2', X(2), {}, TB(X(2), 2, { settings: { ...F.settings, synchronous_commit: 'off' } }))).data.error, /^readiness_not_ready: fsync/);
+    assert.match((await start('q2', X(2), {}, TB(X(2), 2, { netcheck: { ...F.netcheck, ok: false } }))).data.error, /^readiness_not_ready: the strict network check did not pass/);
+    assert.equal((await start('q2', X(2), { readiness: undefined })).data.error ?? 'accepted', 'accepted', '(the helper supplies the recorded half when a test gives none)');
+    assert.match((await post('q2', 'cycles/1/start', { pgSystemId: X(2), proc: 'a', workers: 2, dbHead: 0, vet: true, readiness: null })).data.error, /^readiness_not_ready/, 'a start that reports nothing is refused');
+    assert.equal((await start('q2', X(9), {}, TB(X(9), 2))).data.error, 'volume_differs_from_series', 'another database cluster');
+    // The start itself must be the recorded workload: this many workers, one of the recorded processes.
+    assert.equal((await start('q2', X(2), { workers: 1 })).data.error, 'start_differs_from_ready_workload');
+    assert.equal((await start('q2', X(2), { proc: 'c' })).data.error, 'start_differs_from_ready_workload', 'two processes were recorded: a and b');
+    assert.deepEqual((await start('q2', X(2), { proc: 'b' })).data, { vetted: true });
+
+    // The recorder's own half. Each file is put back afterwards (a test may; an operator restores from the backup).
+    const edit = async (file, change, paths) => {
+      const original = fs.readFileSync(file);
+      fs.writeFileSync(file, change(original.toString()));
+      assert.match((await start('q2', X(2))).data.error ?? 'accepted', new RegExp(`^readiness_stale: ${paths}$`), file);
+      fs.writeFileSync(file, original);
+      assert.deepEqual((await start('q2', X(2))).data, { vetted: true }, 'restored');
+    };
+    await edit(path.join(dir, 'recorder-id.json'), (t) => t.replace(/"id": "[0-9a-f]{4}/, '"id": "0000'), 'recorder.recorderId');
+    await edit(path.join(runStore(dir, 'q2').root, 'run.json'), (t) => t.replace(STORAGE.firmware, 'OTHERFW1'), 'recorder.storageDigest');
+    await edit(path.join(dir, 'volumes.jsonl'), (t) => t.replace(/"at":"(\d{4})/, '"at":"1999'), 'recorder.registry.sha256');
+    // The registry is bound byte for byte: any later claim on this recorder, by any run, ends the validity for good.
+    createRun(dir, { run: 'q2-smoke', failureModel: 'HARNESS-SMOKE' });
+    assert.deepEqual((await start('q2', X(2))).data, { vetted: true }, 'creating a run does not touch the registry');
+    assert.equal((await post('q2-smoke', 'event', { kind: 'volume_claimed', volume: EMPTY(X(20)) })).status, 200);
+    assert.equal((await start('q2', X(2))).data.error, 'readiness_stale: recorder.registry.bytes, recorder.registry.sha256');
+    assert.equal((await post('q2', 'readiness', { test: TB(X(2), 2) })).status, 200, 'before the first cycle, a new preflight records the new state');
+    assert.deepEqual((await start('q2', X(2))).data, { vetted: true });
+    // An attestation recorded again (even the same words) is a change: what was attested is part of the record.
+    runStore(dir, 'q2').event({ cycle: null, kind: 'attestation', item: 'firewall-verified-on-host', evidence: 'done for q2', attestation: 'operator' });
+    assert.equal((await start('q2', X(2))).data.error, 'readiness_stale: recorder.attestations.digest');
+  });
+
+  test('a record is never usable by another run, on another volume, or by the run that continues the series', async () => {
+    const r3 = await ready('q3', X(3));
+    const event3 = fs.readFileSync(path.join(runStore(dir, 'q3').root, 'events.jsonl'), 'utf8').trim().split('\n').find((l) => JSON.parse(l).kind === 'readiness');
+    // q4: initialised and attested on its own volumes, but never made ready.
+    createRun(dir, { run: 'q4', failureModel: 'POWER-CUT', storage: STORAGE });
+    await post('q4', 'event', { kind: 'volume_claimed', volume: EMPTY(X(4)) });
+    await post('q4', 'event', { kind: 'initialised', installationId: 'inst-1' });
+    attest('q4');
+    assert.equal((await start('q4', X(4))).data.error, 'readiness_missing', 'q3 being ready says nothing about q4');
+    assert.equal((await callerFor(srv.base, dir, 'q4', keyOf(dir, 'q3'))('POST', '/runs/q4/readiness', { test: TB(X(4), 2) })).status, 401, 'q3\'s key cannot record for q4');
+    assert.equal((await post('q4', 'readiness', { test: TB(X(3), 2) })).data.error, 'volume_differs_from_series', 'q4 cannot be made ready on q3\'s volumes');
+    // Someone copies q3's record into q4's ledger by hand: it names q3 and q3's volumes, so it never matches.
+    fs.appendFileSync(path.join(runStore(dir, 'q4').root, 'events.jsonl'), `${event3}\n`);
+    assert.match((await start('q4', X(4))).data.error, /^readiness_stale: .*recorder\.run.*test\.pgSystemId/);
+    assert.equal((await start('q4', X(3), {}, TB(X(3), 2))).data.error, 'volume_differs_from_series');
+    assert.equal((await post('q4', 'readiness', { test: TB(X(4), 2) })).status, 200);
+    assert.notEqual(runStore(dir, 'q4').events().filter((e) => e.kind === 'readiness').at(-1).digest, r3.digest);
+
+    // q3 runs a cycle that ends INCONCLUSIVE; q3b continues the same volumes. It needs its own attestations and record.
+    const again = await post('q3', 'readiness', { test: TB(X(3), 2) }); // q4's claim changed the registry since
+    const id = (await start('q3', X(3), { vet: undefined })).data.cycleId;
+    await post('q3', 'cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] });
+    assert.equal((await post('q3', 'cycles/1/recovered', { cycleId: id, finalState: S })).status, 200);
+    createRun(dir, { run: 'q3b', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'q3' });
+    assert.equal((await post('q3b', 'readiness', { test: TB(X(3), 2) })).data.error, 'not_adopted');
+    assert.equal((await post('q3b', 'event', { kind: 'adopted', finalState: S, pgSystemId: X(3) })).status, 200);
+    assert.equal((await post('q3b', 'readiness', { test: TB(X(3), 2) })).data.error, 'attestations_missing');
+    attest('q3b');
+    const next = (over) => post('q3b', 'cycles/1/start', { pgSystemId: X(3), proc: 'a', workers: 2, dbHead: 3, vet: true, readiness: TB(X(3), 2), ...over });
+    assert.equal((await next()).data.error, 'readiness_missing', 'same volumes, same configuration, another run');
+    const eventAgain = fs.readFileSync(path.join(runStore(dir, 'q3').root, 'events.jsonl'), 'utf8').trim().split('\n').filter((l) => JSON.parse(l).kind === 'readiness').at(-1);
+    fs.appendFileSync(path.join(runStore(dir, 'q3b').root, 'events.jsonl'), `${eventAgain}\n`);
+    assert.match((await next()).data.error, /^readiness_stale: .*recorder\.continues.*recorder\.run/);
+    const own = await post('q3b', 'readiness', { test: TB(X(3), 2) });
+    assert.equal(own.status, 200);
+    assert.notEqual(own.data.digest, again.data.digest);
+    assert.deepEqual([own.data.binding.recorder.run, own.data.binding.recorder.rootRun, own.data.binding.recorder.continues], ['q3b', 'q3', 'q3']);
+    assert.deepEqual((await next()).data, { vetted: true });
+  });
+
+  test('readiness is for POWER-CUT runs; other run types start without it and only note the binding they ran on', async () => {
+    createRun(dir, { run: 'sm', failureModel: 'HARNESS-SMOKE' });
+    await post('sm', 'event', { kind: 'volume_claimed', volume: EMPTY(X(5)) });
+    await post('sm', 'event', { kind: 'initialised', installationId: 'inst-1' });
+    assert.equal((await post('sm', 'readiness', { test: TB(X(5), 2) })).data.error, 'readiness_is_for_power_cut_runs');
+    assert.match((await post('sm', 'cycles/1/start', { pgSystemId: X(5), proc: 'a', workers: 1, dbHead: 0, readiness: TB(X(5), 1) })).data.cycleId, /^[0-9a-f]{32}$/);
+    assert.match((await post('sm', 'cycles/1/start', { pgSystemId: X(5), proc: 'b', workers: 1, dbHead: 0, readiness: null })).data.cycleId, /^[0-9a-f]{32}$/);
+    const starts = runStore(dir, 'sm').events().filter((e) => e.kind === 'cycle_start');
+    assert.match(starts[0].bindingDigest, /^unenforced:[0-9a-f]{64}$/);
+    assert.equal(starts[1].bindingDigest, null);
+  });
+});
+
+describe('recorder identity', () => {
+  test('written once with the first run; a directory that has runs but no identity gets none and cannot hold a qualifying run', async () => {
+    const dir = path.join(tmp, 'identity');
+    assert.equal(recorderId(dir), null);
+    createRun(dir, { run: 'i1', failureModel: 'POWER-CUT', storage: STORAGE });
+    const id = recorderId(dir);
+    assert.match(id, /^[0-9a-f]{32}$/);
+    const bytes = fs.readFileSync(path.join(dir, 'recorder-id.json'), 'utf8');
+    createRun(dir, { run: 'i2', failureModel: 'HARNESS-SMOKE' });
+    assert.equal(fs.readFileSync(path.join(dir, 'recorder-id.json'), 'utf8'), bytes, 'never rewritten');
+    registerVolume(dir, { pgSystemId: pg('i1'), run: 'i1', failureModel: 'POWER-CUT' });
+    const st = runStore(dir, 'i1');
+    st.event({ cycle: null, kind: 'initialised', detail: 'test' });
+    for (const item of REQUIRED_ATTESTATIONS) st.event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' });
+    makeReady(dir, 'i1', 1);
+    const srv = await serve(dir);
+    const go = (readiness = TB(pg('i1'), 1)) => callerFor(srv.base, dir, 'i1')('POST', '/runs/i1/cycles/1/start', { pgSystemId: pg('i1'), proc: 'a', workers: 1, dbHead: 0, vet: true, readiness });
+    assert.deepEqual((await go()).data, { vetted: true });
+    fs.rmSync(path.join(dir, 'recorder-id.json')); // the identity is lost (or this is a copy made without it)
+    assert.equal((await go()).data.error, 'readiness_stale: recorder.recorderId');
+    assert.equal((await callerFor(srv.base, dir, 'i1')('POST', '/runs/i1/readiness', { test: TB(pg('i1'), 1) })).data.error, 'recorder_identity_missing');
+    assert.throws(() => createRun(dir, { run: 'i3', failureModel: 'POWER-CUT', storage: STORAGE }), /holds runs but has no identity/);
+    assert.ok(!fs.existsSync(runStore(dir, 'i3').root) && !fs.existsSync(runStore(dir, 'i3').keyFile));
+    createRun(dir, { run: 'i4', failureModel: 'HARNESS-SMOKE' });
+    assert.equal(recorderId(dir), null, 'no new identity is invented for a directory with history');
+    await srv.close();
+  });
+});
+
+describe('the recorder directory: one for the whole experiment, never created or replaced by accident', () => {
+  const cli = fileURLToPath(new URL('../recorder.mjs', import.meta.url));
+  const run = (dir, ...args) => spawnSync(process.execPath, [cli, ...args, '--dir', dir], { encoding: 'utf8', timeout: 20_000 });
+  const live = path.join(tmp, 'expdir');
+
+  test('a missing or empty directory is refused by every command unless a new recorder is asked for explicitly', () => {
+    for (const d of [path.join(tmp, 'nowhere'), fs.mkdtempSync(path.join(tmp, 'emptydir-'))]) {
+      for (const args of [['create-run', '--run', 'x1', '--failure-model', 'HARNESS-SMOKE'], ['serve', '--port', '0'], ['status', '--run', 'x1'], ['attest', '--run', 'x1', '--item', REQUIRED_ATTESTATIONS[0], '--evidence', 'e']]) {
+        const r = run(d, ...args);
+        assert.equal(r.status, 1, args[0]);
+        assert.match(r.stderr, /recorder directory .* is (missing|empty)\. If it should hold this experiment's runs, STOP/);
+      }
+      assert.ok(['missing', 'empty'].includes(dirState(d)), 'nothing was created');
+      assert.equal(run(d, 'verify-dir').status, 1);
+      assert.match(dirReport(d).problems[0], /STOP; it has no history/);
+    }
+    assert.equal(run(live, 'create-run', '--new-directory', '--run', 'e1', '--failure-model', 'HARNESS-SMOKE').status, 0);
+    assert.equal(dirState(live), 'recorder');
+    assert.match(run(live, 'create-run', '--new-directory', '--run', 'e2', '--failure-model', 'HARNESS-SMOKE').stderr, /--new-directory, but .* already holds a recorder/);
+    assert.equal(run(live, 'create-run', '--run', 'e2', '--failure-model', 'HARNESS-SMOKE').status, 0);
+  });
+
+  test('verify-dir: identity, registry and keys; an exact backup; later, a live directory that has only grown', () => {
+    registerVolume(live, { pgSystemId: '7999999999999999991', run: 'e1', failureModel: 'HARNESS-SMOKE' });
+    runStore(live, 'e1').event({ cycle: null, kind: 'volume_claimed', pgSystemId: '7999999999999999991' });
+    const ok = JSON.parse(run(live, 'verify-dir').stdout);
+    assert.deepEqual([ok.state, ok.runs, ok.registry.entries, ok.problems], ['recorder', 2, 1, []]);
+    assert.equal(ok.recorderId, recorderId(live));
+    const backup = path.join(tmp, 'expdir-backup');
+    fs.cpSync(live, backup, { recursive: true });
+    const exact = run(live, 'verify-dir', '--backup', backup);
+    assert.equal(exact.status, 0, exact.stdout);
+    assert.deepEqual(JSON.parse(exact.stdout).backup.problems, []);
+    assert.ok(!exact.stdout.includes(fs.readFileSync(runStore(live, 'e1').keyFile, 'utf8').trim()), 'no key is printed');
+    // The experiment goes on: a ledger grows and a new run appears. The backup is no longer exact, but nothing was rewritten.
+    runStore(live, 'e1').event({ cycle: null, kind: 'netcheck', detail: 'later' });
+    createRun(live, { run: 'e3', failureModel: 'HARNESS-SMOKE' });
+    assert.equal(run(live, 'verify-dir', '--backup', backup).status, 1, 'no longer an exact copy');
+    assert.equal(run(live, 'verify-dir', '--backup', backup, '--allow-growth').status, 0);
+    assert.ok(compareBackup(live, backup, { allowGrowth: true }).newerFiles >= 2);
+    // History rewritten, a file lost, the registry or the identity replaced: each is reported, in both modes.
+    const damage = {
+      'events.jsonl: differs from the backup \\(earlier records were changed': () => { const f = path.join(runStore(live, 'e1').root, 'events.jsonl'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('volume_claimed', 'volume_claimeD')); },
+      'run.json: differs from the backup': () => { const f = path.join(runStore(live, 'e1').root, 'run.json'); fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('HARNESS-SMOKE', 'POWER-CUT')); },
+      'volumes.jsonl: in the backup, missing from the live directory': () => fs.rmSync(path.join(live, 'volumes.jsonl')),
+      'recorder-id.json: differs from the backup': () => fs.writeFileSync(path.join(live, 'recorder-id.json'), JSON.stringify({ id: '0'.repeat(32) })),
+      'keys/e1.key: in the backup, missing': () => fs.rmSync(runStore(live, 'e1').keyFile),
+    };
+    for (const [expected, change] of Object.entries(damage)) {
+      const saved = path.join(tmp, 'expdir-saved');
+      fs.cpSync(live, saved, { recursive: true });
+      change();
+      const r = run(live, 'verify-dir', '--backup', backup, '--allow-growth');
+      assert.equal(r.status, 1, expected);
+      assert.match(JSON.stringify(JSON.parse(r.stdout)), new RegExp(expected));
+      fs.rmSync(live, { recursive: true }); fs.cpSync(saved, live, { recursive: true }); fs.rmSync(saved, { recursive: true });
+    }
+    assert.equal(run(live, 'verify-dir', '--backup', backup, '--allow-growth').status, 0);
+    assert.match(compareBackup(live, path.join(tmp, 'no-backup')).problems[0], /backup is empty or missing/);
+    // The directory replaced by a new, empty one: there is nothing to verify against, and nothing may start on it.
+    const replaced = fs.mkdtempSync(path.join(tmp, 'replaced-'));
+    assert.equal(run(replaced, 'verify-dir', '--backup', backup).status, 1);
   });
 });

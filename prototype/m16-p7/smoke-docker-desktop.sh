@@ -26,11 +26,12 @@ prior="$work/.prior-evidence-$stamp.sha256"
 hashes evidence recorder >"$prior"
 registry_before="$(cat "$work/recorder/volumes.jsonl" 2>/dev/null || true)"
 
-node "$here/recorder.mjs" serve --dir "$work/recorder" --port "$port" >"$work/recorder-$stamp.log" 2>&1 & rpid=$!
+newdir=""; [ -d "$work/recorder/runs" ] || newdir=--new-directory   # only a recorder directory that has never held a run
+node "$here/recorder.mjs" serve --dir "$work/recorder" --port "$port" $newdir >"$work/recorder-$stamp.log" 2>&1 & rpid=$!
 trap 'kill $rpid 2>/dev/null || true' EXIT
 sleep 1
 keyfile() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).keyFile))'; }
-keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"
+keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" $newdir --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"
 run="$runA"
 export P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
 dc() { docker compose -p "$proj" -f "$here/compose.yml" -f "$here/compose.smoke.yml" "$@"; }   # the override only labels the volumes disposable
