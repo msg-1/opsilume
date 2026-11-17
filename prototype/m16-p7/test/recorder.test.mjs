@@ -9,14 +9,23 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
-import { createRecorder, createRun, cutRefusal, cycleView, runStore } from '../recorder.mjs';
+import { createRecorder, createRun, cutRefusal, cycleView, registerVolume, runStore, volumeOwner } from '../recorder.mjs';
+import { REQUIRED_ATTESTATIONS } from '../lib/preflight.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-recorder-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-const STORAGE = { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown', storageEvidence: 'host/baseline/queue-nvme0n1.txt, datasheet' };
+const STORAGE = { driveModel: 'Example SSD 1TB', firmware: '1B2QEXM7', controller: 'NVMe (PCIe)', dbDevice: 'nvme0n1p2', journalDevice: 'nvme0n1p2', filesystem: 'ext4 rw,relatime', vendorDoc: 'vendor datasheet rev 3, section 4.2', evidenceFiles: 'host/baseline/*', writeCache: 'write back', fua: 'yes', flushSupported: 'yes', flushesObserved: 'yes', vendorFlushSemantics: 'yes', plp: 'unknown' };
 const FS = { installationId: 'inst-1', head: 9, headHash: 'ab'.repeat(32) };
 /** A run whose volumes were initialised (what `p7.mjs init` reports after creating the schema on an empty database). */
-const mk = (dir, o) => { const r = createRun(dir, o); runStore(dir, o.run).event({ cycle: null, kind: 'initialised', detail: 'test' }); return r; };
+const pg = (run) => String(7000000000000000000n + BigInt(`0x${createHash('sha256').update(run).digest('hex').slice(0, 12)}`)); // a system identifier per test run
+const mk = (dir, o) => {
+  const r = createRun(dir, o);
+  registerVolume(dir, { pgSystemId: pg(o.run), run: o.run, failureModel: o.failureModel });
+  const st = runStore(dir, o.run);
+  st.event({ cycle: null, kind: 'initialised', detail: 'test' });
+  if (o.failureModel === 'POWER-CUT') for (const item of REQUIRED_ATTESTATIONS) st.event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' });
+  return r;
+};
 const T = (run, rest) => `${runTag(run)}${rest}`; // action ids carry the run's tag
 const sha = (f) => (fs.existsSync(f) ? createHash('sha256').update(fs.readFileSync(f)).digest('hex') : null);
 const listFiles = (d) => fs.readdirSync(d, { recursive: true }).filter((f) => fs.statSync(path.join(d, f)).isFile()).sort();
@@ -81,23 +90,30 @@ describe('protocol', () => {
 describe('createRun (decision 4)', () => {
   const dir = path.join(tmp, 'create');
   test('a qualifying run with unknown flush or FUA behaviour is refused; a smoke run is not', () => {
-    assert.throws(() => createRun(dir, { run: 'q1', failureModel: 'POWER-CUT', ...STORAGE, flushHonoured: 'unknown' }), /decision 4/);
-    assert.throws(() => createRun(dir, { run: 'q2', failureModel: 'POWER-CUT', ...STORAGE, fua: undefined }), /decision 4/);
-    assert.throws(() => createRun(dir, { run: 'q3', failureModel: 'VM-CRASH', ...STORAGE, writeCache: 'unknown' }), /decision 4/);
-    assert.throws(() => createRun(dir, { run: 'q4', failureModel: 'POWER-CUT', ...STORAGE, storageEvidence: '' }), /decision 4/, 'the evidence must be named');
+    const bad = (run, over, pattern, model = 'POWER-CUT') => assert.throws(() => createRun(dir, { run, failureModel: model, storage: { ...STORAGE, ...over } }), pattern);
+    bad('q1', { vendorFlushSemantics: 'unknown' }, /vendorFlushSemantics/);
+    bad('q2', { fua: undefined }, /fua must be/);
+    bad('q3', { writeCache: 'unknown' }, /writeCache must be/, 'VM-CRASH');
+    bad('q4', { vendorDoc: '' }, /vendorDoc is missing/);
+    bad('q4b', { firmware: 'unknown' }, /firmware is missing or unknown/);
+    bad('q4c', { controller: undefined }, /controller is missing/);
+    bad('q4d', { dbDevice: '', journalDevice: '' }, /dbDevice is missing[\s\S]*journalDevice is missing/);
     // FUA not advertised: only with flushes observed on the actual path. A missing flag alone proves nothing.
-    assert.throws(() => createRun(dir, { run: 'q5', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised' }), /decision 4/);
-    assert.throws(() => createRun(dir, { run: 'q6', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised', flushesObserved: 'no' }), /decision 4/);
-    assert.equal(createRun(dir, { run: 'q7', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised', flushesObserved: 'yes' }).run.storage.flushesObserved, 'yes');
+    bad('q5', { fua: 'not-advertised', flushesObserved: 'no' }, /no kernel flush requests were observed/);
+    bad('q6', { writeCache: 'write through', fua: 'not-advertised', flushesObserved: 'no' }, /write-through drive without FUA and without demonstrable flushes: not approved/);
+    bad('q6b', { flushSupported: 'no' }, /does not report flush support/);
+    assert.throws(() => createRun(dir, { run: 'q6c', failureModel: 'POWER-CUT' }), /driveModel is missing/, 'no evidence at all');
+    assert.equal(createRun(dir, { run: 'q7', failureModel: 'POWER-CUT', storage: { ...STORAGE, fua: 'not-advertised' } }).run.storage.flushesObserved, 'yes');
+    assert.equal(createRun(dir, { run: 'q8', failureModel: 'POWER-CUT', storage: { ...STORAGE, writeCache: 'write through', flushesObserved: 'no' } }).run.storage.fua, 'yes', 'write through with working FUA');
     assert.ok(createRun(dir, { run: 's1', failureModel: 'HARNESS-SMOKE' }).keyFile);
     assert.ok(!fs.existsSync(runStore(dir, 'q1').root), 'nothing is created for a refused run');
   });
   test('the key is 256 bits, mode 0600, outside the run record, and a run id cannot be reused', () => {
-    const { keyFile, run } = createRun(dir, { run: 'p1', failureModel: 'POWER-CUT', ...STORAGE });
+    const { keyFile, run } = createRun(dir, { run: 'p1', failureModel: 'POWER-CUT', storage: STORAGE });
     assert.match(fs.readFileSync(keyFile, 'utf8'), /^[0-9a-f]{64}\n$/);
     assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600);
     assert.ok(!JSON.stringify(run).includes(fs.readFileSync(keyFile, 'utf8').trim()));
-    assert.throws(() => createRun(dir, { run: 'p1', failureModel: 'POWER-CUT', ...STORAGE }), /already exists/);
+    assert.throws(() => createRun(dir, { run: 'p1', failureModel: 'POWER-CUT', storage: STORAGE }), /already exists/);
   });
 });
 
@@ -107,8 +123,8 @@ describe('recorder protocol and state machine', () => {
   const ack = (body) => call('POST', '/runs/p/ack', { cycle: 1, cycleId, ...body });
   const act = (proc, w, k) => T('p', `c0001${proc}w${w}-${k}`);
   before(async () => {
-    mk(dir, { run: 'p', failureModel: 'POWER-CUT', ...STORAGE });
-    createRun(dir, { run: 'other', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'p', failureModel: 'POWER-CUT', storage: STORAGE });
+    createRun(dir, { run: 'other', failureModel: 'POWER-CUT', storage: STORAGE });
     srv = await serve(dir);
     call = callerFor(srv.base, dir, 'p');
   });
@@ -125,12 +141,12 @@ describe('recorder protocol and state machine', () => {
   });
 
   test('cycle ids: one per cycle, shared by processes; a process cannot start twice; cycles are consecutive', async () => {
-    assert.equal((await call('POST', '/runs/p/cycles/2/start', { proc: 'a', workers: 1, dbHead: 0 })).status, 409);
-    const a = await call('POST', '/runs/p/cycles/1/start', { proc: 'a', workers: 2, dbHead: 0, bootId: 'boot-1' });
+    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 0 })).status, 409);
+    const a = await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'a', workers: 2, dbHead: 0, bootId: 'boot-1' });
     assert.match(a.data.cycleId, /^[0-9a-f]{32}$/);
     cycleId = a.data.cycleId;
-    assert.equal((await call('POST', '/runs/p/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.error, 'process_already_started_in_cycle');
-    assert.equal((await call('POST', '/runs/p/cycles/1/start', { proc: 'b', workers: 1, dbHead: 3 })).data.cycleId, cycleId);
+    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 0 })).data.error, 'process_already_started_in_cycle');
+    assert.equal((await call('POST', '/runs/p/cycles/1/start', { pgSystemId: pg('p'), proc: 'b', workers: 1, dbHead: 3 })).data.cycleId, cycleId);
   });
 
   test('two processes and three workers acknowledging concurrently: all accepted, each stream in order', async () => {
@@ -190,7 +206,7 @@ describe('recorder protocol and state machine', () => {
     const result = { cycleId, verdict: 'PASS', quarantineRequired: true, uncommitted: { seq: 9, actionId: act('a', 1, 9) }, needsRecovery: ['clear'] };
     assert.equal((await call('POST', '/runs/p/cycles/1/result', result)).status, 200);
     assert.equal(cycleView(runStore(dir, 'p'), 1).final, 'PENDING_RECOVERY');
-    assert.equal((await call('POST', '/runs/p/cycles/2/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
+    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
     assert.equal((await call('POST', '/runs/p/event', { cycle: 1, cycleId, kind: 'quarantine_observed', detail: 'database head 8 is behind the journal head 9' })).status, 200);
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: false })).data.error, 'clearance_not_shown');
@@ -203,13 +219,13 @@ describe('recorder protocol and state machine', () => {
   });
 
   test('decision 1: an INCONCLUSIVE cycle in a qualifying run stops it and breaks the series', async () => {
-    const c2 = (await call('POST', '/runs/p/cycles/2/start', { proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
+    const c2 = (await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
     assert.equal((await call('POST', '/runs/p/cycles/2/result', { cycleId: c2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
+    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
     assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId })).data.error, 'run_stopped', 'only the inconclusive cycle may still be recovered');
     assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { cycleId: c2 })).data.error, 'final_state_missing');
     assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { finalState: FS, cycleId: c2 })).status, 200, 'so that a new run can continue this state');
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
+    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
     const st = (await call('GET', '/runs/p')).data;
     assert.match(st.stopped.reason, /series broken/);
     assert.equal(st.stopped.kind, 'inconclusive');
@@ -223,16 +239,16 @@ describe('recorder: replay from a previous cycle, and refusals before a cycle st
   before(async () => { mk(dir, { run: 'rp', failureModel: 'HARNESS-SMOKE' }); srv = await serve(dir); call = callerFor(srv.base, dir, 'rp'); });
   after(() => srv.close());
   test('cycle-1 acknowledgements cannot be replayed into cycle 2, by body or byte for byte', async () => {
-    const id1 = (await call('POST', '/runs/rp/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id1 = (await call('POST', '/runs/rp/cycles/1/start', { pgSystemId: pg('rp'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     const old = { cycle: 1, cycleId: id1, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('rp', 'c0001aw1-1') };
     const body = JSON.stringify(old);
     const h = signRequest(keyOf(dir, 'rp'), { method: 'POST', path: '/runs/rp/ack', run: 'rp', body });
     assert.equal((await rawSend(srv.base, 'POST', '/runs/rp/ack', h, body)).status, 200);
     assert.equal((await call('POST', '/runs/rp/cycles/1/result', { cycleId: id1, verdict: 'INCONCLUSIVE', needsRecovery: [] })).status, 200);
     // A start refused because the operator forgot `recover` must not count against cycle 2.
-    assert.equal((await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.error, 'previous_cycle_not_recovered');
+    assert.equal((await call('POST', '/runs/rp/cycles/2/start', { pgSystemId: pg('rp'), proc: 'a', workers: 1, dbHead: 1 })).data.error, 'previous_cycle_not_recovered');
     assert.equal((await call('POST', '/runs/rp/cycles/1/recovered', { finalState: FS, cycleId: id1 })).status, 200);
-    const id2 = (await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.cycleId;
+    const id2 = (await call('POST', '/runs/rp/cycles/2/start', { pgSystemId: pg('rp'), proc: 'a', workers: 1, dbHead: 1 })).data.cycleId;
     assert.notEqual(id2, id1);
     assert.equal(cycleView(runStore(dir, 'rp'), 2).authenticatedRejections, 0);
     assert.equal((await call('POST', '/runs/rp/ack', old)).data.error, 'cycle_not_open', 'a cycle-1 acknowledgement, freshly signed');
@@ -248,7 +264,7 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
   const dir = path.join(tmp, 'fail');
   let srv, call;
   before(async () => {
-    mk(dir, { run: 'f', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'f', failureModel: 'POWER-CUT', storage: STORAGE });
     mk(dir, { run: 'smoke', failureModel: 'HARNESS-SMOKE' });
     mk(dir, { run: 'torn', failureModel: 'HARNESS-SMOKE' });
     srv = await serve(dir, { silentStopMs: 1000 });
@@ -257,7 +273,7 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
   after(() => srv.close());
 
   test('a FAIL stops the run; nothing afterwards changes the recorded evidence; the rejection log only grows', async () => {
-    const id = (await call('POST', '/runs/f/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id = (await call('POST', '/runs/f/cycles/1/start', { pgSystemId: pg('f'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     assert.equal((await call('POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('f', 'c0001aw1-1') })).status, 200);
     assert.equal((await call('POST', '/runs/f/cycles/1/result', { cycleId: id, verdict: 'FAIL', fails: ['ACKNOWLEDGED_CLAIM_MISSING_FROM_JOURNAL'] })).data.stopped, true);
     const root = runStore(dir, 'f').root;
@@ -265,7 +281,7 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
     const rejFile = path.join(root, 'rejections.jsonl');
     const rejBefore = fs.existsSync(rejFile) ? fs.readFileSync(rejFile, 'utf8') : '';
     for (const [m, p, b] of [
-      ['POST', '/runs/f/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 }],
+      ['POST', '/runs/f/cycles/2/start', { pgSystemId: pg('f'), proc: 'a', workers: 1, dbHead: 1 }],
       ['POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 2, kind: 'dispatch', seq: 1, actionId: T('f', 'c0001aw1-1') }],
       ['POST', '/runs/f/cycles/1/result', { cycleId: id, verdict: 'PASS' }],
       ['POST', '/runs/f/cycles/1/recovered', { finalState: FS, cycleId: id }],
@@ -280,15 +296,15 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
 
   test('an INCONCLUSIVE smoke cycle does not stop a HARNESS-SMOKE run', async () => {
     const c = callerFor(srv.base, dir, 'smoke');
-    const id = (await c('POST', '/runs/smoke/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id = (await c('POST', '/runs/smoke/cycles/1/start', { pgSystemId: pg('smoke'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     assert.equal((await c('POST', '/runs/smoke/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: [] })).data.stopped, false);
     assert.equal((await c('POST', '/runs/smoke/cycles/1/recovered', { finalState: FS, cycleId: id })).status, 200);
-    assert.equal((await c('POST', '/runs/smoke/cycles/2/start', { proc: 'a', workers: 1, dbHead: 0 })).status, 200);
+    assert.equal((await c('POST', '/runs/smoke/cycles/2/start', { pgSystemId: pg('smoke'), proc: 'a', workers: 1, dbHead: 0 })).status, 200);
   });
 
   test('a torn line in the recorder\'s own acknowledgement file blocks further acknowledgements for that cycle', async () => {
     const c = callerFor(srv.base, dir, 'torn');
-    const id = (await c('POST', '/runs/torn/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id = (await c('POST', '/runs/torn/cycles/1/start', { pgSystemId: pg('torn'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     assert.equal((await c('POST', '/runs/torn/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('torn', 'c0001aw1-1') })).status, 200);
     fs.appendFileSync(path.join(runStore(dir, 'torn').root, 'acks', 'cycle-0001.jsonl'), '{"cycle":1,"ki');
     await srv.close();
@@ -349,27 +365,27 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
   after(() => srv.close());
 
   test('only a recovered, non-failed run can be continued, and only once', async () => {
-    mk(dir, { run: 'a1', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'a1', failureModel: 'POWER-CUT', storage: STORAGE });
     const call = callerFor(srv.base, dir, 'a1');
-    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /not stopped/, 'before any cycle');
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' }), /not stopped/, 'before any cycle');
     // cycle 1: PASS with the journal one claim ahead -> quarantine, clearance: one claim accepted as never committed
-    const id1 = (await call('POST', '/runs/a1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id1 = (await call('POST', '/runs/a1/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     const unc = { seq: 31, actionId: T('a1', 'c0001aw1-31') };
     await call('POST', '/runs/a1/cycles/1/result', { cycleId: id1, verdict: 'PASS', quarantineRequired: true, uncommitted: unc, needsRecovery: ['clear'] });
     await call('POST', '/runs/a1/event', { cycle: 1, cycleId: id1, kind: 'quarantine_observed' });
     assert.equal((await call('POST', '/runs/a1/cycles/1/recovered', { cycleId: id1, cleared: true, uncommitted: unc, digest: 'd', finalState: { ...S1, head: 31 } })).data.final, 'PASS');
     // cycle 2: INCONCLUSIVE -> the run stops
-    const id2 = (await call('POST', '/runs/a1/cycles/2/start', { proc: 'a', workers: 1, dbHead: 31 })).data.cycleId;
-    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /not stopped/, 'while a cycle is open');
+    const id2 = (await call('POST', '/runs/a1/cycles/2/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 31 })).data.cycleId;
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' }), /not stopped/, 'while a cycle is open');
     assert.equal((await call('POST', '/runs/a1/cycles/2/result', { cycleId: id2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
-    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /has not been recovered/, 'recovery is never skipped');
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' }), /has not been recovered/, 'recovery is never skipped');
     assert.equal((await call('POST', '/runs/a1/cycles/2/recovered', { cycleId: id2, finalState: S1 })).status, 200);
     const before = frozen('a1');
-    const { run } = createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' });
-    assert.deepEqual(run.continues, { run: 'a1', lastCycle: 2, finalState: S1, stopped: { kind: 'inconclusive', cycle: 2 } });
+    const { run } = createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' });
+    assert.deepEqual(run.continues, { run: 'a1', failureModel: 'POWER-CUT', lastCycle: 2, finalState: S1, stopped: { kind: 'inconclusive', cycle: 2 } });
     assert.deepEqual(runStore(dir, 'a2').accepted().map((u) => [u.seq, u.actionId, u.fromRun]), [[31, unc.actionId, 'a1']], 'accepted claims carry over');
     assert.notEqual(fs.readFileSync(runStore(dir, 'a2').keyFile, 'utf8'), fs.readFileSync(runStore(dir, 'a1').keyFile, 'utf8'), 'a new key');
-    assert.throws(() => createRun(dir, { run: 'a3', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /already continues/);
+    assert.throws(() => createRun(dir, { run: 'a3', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' }), /already continues/);
     assert.deepEqual(frozen('a1'), before, 'the earlier run\'s record is untouched');
   });
 
@@ -377,34 +393,37 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
     const before = frozen('a1');
     const call = callerFor(srv.base, dir, 'a2');
     assert.equal((await callerFor(srv.base, dir, 'a2', keyOf(dir, 'a1'))('GET', '/runs/a2')).status, 401, 'the earlier run\'s key does not open the new run');
-    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 40 })).data.error, 'not_adopted');
+    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 40 })).data.error, 'not_adopted');
     assert.equal((await call('POST', '/runs/a2/event', { kind: 'initialised' })).data.error, 'continuing_run_uses_adopt');
     assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: { ...S1, head: 41 } })).data.error, 'state_differs_from_predecessor');
     assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: { ...S1, headHash: 'ef'.repeat(32) } })).data.error, 'state_differs_from_predecessor');
     assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted' })).data.error, 'state_differs_from_predecessor');
-    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1 })).status, 200);
-    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1 })).data.error, 'already_adopted');
-    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 39 })).data.error, 'head_below_predecessor');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1, pgSystemId: pg('a1') })).status, 200);
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1, pgSystemId: pg('a1') })).data.error, 'already_adopted');
+    // A new run of a qualifying series is attested again by the operator (the firewall is re-verified per boot anyway).
+    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 40 })).data.error, 'attestations_missing');
+    for (const item of REQUIRED_ATTESTATIONS) runStore(dir, 'a2').event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' });
+    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 39 })).data.error, 'head_below_predecessor');
     const st = (await call('GET', '/runs/a2')).data;
     assert.deepEqual([st.cycles.length, st.streak.consecutivePhysicalPasses, st.stopped], [0, 0, null]);
-    const id = (await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 40 })).data.cycleId;
+    const id = (await call('POST', '/runs/a2/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 40 })).data.cycleId;
     // The same cycle number as the earlier run, but its own actions: an earlier run's action id is refused.
     assert.equal((await call('POST', '/runs/a2/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 41, actionId: T('a1', 'c0001aw1-41') })).data.error, 'action_does_not_belong_to_this_stream');
     assert.equal((await call('POST', '/runs/a2/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 41, actionId: T('a2', 'c0001aw1-41') })).status, 200);
     assert.deepEqual(frozen('a1'), before, 'nothing in the new run changed the earlier run\'s evidence');
-    assert.equal((await callerFor(srv.base, dir, 'a1')('POST', '/runs/a1/cycles/3/start', { proc: 'a', workers: 1, dbHead: 40 })).data.error, 'run_stopped', 'the earlier run stays stopped');
+    assert.equal((await callerFor(srv.base, dir, 'a1')('POST', '/runs/a1/cycles/3/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 40 })).data.error, 'run_stopped', 'the earlier run stays stopped');
   });
 
   test('a failed run, or one not recovered, can never be continued', async () => {
-    mk(dir, { run: 'f1', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'f1', failureModel: 'POWER-CUT', storage: STORAGE });
     let call = callerFor(srv.base, dir, 'f1');
-    let id = (await call('POST', '/runs/f1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    let id = (await call('POST', '/runs/f1/cycles/1/start', { pgSystemId: pg('f1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/f1/cycles/1/result', { cycleId: id, verdict: 'FAIL', fails: ['JOURNAL_CORRUPT'] });
     assert.equal((await call('POST', '/runs/f1/cycles/1/recovered', { cycleId: id, finalState: S1 })).status, 409);
-    assert.throws(() => createRun(dir, { run: 'f2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'f1' }), /failed/);
+    assert.throws(() => createRun(dir, { run: 'f2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'f1' }), /failed/);
     mk(dir, { run: 'g1', failureModel: 'HARNESS-SMOKE' });
     call = callerFor(srv.base, dir, 'g1');
-    id = (await call('POST', '/runs/g1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    id = (await call('POST', '/runs/g1/cycles/1/start', { pgSystemId: pg('g1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/g1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: ['repair-torn-tail'] });
     await call('POST', '/runs/g1/stop', { cycle: 1, reason: 'recovery: torn-tail repair did not verify' });
     assert.equal(runStore(dir, 'g1').stopped().kind, 'recovery-failed');
@@ -420,18 +439,17 @@ describe('run lifecycle: safeguards that cannot be bypassed', () => {
   after(() => srv.close());
 
   test('a run cannot start on volumes it neither initialised nor adopted', async () => {
-    createRun(dir, { run: 'z1', failureModel: 'POWER-CUT', ...STORAGE }); // a fresh run id pointed at existing volumes
+    createRun(dir, { run: 'z1', failureModel: 'POWER-CUT', storage: STORAGE }); // a fresh run id pointed at existing volumes
     const call = callerFor(srv.base, dir, 'z1');
-    assert.equal((await call('POST', '/runs/z1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 500 })).data.error, 'not_initialised');
+    assert.equal((await call('POST', '/runs/z1/cycles/1/start', { pgSystemId: pg('z1'), proc: 'a', workers: 1, dbHead: 500 })).data.error, 'not_initialised');
     assert.equal((await call('POST', '/runs/z1/event', { kind: 'adopted', finalState: S })).data.error, 'not_a_continuing_run');
-    assert.equal((await call('POST', '/runs/z1/event', { kind: 'initialised' })).status, 200);
-    assert.equal((await call('POST', '/runs/z1/event', { kind: 'initialised' })).data.error, 'already_initialised');
+    assert.equal((await call('POST', '/runs/z1/event', { kind: 'initialised' })).data.error, 'volume_not_claimed', 'init must claim the volumes first');
   });
 
   test('a run that is not stopped cannot be continued (it could resume beside its successor)', async () => {
     mk(dir, { run: 'n1', failureModel: 'HARNESS-SMOKE' });
     const call = callerFor(srv.base, dir, 'n1');
-    const id = (await call('POST', '/runs/n1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id = (await call('POST', '/runs/n1/cycles/1/start', { pgSystemId: pg('n1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/n1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: [] });
     assert.equal((await call('POST', '/runs/n1/cycles/1/recovered', { cycleId: id, finalState: S })).status, 200);
     assert.equal(runStore(dir, 'n1').stopped(), null);
@@ -439,16 +457,16 @@ describe('run lifecycle: safeguards that cannot be bypassed', () => {
   });
 
   test('a failed recovery in an INCONCLUSIVE-stopped run is recorded, and ends recovery and continuation for good', async () => {
-    mk(dir, { run: 'h1', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'h1', failureModel: 'POWER-CUT', storage: STORAGE });
     const call = callerFor(srv.base, dir, 'h1');
-    const id = (await call('POST', '/runs/h1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const id = (await call('POST', '/runs/h1/cycles/1/start', { pgSystemId: pg('h1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/h1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: ['repair-torn-tail'] });
     assert.equal(runStore(dir, 'h1').stopped().kind, 'inconclusive');
     assert.equal((await call('POST', '/runs/h1/stop', { cycle: 1, reason: 'recovery: torn-tail repair did not verify' })).status, 200);
     assert.equal(runStore(dir, 'h1').stopped().kind, 'inconclusive', 'the marker is write-once');
     assert.ok(runStore(dir, 'h1').events().some((e) => e.kind === 'recovery_failed'), 'but the failure is on record');
     assert.equal((await call('POST', '/runs/h1/cycles/1/recovered', { cycleId: id, finalState: S })).data.error, 'recovery_failed_earlier');
-    assert.throws(() => createRun(dir, { run: 'h2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'h1' }), /recovery failed/);
+    assert.throws(() => createRun(dir, { run: 'h2', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'h1' }), /recovery failed/);
   });
 
   test('the cut must fall within the time every process sized its pool for', () => {
@@ -458,5 +476,74 @@ describe('run lifecycle: safeguards that cannot be bypassed', () => {
     assert.match(cutRefusal({ starts }, 600_000, t0 + 90_000), /sized for 660 s/); // 690 > 660
     assert.match(cutRefusal({ starts: [starts[0], { atMs: t0, sizing: { maxSeconds: 60 } }] }, 100_000, t0 + 1000), /sized for 60 s/);
     assert.match(cutRefusal({ starts: [{ atMs: t0 }] }, 1000, t0), /did not report/);
+  });
+});
+
+describe('qualifying runs never share volumes or state with smoke or supplementary runs', () => {
+  const dir = path.join(tmp, 'mix');
+  let srv;
+  const S = { installationId: 'inst-5', head: 12, headHash: '34'.repeat(32) };
+  const EMPTY = (id) => ({ pgSystemId: id, publicRelations: 0, stateEntries: 0, walLsnBytes: 25 * 1024 * 1024, serverVersion: '16.14' });
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+  /** A HARNESS-SMOKE run stopped by an INCONCLUSIVE cycle and recovered: continuable by its own type only. */
+  async function stoppedSmoke(run) {
+    mk(dir, { run, failureModel: 'HARNESS-SMOKE', stopOnInconclusive: true });
+    const call = callerFor(srv.base, dir, run);
+    const id = (await call('POST', `/runs/${run}/cycles/1/start`, { pgSystemId: pg(run), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    await call('POST', `/runs/${run}/cycles/1/result`, { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: [] });
+    assert.equal((await call('POST', `/runs/${run}/cycles/1/recovered`, { cycleId: id, finalState: S })).status, 200);
+  }
+
+  test('a POWER-CUT or VM-CRASH run cannot continue HARNESS-SMOKE state, and the reverse', async () => {
+    await stoppedSmoke('s1');
+    assert.throws(() => createRun(dir, { run: 'p-bad', failureModel: 'POWER-CUT', storage: STORAGE, continues: 's1' }), /POWER-CUT run cannot continue HARNESS-SMOKE state/);
+    assert.throws(() => createRun(dir, { run: 'v-bad', failureModel: 'VM-CRASH', storage: STORAGE, continues: 's1' }), /VM-CRASH run cannot continue HARNESS-SMOKE state/);
+    assert.ok(!fs.existsSync(runStore(dir, 'p-bad').root) && !fs.existsSync(runStore(dir, 'p-bad').keyFile), 'nothing is created');
+    assert.equal(createRun(dir, { run: 's2', failureModel: 'HARNESS-SMOKE', continues: 's1' }).run.rootRun, 's1', 'smoke continues smoke');
+  });
+
+  test('a POWER-CUT run cannot claim volumes any earlier run used, even after their contents were removed', async () => {
+    createRun(dir, { run: 'pc1', failureModel: 'POWER-CUT', storage: STORAGE });
+    const call = callerFor(srv.base, dir, 'pc1');
+    // The database cluster of smoke run s1, emptied by hand: it looks empty, but the recorder knows the cluster.
+    assert.equal((await call('POST', '/runs/pc1/event', { kind: 'volume_claimed', volume: EMPTY(pg('s1')) })).data.error, 'volume_already_used_by_s1');
+    assert.equal((await call('POST', '/runs/pc1/volume-check', { pgSystemId: pg('s1') })).data.registeredTo, 's1');
+    // Not fresh: relations present, journal volume not empty, or a cluster with a long WAL history.
+    for (const over of [{ publicRelations: 3 }, { stateEntries: 1 }, { walLsnBytes: 900 * 1024 * 1024 }, { pgSystemId: 'x' }]) {
+      const r = await call('POST', '/runs/pc1/event', { kind: 'volume_claimed', volume: { ...EMPTY('7111111111111111111'), ...over } });
+      assert.ok(['volume_not_fresh', 'volume_identity_missing'].includes(r.data.error), JSON.stringify(over));
+    }
+    assert.equal(volumeOwner(dir, '7111111111111111111'), null, 'a refused claim registers nothing');
+    assert.equal((await call('POST', '/runs/pc1/cycles/1/start', { pgSystemId: '7111111111111111111', proc: 'a', workers: 1, dbHead: 0 })).data.error, 'not_initialised');
+    // Fresh volumes: claimed with the empty-state evidence, then initialised.
+    assert.equal((await call('POST', '/runs/pc1/event', { kind: 'volume_claimed', volume: EMPTY('7111111111111111111') })).status, 200);
+    const reg = volumeOwner(dir, '7111111111111111111');
+    assert.deepEqual([reg.run, reg.failureModel, reg.emptyStateEvidence.publicRelations, reg.emptyStateEvidence.stateEntries], ['pc1', 'POWER-CUT', 0, 0]);
+    assert.equal((await call('POST', '/runs/pc1/event', { kind: 'volume_claimed', volume: EMPTY('7222222222222222222') })).data.error, 'already_claimed');
+    assert.equal((await call('POST', '/runs/pc1/event', { kind: 'initialised', installationId: 'inst-pc1' })).status, 200);
+  });
+
+  test('a qualifying cycle needs the operator attestations and the series\' own volumes', async () => {
+    const call = callerFor(srv.base, dir, 'pc1');
+    const start = (pgSystemId) => call('POST', '/runs/pc1/cycles/1/start', { pgSystemId, proc: 'a', workers: 1, dbHead: 0 });
+    assert.equal((await start(pg('s1'))).data.error, 'volume_differs_from_series', 'pointed at the smoke volumes');
+    assert.equal((await start('7111111111111111111')).data.error, 'attestations_missing');
+    const st = runStore(dir, 'pc1');
+    for (const item of REQUIRED_ATTESTATIONS.slice(0, 2)) st.event({ cycle: null, kind: 'attestation', item, evidence: 'done on the host', attestation: 'operator' });
+    assert.equal((await start('7111111111111111111')).data.error, 'attestations_missing', 'all three are required');
+    st.event({ cycle: null, kind: 'attestation', item: REQUIRED_ATTESTATIONS[2], evidence: 'reviewed', attestation: 'operator' });
+    assert.equal((await start('7111111111111111111')).status, 200);
+    const status = (await call('GET', '/runs/pc1')).data;
+    assert.deepEqual(status.attestations.map((x) => x.attestation), ['operator', 'operator', 'operator']);
+  });
+
+  test('a smoke run cannot claim volumes a qualifying run used either, and a continuing run cannot claim or initialise', async () => {
+    createRun(dir, { run: 's9', failureModel: 'HARNESS-SMOKE' });
+    assert.equal((await callerFor(srv.base, dir, 's9')('POST', '/runs/s9/event', { kind: 'volume_claimed', volume: EMPTY('7111111111111111111') })).data.error, 'volume_already_used_by_pc1');
+    const c = callerFor(srv.base, dir, 's2');
+    assert.equal((await c('POST', '/runs/s2/event', { kind: 'volume_claimed', volume: EMPTY('7333333333333333333') })).data.error, 'continuing_run_uses_adopt');
+    assert.equal((await c('POST', '/runs/s2/event', { kind: 'adopted', finalState: S, pgSystemId: pg('pc1') })).data.error, 'volume_differs_from_series');
+    assert.equal((await c('POST', '/runs/s2/event', { kind: 'adopted', finalState: S, pgSystemId: pg('s1') })).status, 200);
   });
 });

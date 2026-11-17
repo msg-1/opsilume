@@ -61,7 +61,7 @@
   - **INCONCLUSIVE when:** flush or FUA behaviour is unverified; a durability setting is off; no cut recorded or not confirmed; no reboot observed after the cut (qualifying runs); a worker stopped or went silent before the cut; the recorder rejected an authenticated message; no acknowledgements; a `HARNESS-SMOKE` run.
 - **The qualifying series** is 20 cycles with final status PASS, from cycle 1, in one `POWER-CUT` run.
   - A FAIL stops the run. So does an INCONCLUSIVE cycle in a `POWER-CUT` or `VM-CRASH` run: investigate, resolve, and start a **new run at cycle 1**.
-  - `create-run` refuses a qualifying run whose flush or FUA behaviour is not attested as verified, with the evidence named (see "Storage evidence").
+  - `create-run` refuses a qualifying run whose flush or FUA behaviour is not attested as verified, with every item of the storage evidence checklist filled (see "Storage evidence checklist").
   - `VM-CRASH` runs are supplementary and never count.
 - **Continuing state.** The database and journal carry over across cycles; nothing is reset. Every cycle ends with `recover`, which the recorder requires before the next start.
 - **After an INCONCLUSIVE cycle** the run is stopped, but the state is kept:
@@ -76,32 +76,81 @@
 - **Workload sizing.** `run` needs `--max-seconds` (the longest planned time to the cut) and a claim rate: `--rate`, or `--target-rate` (a throttle), or the rate measured in the previous cycle. The pool per worker is `rate x max-seconds x headroom`, with headroom at least 2. A smaller `--pool` is refused before anything is seeded or started. `--workers` (1 to 12) and a second process (`--proc b`) set the burst size.
   - `recorder.mjs cut` refuses a delay that could run past the time the pools were sized for.
   - **Clearance envelope:** clearance was validated up to 1,000,000 affected actions (Phase 0.5), and every waiting APPROVED action is affected. `run` refuses to seed past that; use `--target-rate`, fewer workers or a shorter `--max-seconds`.
-  - **Retiring unclaimed actions:** at the end of `recover`, the cycle's unclaimed synthetic actions go from APPROVED to PROPOSED, so they don't pile up across cycles. Claimed actions, the journal and the audit rows are not touched. This is a harness housekeeping step, not part of the design under test.
+  - **Retiring unclaimed actions (approved housekeeping):** at the end of `recover`, the cycle's synthetic actions that were never claimed (`attempts = 0`, still APPROVED) become PROPOSED. It runs in one transaction that proves every other action of the cycle and every audit row is unchanged, checks the journal file is byte-identical, and confirms a second pass finds nothing. If it fails it rolls back, nothing is reported to the recorder, and the cycle stays not-recovered until `recover` is run again.
 - **`check` can be retried** without overwriting anything: a saved result is re-sent as it is, and a new attempt gets its own directory.
 - **Power-cut timing.** `confirm-cut` records the operator's attested time or interval (`--attested-from`, `--attested-to`). It is labelled an attestation everywhere; `independentlyConfirmed` is always false.
 - **Evidence** is write-once. Each cycle records: run and cycle ids, failure model, cut-request time, the bounds on the cut (last durable acknowledgement, first contact afterwards), last journal and database sequence, boot time, when PostgreSQL started and became reachable, verification and recovery times, quarantine and clearance results, and the verdict with reasons. The cut itself is **not independently observed**; the operator's confirmation is recorded as an attestation.
 
-## Storage evidence (flush and FUA)
+## Run types never share state
 
-`sudo ./host-evidence.sh <run> baseline --flush-probe` records what the operator needs. The operator then attests at `create-run`, naming the files in `--storage-evidence`.
+| Run type | Starts on | May continue | Counts toward P7 |
+|---|---|---|---|
+| `POWER-CUT` | **Fresh, dedicated volumes only** (`init`) | Only a `POWER-CUT` run of the same series, after an INCONCLUSIVE cycle | Yes: 20 consecutive passes in one run |
+| `VM-CRASH` (supplementary) | Fresh volumes (`init`) | Only `VM-CRASH` | Never |
+| `HARNESS-SMOKE` | Fresh volumes (`init`) | Only `HARNESS-SMOKE` | Never |
 
-| Question | Where to look | Attested as |
+How "fresh and dedicated" is enforced:
+- **`init` claims the volumes first.** Before creating anything it sends the recorder the database cluster's system identifier (unique per `initdb`) and the empty-state facts. For a qualifying run the recorder refuses unless the database has no relations, the journal volume has no entries, and the cluster's WAL position is that of a new cluster.
+- **The recorder keeps a registry of every cluster any run was initialised on.** A cluster already registered is refused, for any run type, even if its contents were removed by hand.
+- **Every cycle start, and `adopt`, must name the cluster the series started on.** A marker in the journal volume ties it to that cluster, so the two volumes can't be mixed.
+- **`create-run --continues` refuses a different run type,** so a qualifying run never adopts smoke or supplementary state.
+- **Evidence:** `evidence/<run>/init/initial-empty-state-*.json` on the test machine, and `volumes.jsonl` on the recorder. Smoke evidence stays in its own run directories.
+
+## Storage evidence checklist
+
+These are five different things. The harness records them separately and never lets one stand in for another.
+
+| What | How it is established | Field |
 |---|---|---|
-| Which device and controller hold the journal and PGDATA? | `findmnt-state.txt`, `findmnt-pgdata.txt`, `lsblk.txt`, `lsblk-tree.txt`, `lspci-storage.txt` | Recorded in `--machine` |
-| Write-cache state | `queue-<dev>.txt` (`write_cache`), `hdparm-W-<dev>.txt` or `nvme-vwc-<dev>.txt` | `--write-cache "write back"` or `"write through"` |
-| Is FUA advertised? | `queue-<dev>.txt` (`fua: 1` or `0`), `kernel-storage-messages.txt` ("supports DPO and FUA" / "doesn't support DPO or FUA") | `--fua yes`, `no` or `not-advertised` |
-| Does the kernel issue flushes for fsync on this path? | `flush-probe.txt`: the flush-request count for the journal's device rises during the probe | `--flushes-observed yes` or `no` |
-| Does the device honour a flush? | The vendor's datasheet or documentation only. No tool on the machine can show it | `--flush-honoured yes`, `no` or `unknown` |
-| Power-loss protection | The datasheet | `--plp yes`, `no` or `unknown` |
-| Mount options | `findmnt-*.txt`: no `nobarrier`, no `data=writeback` | Checked by the operator |
-| PostgreSQL durability settings | Read by the harness with `SHOW` in every cycle; `init`, `adopt` and `run` refuse unless all three are on | Automatic |
+| Device cache configuration | `queue-<dev>.txt` (`write_cache`), `hdparm-W-<dev>.txt` or `nvme-vwc-<dev>.txt` | `writeCache` |
+| Device reports flush support | `hdparm-I-<dev>.txt` (FLUSH CACHE commands) for SATA; the NVMe specification makes Flush mandatory, recorded from `nvme-id-ctrl-<dev>.txt` | `flushSupported` |
+| Kernel flush requests observed | `flush-probe.txt` from `host-evidence.sh --flush-probe`: the flush-request count for the journal's device rises | `flushesObserved` |
+| FUA advertised | `queue-<dev>.txt` (`fua`), `kernel-storage-messages.txt` | `fua` |
+| Vendor-documented flush/FUA durability | The vendor's datasheet or documentation, cited | `vendorDoc`, `vendorFlushSemantics` |
 
-**What qualifies:** a known write cache, flush honoured `yes`, and either FUA `yes`, or FUA `not-advertised` together with flushes observed `yes`. Anything unknown doesn't qualify, and `create-run` then refuses a `POWER-CUT` or `VM-CRASH` run.
+**None of these is a measurement of PostgreSQL's or the journal's durability.** The flush probe fsyncs a probe file; it says nothing about the journal's or PostgreSQL's own writes. Only the power-cut cycles test that.
 
-**What this does not establish:**
-- A missing FUA flag proves nothing by itself. It is accepted only with the flush probe showing the kernel's flushes on that device.
-- The probe shows the kernel **sends** flushes. That the drive **obeys** them rests on the vendor's documentation, and ultimately on the power-cut cycles themselves.
-- A "write through" device without FUA sends no flushes, so it doesn't qualify under this rule. It would need a separate decision.
+The operator fills `storage-evidence.template.json` and passes it to `create-run --storage-json`. Every item is required:
+
+- [ ] Drive model and firmware (`driveModel`, `firmware`): `lsblk.txt`, `queue-<dev>.txt`, `smart-<dev>.txt`
+- [ ] Controller (`controller`): `lspci-storage.txt`, `lsblk-tree.txt`
+- [ ] Database and journal device mapping, and the filesystem with its mount options (`dbDevice`, `journalDevice`, `filesystem`): `findmnt-pgdata.txt`, `findmnt-state.txt`. No `nobarrier`, no `data=writeback`
+- [ ] Write-cache configuration (`writeCache`)
+- [ ] FUA status (`fua`: `yes`, `no`, `not-advertised`)
+- [ ] Flush support (`flushSupported`) and observed use (`flushesObserved`)
+- [ ] Vendor documentation reference (`vendorDoc`) and whether it supports flush/FUA durability (`vendorFlushSemantics`)
+- [ ] The evidence files (`evidenceFiles`)
+- [ ] PostgreSQL durability settings: read by the harness itself in `preflight`, `init`, `adopt` and every `run`
+
+**A qualifying run is refused, with every reason listed, if:**
+- any item is missing or "unknown";
+- the vendor documentation doesn't support flush/FUA durability;
+- the cache is write-back and the device doesn't report flush support, or no kernel flushes were observed;
+- FUA is advertised but doesn't work;
+- the drive is write-through without FUA and without demonstrable flushes.
+
+FUA not advertised is accepted only with observed flushes **and** the vendor documentation.
+
+## Preflight (read-only)
+
+`docker compose exec -T harness node p7.mjs preflight --max-seconds <s> --rate <r> [--workers n]`
+
+It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It writes nothing on the test machine or the recorder, seeds nothing, and **never starts a workload or a cut**. `READY_FOR_OPERATOR_REVIEW` is not approval.
+
+| Check | Blocked when |
+|---|---|
+| Run type and run id | Not a `POWER-CUT` run; stopped; a cycle already started |
+| Fresh, dedicated volumes | The database or journal volume isn't empty; the cluster isn't new; the recorder has the cluster registered to another run |
+| Storage evidence | Any item above is missing or doesn't qualify |
+| PostgreSQL settings | `fsync`, `full_page_writes` or `synchronous_commit` isn't on |
+| Network isolation and host firewall | The strict network check fails (for example the host still answers on a bridge address) |
+| Recorder | It doesn't answer an authenticated request, or doesn't reject an unauthenticated one |
+| Workload sizing | No rate or duration given, the pool is too small, or it exceeds the clearance envelope |
+| Operator attestations | Any of `firewall-verified-on-host`, `manual-cut-rehearsed-on-host`, `host-evidence-reviewed` is missing |
+
+The attestations are recorded on the recorder host with `recorder.mjs attest --run <run> --item <item> --evidence "<what was done, when, where the output is>"`. They are the operator's statements, labelled as such; the recorder can't observe them. The recorder also refuses a `POWER-CUT` cycle start without all three.
+
+On Docker Desktop, preflight is always BLOCKED: the run isn't `POWER-CUT`, there is no storage evidence, the host answers on the bridge addresses, and nothing is attested.
 
 ## One cycle (physical power cut)
 
@@ -109,14 +158,15 @@
 # Recorder host, once:
 node recorder.mjs serve --dir <recorder-dir> --host <LAN address> --port 8787
 node recorder.mjs create-run --dir <recorder-dir> --run p7-1 --failure-model POWER-CUT \
-  --write-cache "write back" --flush-honoured yes --fua yes --plp unknown \
-  --storage-evidence "host/baseline/queue-nvme0n1.txt, <datasheet>" --machine "<model, disk>"
+  --storage-json <filled storage-evidence.template.json> --machine "<model, disk>"
 # copy <recorder-dir>/keys/p7-1.key to the test machine (mode 0600)
 # Test machine, once:
 export P7_RUN=p7-1 P7_RECORDER_TARGET=<recorder address>:8787 P7_KEY_FILE_HOST=<path to the key>
 docker compose up -d --wait && sudo ./host-evidence.sh p7-1 baseline --flush-probe
 # apply and verify the host firewall (firewall/README.md)
-docker compose exec -T harness node p7.mjs netcheck && docker compose exec -T harness node p7.mjs init
+# record the three operator attestations (recorder host), then:
+docker compose exec -T harness node p7.mjs preflight --max-seconds 660 --rate <r>   # must print READY_FOR_OPERATOR_REVIEW
+docker compose exec -T harness node p7.mjs init
 # Each cycle N:
 docker compose exec -T harness node p7.mjs run --cycle N --proc a --workers 2 --max-seconds 660 --rate <claims/s per worker>
 #   bursts: also --proc b in a second shell. From cycle 2 the rate may be left out: the previous cycle's measured rate is used

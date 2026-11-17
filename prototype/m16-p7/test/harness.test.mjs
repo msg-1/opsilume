@@ -50,7 +50,7 @@ function scenario({ n = 5, windowFrom = 0, journalEntries, dbClaims, dbHead, ack
   return { journal, db, acks: ackList, windowFrom };
 }
 const codes = (c) => c.findings.filter((f) => f.severity === 'fail').map((f) => f.code).sort();
-const RUN = { failureModel: 'POWER-CUT', storage: { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown', evidence: 'host/baseline' } };
+const RUN = { failureModel: 'POWER-CUT', storage: { driveModel: 'Example SSD 1TB', firmware: '1B2QEXM7', controller: 'NVMe (PCIe)', dbDevice: 'nvme0n1p2', journalDevice: 'nvme0n1p2', filesystem: 'ext4 rw,relatime', vendorDoc: 'vendor datasheet rev 3, section 4.2', evidenceFiles: 'host/baseline/*', writeCache: 'write back', fua: 'yes', flushSupported: 'yes', flushesObserved: 'yes', vendorFlushSemantics: 'yes', plp: 'unknown' } };
 const CYCLE = { settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync' }, cutSentAt: AT, cutConfirmed: 'yes', workerStopsBeforeCut: [], silentWorkerStops: [], rebootObservedAfterCut: true, authenticatedRejections: 0 };
 
 describe('journal scan', () => {
@@ -210,10 +210,10 @@ describe('classification', () => {
   });
   for (const [name, run, cycle, code] of [
     ['write cache unknown', { ...RUN, storage: { ...RUN.storage, writeCache: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
-    ['flush behaviour unknown', { ...RUN, storage: { ...RUN.storage, flushHonoured: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['vendor flush semantics unknown', { ...RUN, storage: { ...RUN.storage, vendorFlushSemantics: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['FUA behaviour unknown', { ...RUN, storage: { ...RUN.storage, fua: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
-    ['FUA not advertised and flushes not observed', { ...RUN, storage: { ...RUN.storage, fua: 'not-advertised' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
-    ['no storage evidence named', { ...RUN, storage: { ...RUN.storage, evidence: '' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['FUA not advertised and flushes not observed', { ...RUN, storage: { ...RUN.storage, fua: 'not-advertised', flushesObserved: 'no' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['no vendor documentation named', { ...RUN, storage: { ...RUN.storage, vendorDoc: '' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['synchronous_commit off', RUN, { ...CYCLE, settings: { ...CYCLE.settings, synchronous_commit: 'off' } }, 'POSTGRESQL_DURABILITY_SETTINGS_NOT_ON'],
     ['no cut recorded', RUN, { ...CYCLE, cutSentAt: null }, 'NO_CUT_RECORDED'],
     ['power loss not confirmed', RUN, { ...CYCLE, cutConfirmed: 'no' }, 'POWER_LOSS_NOT_CONFIRMED'],

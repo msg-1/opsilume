@@ -16,11 +16,13 @@ stamp="$(date +%Y%m%dT%H%M%S)"
 runA="harness-smoke-$stamp-a"; runB="harness-smoke-$stamp-b"
 mkdir -p "$work/recorder" "$work/evidence"
 docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists (inspect it, then: docker compose -p $proj down -v)"; exit 1; }
-hashes() { (cd "$work" && find "$@" -type f ! -path "*/keys/*" -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 2>/dev/null) || true; }
+# The volume registry is append-only by design (one line per run), so it is checked separately, as a prefix.
+hashes() { (cd "$work" && find "$@" -type f ! -path "*/keys/*" ! -name volumes.jsonl -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 2>/dev/null) || true; }
 
 # Evidence from earlier smoke runs must survive this one unchanged.
 prior="$work/.prior-evidence-$stamp.sha256"
 hashes evidence recorder >"$prior"
+registry_before="$(cat "$work/recorder/volumes.jsonl" 2>/dev/null || true)"
 
 node "$here/recorder.mjs" serve --dir "$work/recorder" --port "$port" >"$work/recorder-$stamp.log" 2>&1 & rpid=$!
 trap 'kill $rpid 2>/dev/null || true' EXIT
@@ -53,6 +55,31 @@ start_proc() { (P run --cycle "$1" --proc "$2" --workers 2 $SIZE >"$work/run-$ru
 recover() { local out code=0; out="$(P recover --cycle "$1")" || code=$?; echo "$out" | cut -c1-300
   if [ "$code" -eq 4 ]; then P recover --cycle "$1" --clear-digest "$(node -e 'console.log(JSON.parse(process.argv[1]).inspection.digest)' "$out")" | cut -c1-300
   elif [ "$code" -ne 0 ]; then echo "SMOKE FAILED: recover exited $code"; exit 1; fi; }
+# Recovery with a failure injected inside retirement, then for real. Proves: the failure rolls back and records nothing;
+# then exactly the unclaimed actions are retired, and claimed actions, audit rows and the journal are unchanged.
+# (When the kill left the journal one claim ahead, clearance has already moved the unclaimed actions out of APPROVED,
+# so retirement has nothing to do and the count is 0.)
+q() { dc exec -T db psql -qtA -U proto -d proto -c "$1"; }
+retire_check() {
+  local n="$1" out code unclaimed claimed audit jsha marked
+  marked="$(q "SELECT count(*) FROM action WHERE note = 'p7: unclaimed, retired after its cycle'")"
+  out="$(P recover --cycle "$n" --smoke-fail-in-retirement)" && code=0 || code=$?
+  if [ "$code" -eq 4 ]; then P recover --cycle "$n" --smoke-fail-in-retirement --clear-digest "$(node -e 'console.log(JSON.parse(process.argv[1]).inspection.digest)' "$out")" && code=0 || code=$?; fi
+  [ "$code" -eq 7 ] || { echo "SMOKE FAILED: injected retirement failure should exit 7, got $code"; exit 1; }
+  unclaimed="$(q "SELECT count(*) FROM action WHERE status = 'APPROVED' AND attempts = 0")"
+  claimed="$(q "SELECT md5(string_agg(id || status || attempts || coalesce(outcome, ''), ',' ORDER BY id)) FROM action WHERE attempts > 0")"
+  audit="$(q "SELECT count(*) || ':' || md5(string_agg(id::text || action || ref || meta::text, ',' ORDER BY id)) FROM audit")"
+  jsha="$(dc exec -T harness sha256sum /state/journal.log)"
+  [ "$(q "SELECT count(*) FROM action WHERE note = 'p7: unclaimed, retired after its cycle'")" = "$marked" ] && echo "ok: the failed retirement rolled back (nothing newly marked retired; $unclaimed unclaimed actions still APPROVED)" || { echo "SMOKE FAILED: retirement did not roll back"; exit 1; }
+  R status | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s).cycles.find(x=>x.cycle==process.argv[1]);if(c.status==="PASS")process.exit(1)})' "$n" || { echo "SMOKE FAILED: status after failed retirement"; exit 1; }
+  recover "$n"
+  [ "$(q "SELECT count(*) FROM action WHERE status = 'APPROVED'")" = 0 ] && [ "$(q "SELECT count(*) FROM action WHERE note = 'p7: unclaimed, retired after its cycle' AND attempts = 0 AND status = 'PROPOSED'")" = "$((marked + unclaimed))" ] && echo "ok: exactly the $unclaimed unclaimed actions were retired" || { echo "SMOKE FAILED: retired set"; exit 1; }
+  [ "$(q "SELECT md5(string_agg(id || status || attempts || coalesce(outcome, ''), ',' ORDER BY id)) FROM action WHERE attempts > 0")" = "$claimed" ] && echo "ok: claimed actions are unchanged" || { echo "SMOKE FAILED: claimed actions changed"; exit 1; }
+  [ "$(q "SELECT count(*) || ':' || md5(string_agg(id::text || action || ref || meta::text, ',' ORDER BY id)) FROM audit")" = "$audit" ] && echo "ok: audit rows are unchanged (${audit%%:*} rows)" || { echo "SMOKE FAILED: audit rows changed"; exit 1; }
+  [ "$(dc exec -T harness sha256sum /state/journal.log)" = "$jsha" ] && echo "ok: the journal is unchanged by retirement" || { echo "SMOKE FAILED: journal changed"; exit 1; }
+  retired_total=$((retired_total + unclaimed))
+}
+retired_total=0
 db_unique() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) = count(DISTINCT meta->>'seq') AND count(*) = count(DISTINCT ref) FROM audit WHERE action = 'execute_start'"; }
 db_head() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT journal_seq FROM installation_state"; }
 
@@ -70,7 +97,13 @@ for c in db gateway harness; do docker inspect -f '{{json .HostConfig.PortBindin
 echo "ok: db only on p7db; harness on p7db + p7gw; gateway on p7gw + egress; internal networks internal; bridges named for the firewall; nothing published"
 echo "== isolation: netcheck from inside the harness (not strict: HARNESS-SMOKE)"
 P netcheck | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);for(const p of r.probes)console.log(p.ok?"  ok ":"  BAD", p.name, "->", p.outcome);console.log("host answers on the bridge address:", r.hostAnswersOnBridge);if(!r.ok)process.exit(1)})'
+echo "== preflight (read-only) on empty volumes: must be BLOCKED here, with exact reasons, and must change nothing"
+pre="$(P preflight --max-seconds 40 --rate 300 --workers 2)" && { echo "SMOKE FAILED: preflight must not be ready on Docker Desktop"; exit 1; } || true
+node -e 'const r=JSON.parse(process.argv[1]);const t=r.reasons.join(" | ");const need=[/HARNESS-SMOKE run: only a POWER-CUT run can qualify/,/storage evidence: driveModel is missing/,/missing operator attestation: firewall-verified-on-host/,/missing operator attestation: manual-cut-rehearsed-on-host/];if(r.status!=="BLOCKED"||need.some(x=>!x.test(t))||/database is not empty|already used by run|workload sizing|PostgreSQL durability/.test(t)){console.error("SMOKE FAILED: preflight",t);process.exit(1)}console.log("ok: preflight BLOCKED with",r.reasons.length,"reasons:");for(const x of r.reasons)console.log("   -",x.slice(0,150))' "$pre"
+[ "$(dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'")" = 0 ] && [ -z "$(dc exec -T harness ls /state)" ] && echo "ok: preflight left the database and the journal volume empty" || { echo "SMOKE FAILED: preflight changed the volumes"; exit 1; }
 P init
+ls "$work/evidence/$run/init"/initial-empty-state-*.json >/dev/null && dc exec -T harness cat /state/p7-volume.json | grep -q "$runA" && echo "ok: initial empty-state evidence and the volume marker were recorded" || { echo "SMOKE FAILED: init evidence"; exit 1; }
+expect_refusal "init refused" P init
 
 echo "== RUN A ($runA). Sizing: an undersized or unsized pool is refused before anything is seeded or started"
 expect_refusal "too small" P run --cycle 1 --proc a --workers 1 --max-seconds 600 --rate 250 --pool 50000
@@ -96,7 +129,13 @@ sleep 1; echo "recorder restarted"
 R status | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);if(r.stopped?.kind!=="inconclusive")process.exit(1);console.log("ok: run A stopped:",r.stopped.kind)})'
 expect_refusal "run is stopped" P run --cycle 2 --proc a --workers 1 $SIZE
 expect_refusal "has not been recovered" node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runB" --failure-model HARNESS-SMOKE --continues "$runA"
-recover 1                                                  # allowed: the stopped cycle itself; quarantine and clearance are not skipped
+expect_refusal "has not been recovered" node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runB" --failure-model HARNESS-SMOKE --continues "$runA"
+echo "== retirement (run A, cycle 1): a failure inside it rolls back and records nothing; then only unclaimed actions are retired"
+retire_check 1                                             # recovery is allowed: the stopped cycle itself; quarantine and clearance are not skipped
+echo "== separation: qualifying runs cannot be created from, or on, smoke state"
+expect_refusal "POWER-CUT run cannot continue HARNESS-SMOKE state" node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runA-pc" --failure-model POWER-CUT --continues "$runA"
+expect_refusal "driveModel is missing" node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runA-pc" --failure-model POWER-CUT
+[ ! -e "$work/recorder/runs/$runA-pc" ] && [ ! -e "$work/recorder/keys/$runA-pc.key" ] && echo "ok: the refused qualifying run left no record and no key" || { echo "SMOKE FAILED: refused run left files"; exit 1; }
 [ "$(dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) FROM action WHERE status = 'APPROVED'")" = 0 ] && echo "ok: the cycle's unclaimed actions were retired (none left APPROVED)" || { echo "SMOKE FAILED: unclaimed actions not retired"; exit 1; }
 headA="$(db_head)"
 snapA="$(hashes "recorder/runs/$runA" "evidence/$runA")"
@@ -125,7 +164,8 @@ assert_json "$(result 1)" "r.fails.length===0 && r.inconclusive.includes('WORKLO
 assert_json "$(result 1)" "r.cut.how==='manual prompt' && r.cut.independentlyConfirmed===false && /attestation/.test(r.cut.operatorAttestedCut.label) && r.cut.operatorAttestedCut.from<=r.cut.operatorAttestedCut.to && r.cut.requestedAt<=r.cut.operatorAttestedCut.from && r.timeline.independentlyObservedCutAt===null"
 assert_json "$(result 1)" "r.counts.windowFrom===$headA && r.counts.historyJournalClaims>r.counts.cycleJournalClaims && !r.fails.includes('HISTORY_DIFFERS')"
 [ "$(db_unique)" = t ] && echo "ok: still unique across both runs" || { echo "SMOKE FAILED: duplicate committed claims"; exit 1; }
-recover 1
+echo "== retirement (run B, cycle 1)"
+retire_check 1
 node -e 'const fs=require("fs"),p=require("path");const d=process.argv[1];const f=fs.readdirSync(d).filter(x=>x.startsWith("cycle-summary-")).pop();const r=JSON.parse(fs.readFileSync(p.join(d,f),"utf8"));const t=r.timeline;const need=[r.cut.requestedAt,r.cut.operatorAttestedCut.from,t.bootTime,t.databaseReachableAt,t.verificationCompletedAt,t.recoveryStartedAt,t.recoveryCompletedAt];if(need.some(x=>!x)){console.error("SMOKE FAILED: rehearsal timeline",JSON.stringify(t));process.exit(1)}console.log("ok: rehearsal recorded request",r.cut.requestedAt,"| attested",r.cut.operatorAttestedCut.from,"to",r.cut.operatorAttestedCut.to,"| database reachable",t.databaseReachableAt,"| recovery",t.recoveryStartedAt,"to",t.recoveryCompletedAt)' "$(dirname "$(result 1)")"
 
 echo "== B cycle 2: journal one claim ahead + a torn line -> observed quarantine, repair, inspection, clearance by digest (pool sized from the measured rate)"
@@ -157,8 +197,11 @@ expect_refusal "failed" node "$here/recorder.mjs" create-run --dir "$work/record
 [ "$(hashes "evidence/$runB")" = "$snapB" ] && echo "ok: run B evidence unchanged by the refused commands" || { echo "SMOKE FAILED: evidence changed"; exit 1; }
 [ "$(hashes "recorder/runs/$runA" "evidence/$runA")" = "$snapA" ] && echo "ok: run A's record and evidence are unchanged by everything run B did" || { echo "SMOKE FAILED: run A evidence changed"; exit 1; }
 
+echo "retirement was exercised on $retired_total unclaimed actions in this run (0 means both cycles ended in clearance, which had already moved them)"
 for r in "$runA" "$runB"; do run="$r"; R status | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);console.log(JSON.stringify({run:r.run.run,model:r.run.failureModel,continues:r.run.continues?.run??null,stopped:r.stopped?.kind,cycles:r.cycles.map(c=>c.status),passes:r.streak.consecutivePhysicalPasses}))})'; done
 if [ -s "$prior" ]; then (cd "$work" && shasum -a 256 -c --quiet "$prior") && echo "ok: evidence from earlier smoke runs is unchanged" || { echo "SMOKE FAILED: earlier evidence changed"; exit 1; }; fi
+registry_now="$(cat "$work/recorder/volumes.jsonl")"
+[ "${registry_now:0:${#registry_before}}" = "$registry_before" ] && [ "$(grep -c "$runA" "$work/recorder/volumes.jsonl")" = 1 ] && echo "ok: the volume registry only grew (earlier entries intact; this run's volumes registered once, to run A)" || { echo "SMOKE FAILED: volume registry"; exit 1; }
 for k in "$keyA" "$keyB"; do grep -rqF "$(cat "$k")" "$work/evidence" "$work/recorder/runs" "$work"/*.log && { echo "SMOKE FAILED: a run key appears in evidence or logs"; exit 1; }; done; echo "ok: no run key appears in any evidence or log file"
 dc down -v
 echo "SMOKE PASSED (HARNESS-SMOKE: harness flow only, not a durability result). Evidence: $work/evidence/$runA and $runB"

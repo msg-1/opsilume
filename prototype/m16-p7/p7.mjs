@@ -18,6 +18,8 @@ import { trustProblem } from '../m16-phase05/lib/journal.mjs';
 import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
 import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
 import { measuredRate, sizePool } from './lib/sizing.mjs';
+import { preflightVerdict } from './lib/preflight.mjs';
+import { storageProblems } from './lib/verdict.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
@@ -44,6 +46,55 @@ async function settings(p) {
   }
   return out;
 }
+/** Identity and emptiness of the volumes (read-only). The system identifier is unique per database cluster (initdb). */
+async function volumeFacts(p, j) {
+  const [{ id }] = await p.$queryRaw`SELECT system_identifier::text AS id FROM pg_control_system()`;
+  const [{ n }] = await p.$queryRaw`SELECT count(*)::int AS n FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE ns.nspname = 'public'`;
+  const [{ lsn }] = await p.$queryRaw`SELECT (pg_current_wal_lsn() - '0/0'::pg_lsn)::text AS lsn`;
+  const [{ v }] = await p.$queryRaw`SELECT current_setting('server_version') AS v`;
+  const entries = fs.existsSync(j.dir) ? fs.readdirSync(j.dir) : [];
+  return { pgSystemId: id, publicRelations: n, walLsnBytes: Number(lsn), serverVersion: v, stateEntries: entries.length, stateEntryNames: entries.slice(0, 10) };
+}
+const MARKER = 'p7-volume.json'; // in the journal volume: which database cluster this journal belongs to
+function markerProblem(j, pgSystemId) {
+  try {
+    const m = JSON.parse(fs.readFileSync(path.join(j.dir, MARKER), 'utf8'));
+    return m.pgSystemId === pgSystemId ? null : `the journal volume belongs to database cluster ${m.pgSystemId}, not ${pgSystemId}`;
+  } catch { return 'the journal volume has no P7 volume marker'; }
+}
+
+const RETIRE_NOTE = 'p7: unclaimed, retired after its cycle';
+/**
+ * Retires ONLY this cycle's synthetic actions that were never claimed (attempts = 0, still APPROVED). In one
+ * transaction it proves that every other action of the cycle and every audit row is byte-for-byte unchanged, and that
+ * the journal file did not change; a second pass must find nothing left (idempotent).
+ */
+async function retireUnclaimed(p, j, run, cycle, { failInside = false } = {}) {
+  const like = `${runTag(run)}c${pad(cycle)}%`;
+  const jBefore = { bytes: fs.statSync(j.file).size, sha256: sha256File(j.file) };
+  const digests = async (tx) => (await tx.$queryRaw`
+    SELECT
+      (SELECT count(*)::int FROM action WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note = ${RETIRE_NOTE})))) AS others,
+      (SELECT md5(coalesce(string_agg(id || '|' || status || '|' || attempts || '|' || coalesce(outcome, '') || '|' || coalesce(note, ''), ',' ORDER BY id), '')) FROM action
+        WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note = ${RETIRE_NOTE})))) AS others_digest,
+      (SELECT count(*)::int FROM action WHERE id NOT LIKE ${like} AND status = 'APPROVED') AS approved_elsewhere,
+      (SELECT count(*)::int FROM audit) AS audit_rows,
+      (SELECT md5(coalesce(string_agg(id::text || '|' || action || '|' || coalesce(ref, '') || '|' || coalesce(meta::text, ''), ',' ORDER BY id), '')) FROM audit) AS audit_digest`)[0];
+  const out = await p.$transaction(async (tx) => {
+    const before = await digests(tx);
+    const retired = await tx.$executeRaw`UPDATE action SET status = 'PROPOSED', note = ${RETIRE_NOTE} WHERE id LIKE ${like} AND status = 'APPROVED' AND attempts = 0`;
+    if (failInside) throw new Error('smoke: failure injected inside the retirement transaction');
+    const after = await digests(tx);
+    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('retirement would have changed a claimed action or an audit row');
+    return { retired, claimedOrOtherActionsUnchanged: before.others, auditRowsUnchanged: before.audit_rows, approvedElsewhereUntouched: before.approved_elsewhere };
+  }, { timeout: 600_000, maxWait: 60_000 });
+  const secondPass = await p.$executeRaw`UPDATE action SET status = 'PROPOSED', note = ${RETIRE_NOTE} WHERE id LIKE ${like} AND status = 'APPROVED' AND attempts = 0`;
+  const jAfter = { bytes: fs.statSync(j.file).size, sha256: sha256File(j.file) };
+  if (jAfter.bytes !== jBefore.bytes || jAfter.sha256 !== jBefore.sha256) throw Object.assign(new Error('the journal changed during retirement'), { journalChanged: true });
+  if (secondPass !== 0) throw new Error(`a second retirement pass found ${secondPass} more actions`);
+  return { ...out, secondPass, journalUnchanged: true };
+}
+
 const stateRow = async (q) => (await q.$queryRaw`SELECT installation_id, journal_seq, head_hash FROM installation_state WHERE id = 1`)[0];
 
 /** Streams the committed claims (the `execute_start` audit rows, which survive clearance) in pages: bounded memory. */
@@ -157,6 +208,51 @@ async function cmdNetcheck(a, { quiet = false } = {}) {
   return r;
 }
 
+// ───────────────────────────────────────────── preflight ────────────────────────────────────────────
+/**
+ * Read-only. Gathers the facts for a qualifying run and prints READY_FOR_OPERATOR_REVIEW or BLOCKED with the exact
+ * reasons. It writes nothing here or on the recorder, seeds nothing, and never starts a workload or a cut.
+ */
+async function cmdPreflight(a) {
+  const f = { run: {}, volume: {}, recorder: { authenticated: false, unsignedRejected: false } };
+  let st = null;
+  try { st = await rec('GET', `/runs/${a.run}`); f.recorder.authenticated = true; } catch { /* reported below */ }
+  f.recorder.unsignedRejected = (await fetch(`${process.env.P7_RECORDER_URL}/runs/${a.run}`, { signal: AbortSignal.timeout(5000) }).then((r) => r.status, () => null)) === 401;
+  if (st) f.run = { run: st.run.run, failureModel: st.run.failureModel, continues: st.run.continues ?? null, rootRun: st.run.rootRun, stopped: !!st.stopped, cyclesStarted: st.cyclesStarted, attestations: st.attestations.map((x) => x.item) };
+  f.storageProblems = st ? storageProblems(st.run.storage) : ['the run record could not be read from the recorder'];
+  const p = db();
+  const j = journalAt();
+  try {
+    f.settings = await settings(p);
+    f.settingsDurable = durableSettings(f.settings);
+    const vol = await volumeFacts(p, j);
+    const owner = st ? await rec('POST', `/runs/${a.run}/volume-check`, { pgSystemId: vol.pgSystemId }) : { registeredTo: null };
+    const [{ t }] = await p.$queryRaw`SELECT to_regclass('installation_state')::text AS t`;
+    f.volume = { ...vol, registeredTo: owner.registeredTo, registeredModel: owner.registeredModel ?? null, initialisedByThisRun: !!t && !f.run.continues && owner.registeredTo === f.run.run };
+    if (t) {
+      const row = await stateRow(p); // plain reads: no lock is taken
+      const js = j.state({ forceFull: true });
+      const problem = trustProblem(row, js) ?? markerProblem(j, vol.pgSystemId);
+      const c = f.run.continues?.finalState;
+      Object.assign(f.volume, { head: row?.journal_seq ?? null, journalStatus: js.status, trusted: !problem && ['ok', 'empty'].includes(js.status), problem,
+        matchesPredecessor: !!c && row?.installation_id === c.installationId && row?.journal_seq === c.head && row?.head_hash === c.headHash });
+    }
+  } catch (e) {
+    f.settingsDurable = false;
+    f.volume.error = lastLine(e);
+  }
+  await p.$disconnect().catch(() => {});
+  const n = await netcheck(a.run, { strict: true }).catch((e) => ({ ok: false, strict: true, probes: [{ ok: false, name: `netcheck error: ${lastLine(e)}`, outcome: '' }] }));
+  f.netcheck = { ok: n.ok, strict: n.strict, hostAnswersOnBridge: n.hostAnswersOnBridge ?? null, failed: n.probes.filter((x) => !x.ok).map((x) => `${x.name} -> ${x.outcome}`) };
+  const workers = Number(a.workers ?? 1);
+  const rate = a['target-rate'] ? Number(a['target-rate']) : a.rate ? Number(a.rate) : NaN;
+  const size = sizePool({ ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
+  f.sizing = !size.ok ? size : workers * size.pool > CLEARANCE_ENVELOPE ? { ok: false, reason: `${workers} workers x ${size.pool} actions exceeds the ${CLEARANCE_ENVELOPE} actions clearance was validated at` } : { ...size, workers };
+  const verdict = preflightVerdict(f);
+  console.log(JSON.stringify({ ...verdict, facts: f, at: new Date().toISOString() }, null, 1));
+  process.exitCode = verdict.status === 'READY_FOR_OPERATOR_REVIEW' ? 0 : 6;
+}
+
 // ─────────────────────────────────────────────── init ───────────────────────────────────────────────
 /** Once per run. Refuses a non-empty database or state directory: it never wipes anything. */
 async function cmdInit(a) {
@@ -171,12 +267,19 @@ async function cmdInit(a) {
   if (fs.existsSync(j.dir) && fs.readdirSync(j.dir).length) throw new Error('init refused: the state directory is not empty');
   const s = await settings(p);
   if (!durableSettings(s)) throw new Error(`init refused: PostgreSQL durability settings are not all on: ${JSON.stringify(s)}`);
+  // Before anything is created: the recorder must accept these volumes as new (never used by any run) and, for a
+  // qualifying run, as empty and unused. A refusal leaves them untouched.
+  const volume = await volumeFacts(p, j);
+  if (volume.publicRelations !== 0) throw new Error(`init refused: the database is not empty (${volume.publicRelations} relations)`);
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'volume_claimed', volume });
+  evidenceFile(a.run, 'init', `initial-empty-state-${Date.now()}.json`, { run: a.run, failureModel: st.run.failureModel, volume, settings: s, at: new Date().toISOString() });
   for (const q of SCHEMA.filter((x) => !/^DROP /.test(x))) await p.$executeRawUnsafe(q);
   for (const q of GUARD) await p.$executeRawUnsafe(q);
   const id = await init(p, j);
   await p.$executeRawUnsafe(`INSERT INTO org (id) VALUES ('org-p7')`);
-  await rec('POST', `/runs/${a.run}/event`, { kind: 'initialised', detail: `installation ${id}` });
-  console.log(JSON.stringify({ initialised: id, settings: s }));
+  writeOnce(path.join(j.dir, MARKER), { pgSystemId: volume.pgSystemId, installationId: id, initialisedByRun: a.run, failureModel: st.run.failureModel, at: new Date().toISOString() });
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'initialised', installationId: id, detail: `installation ${id}` });
+  console.log(JSON.stringify({ initialised: id, pgSystemId: volume.pgSystemId, settings: s }));
   await p.$disconnect();
 }
 
@@ -207,7 +310,10 @@ async function cmdAdopt(a) {
   if (state.installationId !== f.installationId || state.head !== f.head || state.headHash !== f.headHash) {
     throw new Error(`adopt refused: the database and journal are not in the state recorded at the end of run ${c.run} (head ${state.head}, recorded ${f.head}). Nothing was changed`);
   }
-  await rec('POST', `/runs/${a.run}/event`, { kind: 'adopted', finalState: state, detail: `continues ${c.run} after cycle ${c.lastCycle}` });
+  const vol = await volumeFacts(p, j);
+  const mp = markerProblem(j, vol.pgSystemId);
+  if (mp) throw new Error(`adopt refused: ${mp}. Nothing was changed`);
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'adopted', finalState: state, pgSystemId: vol.pgSystemId, detail: `continues ${c.run} after cycle ${c.lastCycle}` });
   evidenceFile(a.run, 'adoption', `adoption-${Date.now()}.json`, { continues: c, state, journal: { status: js.status, head: js.head }, settings: s, at: new Date().toISOString() });
   console.log(JSON.stringify({ adopted: c.run, lastCycle: c.lastCycle, head: state.head, carriedOverAccepted: st.accepted.length }));
   await p.$disconnect();
@@ -265,6 +371,9 @@ async function cmdRun(a) {
   }, { timeout: 120_000, maxWait: 60_000 });
   const problem = trustProblem(row, js);
   if (problem || !['ok', 'empty'].includes(js.status)) throw new Error(`refused: history is not trusted (${problem ?? js.status}); run "recover" for the previous cycle first`);
+  const { pgSystemId } = await volumeFacts(p, j0);
+  const mp = markerProblem(j0, pgSystemId);
+  if (mp) throw new Error(`refused: ${mp}`);
   const prefix = `${runTag(a.run)}c${pad(cycle)}${proc}`;
   // Clearance (inspect -> clear) was validated up to 1,000,000 affected actions (Phase 0.5). Every APPROVED action is
   // affected, so the actions waiting at any moment must stay inside that envelope.
@@ -276,7 +385,7 @@ async function cmdRun(a) {
     await p.$executeRawUnsafe(`INSERT INTO action (id, org_id, status) SELECT '${prefix}w${w}-' || g, 'org-p7', 'APPROVED' FROM generate_series(1, ${pool}) g`);
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
-  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() });
+  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() });
   const cycleId = started.data.cycleId;
   await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` });
   console.log(`cycle ${cycle} (${proc}): ${workers} worker(s) claiming from head ${row.journal_seq}; waiting for the cut`);
@@ -486,11 +595,19 @@ async function cmdRecover(a) {
     const again = trustProblem(await stateRow(p), j.state({ forceFull: true }));
     if (again) await fail(`not trusted after clearance: ${again}`);
   }
-  // Retire this cycle's unclaimed synthetic actions (APPROVED -> PROPOSED, the prototype's "not approved" status), so
-  // they don't pile up across cycles and push a later clearance beyond the size it was validated at. Claimed actions,
-  // the journal and the audit rows are not touched.
-  const retired = await p.$executeRaw`UPDATE action SET status = 'PROPOSED', note = 'p7: unclaimed, retired after its cycle' WHERE status = 'APPROVED' AND id LIKE ${`${runTag(a.run)}c${pad(cycle)}%`}`;
-  steps.push({ step: 'retire-unclaimed-actions', retired });
+  // Retire this cycle's unclaimed synthetic actions (approved harness housekeeping). One transaction with its own
+  // invariant checks: if anything goes wrong it rolls back, nothing is reported to the recorder, and the cycle simply
+  // stays not-recovered until `recover` is run again. The verdict is never left in between.
+  let retirement;
+  try {
+    retirement = await retireUnclaimed(p, j, a.run, cycle, { failInside: a['smoke-fail-in-retirement'] && st.run.failureModel === 'HARNESS-SMOKE' });
+  } catch (e) {
+    if (e.journalChanged) await fail(e.message);
+    console.error(`retirement did not complete and was rolled back (${lastLine(e)}). Nothing was recorded: recovery of cycle ${cycle} is NOT complete. Run "recover" again.`);
+    process.exitCode = 7;
+    return p.$disconnect();
+  }
+  steps.push({ step: 'retire-unclaimed-actions', ...retirement });
   // The state every later cycle (or a continuing run) starts from: verified trusted, in full, once more.
   const fin = await stateRow(p);
   const finJs = j.state({ forceFull: true });
@@ -512,12 +629,12 @@ async function cmdRecover(a) {
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
-const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' } } });
+const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' }, 'smoke-fail-in-retirement': { type: 'boolean' } } });
 values.run ??= process.env.P7_RUN;
 if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
-const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, init: cmdInit, adopt: cmdAdopt, run: cmdRun, check: cmdCheck, recover: cmdRecover };
+const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, preflight: cmdPreflight, init: cmdInit, adopt: cmdAdopt, run: cmdRun, check: cmdCheck, recover: cmdRecover };
 if (!commands[cmd] || !/^[A-Za-z0-9_-]{1,64}$/.test(values.run ?? '') || (['run', 'check', 'recover'].includes(cmd) && !(Number(values.cycle) >= 1))) {
-  console.error('usage: p7.mjs boot-probe|netcheck|init|adopt|run|check|recover [--run <id>] [--cycle <n>] [--proc a] [--workers k] --max-seconds s [--rate r | --target-rate r] [--pool n] [--headroom h] [--clear-digest d]');
+  console.error('usage: p7.mjs boot-probe|netcheck|preflight|init|adopt|run|check|recover [--run <id>] [--cycle <n>] [--proc a] [--workers k] --max-seconds s [--rate r | --target-rate r] [--pool n] [--headroom h] [--clear-digest d]');
   process.exit(1);
 }
 try {

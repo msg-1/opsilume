@@ -1,0 +1,17 @@
+{
+  "_how": "Fill every field from the host evidence and the vendor documentation, then: recorder.mjs create-run --storage-json <this file>. 'unknown' or an empty value in any field refuses a qualifying run.",
+  "driveModel": "",
+  "firmware": "",
+  "controller": "",
+  "dbDevice": "",
+  "journalDevice": "",
+  "filesystem": "",
+  "writeCache": "write back | write through",
+  "fua": "yes | no | not-advertised",
+  "flushSupported": "yes | no",
+  "flushesObserved": "yes | no",
+  "vendorDoc": "",
+  "vendorFlushSemantics": "yes | no | unknown",
+  "plp": "yes | no | unknown",
+  "evidenceFiles": ""
+}

@@ -27,10 +27,10 @@ for v in pgdata state; do
 done
 for d in /sys/block/*; do
   b="$(basename "$d")"; [[ "$b" == loop* || "$b" == ram* ]] && continue
-  { echo "write_cache: $(cat "$d/queue/write_cache" 2>/dev/null)"; echo "fua: $(cat "$d/queue/fua" 2>/dev/null)"; echo "rotational: $(cat "$d/queue/rotational" 2>/dev/null)"; echo "scheduler: $(cat "$d/queue/scheduler" 2>/dev/null)"; echo "model: $(cat "$d/device/model" 2>/dev/null)"; echo "stat: $(cat "$d/stat" 2>/dev/null)"; } >"$out/queue-$b.txt"
+  { echo "write_cache: $(cat "$d/queue/write_cache" 2>/dev/null)"; echo "fua: $(cat "$d/queue/fua" 2>/dev/null)"; echo "rotational: $(cat "$d/queue/rotational" 2>/dev/null)"; echo "scheduler: $(cat "$d/queue/scheduler" 2>/dev/null)"; echo "model: $(cat "$d/device/model" 2>/dev/null)"; echo "firmware: $(cat "$d/device/firmware_rev" 2>/dev/null || cat "$d/device/rev" 2>/dev/null)"; echo "stat: $(cat "$d/stat" 2>/dev/null)"; } >"$out/queue-$b.txt"
   case "$b" in
     nvme*) cap "nvme-id-ctrl-$b" nvme id-ctrl "/dev/$b"; cap "nvme-vwc-$b" nvme get-feature -f 6 "/dev/$b" ;;
-    sd*) cap "hdparm-W-$b" hdparm -W "/dev/$b" ;;
+    sd*) cap "hdparm-W-$b" hdparm -W "/dev/$b"; cap "hdparm-I-$b" hdparm -I "/dev/$b" ;;   # -I lists the FLUSH CACHE commands the drive reports
   esac
   cap "smart-$b" smartctl -a "/dev/$b"
 done
@@ -50,8 +50,8 @@ if [ "$probe" = "--flush-probe" ]; then
     { echo "probe directory: $pdir"; echo "filesystem: $(findmnt -no SOURCE,FSTYPE,OPTIONS -T "$pdir" 2>/dev/null)"; echo "kernel: $(uname -r)"; echo "--- flush requests per device before"; flushes
       for i in $(seq 1 20); do dd if=/dev/zero of="$f" bs=4k count=1 conv=fsync status=none 2>&1; done; rm -f "$f"
       echo "--- flush requests per device after 20 fsynced 4 KiB writes"; flushes
-      echo "--- reading: a higher count on the journal's device means the kernel issued flushes for fsync on this path."
-      echo "--- it does NOT show that the device honours a flush; that needs the vendor's documentation."; } >"$out/flush-probe.txt" 2>&1
+      echo "--- WHAT THIS SHOWS: a higher count on the journal's device means the KERNEL issued flush requests for fsync of a probe file on this filesystem."
+      echo "--- WHAT IT DOES NOT SHOW: that the device honours a flush (vendor documentation only), or that PostgreSQL's or the journal's own writes are durable (only the power-cut cycles test that)."; } >"$out/flush-probe.txt" 2>&1
   fi
 fi
 cap kernel-log journalctl -k -b --no-pager

@@ -17,13 +17,21 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { appendDurable, fsyncDir, readLedger, writeOnce } from './lib/ledger.mjs';
 import { WINDOW_MS, keyFromHex, newKeyHex, nextStream, signResponse, streamKey, verifyRequest } from './lib/protocol.mjs';
-import { FAILURE_MODELS, QUALIFYING_MODELS, finalStatus, physicalStreak, storageQualifies } from './lib/verdict.mjs';
+import { FAILURE_MODELS, QUALIFYING_MODELS, STORAGE_FIELDS, finalStatus, physicalStreak, storageProblems, storageQualifies } from './lib/verdict.mjs';
+import { REQUIRED_ATTESTATIONS, freshVolumeProblems } from './lib/preflight.mjs';
 
 const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const isCycle = (n) => Number.isInteger(n) && n >= 1 && n <= 10000;
 const pad = (n) => String(n).padStart(4, '0');
 export const SILENT_STOP_MS = 10_000; // a stream with no acknowledgement for this long before the cut had stopped
-const EVENT_KINDS = ['worker_stopped', 'initialised', 'adopted', 'quarantine_observed', 'netcheck'];
+const EVENT_KINDS = ['worker_stopped', 'volume_claimed', 'initialised', 'adopted', 'quarantine_observed', 'netcheck'];
+
+// Volume registry: every database cluster a run was ever initialised on, by PostgreSQL's system identifier (unique per
+// initdb). A cluster belongs to the run that claimed it and to the runs that continue it; nothing else may use it.
+const registryFile = (dir) => path.join(dir, 'volumes.jsonl');
+export const volumeOwner = (dir, pgSystemId) => readLedger(registryFile(dir)).entries.find((v) => v.pgSystemId === String(pgSystemId)) ?? null;
+export const volumeOf = (dir, run) => readLedger(registryFile(dir)).entries.find((v) => v.run === run) ?? null;
+export function registerVolume(dir, entry) { fs.mkdirSync(dir, { recursive: true }); appendDurable(registryFile(dir), { ...entry, at: new Date().toISOString() }); }
 const validState = (f) => !!f && typeof f.installationId === 'string' && f.installationId.length > 0 && Number.isInteger(f.head) && f.head >= 0 && /^[0-9a-f]{64}$/.test(f.headHash ?? '');
 const sameState = (f, g) => validState(f) && validState(g) && f.installationId === g.installationId && f.head === g.head && f.headHash === g.headHash;
 
@@ -60,18 +68,21 @@ export function createRun(dir, o) {
   if (!FAILURE_MODELS.includes(o.failureModel)) throw new Error(`failure model must be one of ${FAILURE_MODELS.join(', ')}`);
   const s = runStore(dir, o.run);
   if (s.exists() || fs.existsSync(s.keyFile)) throw new Error('run already exists');
-  const pick = (v, allowed) => (allowed.includes(v) ? v : 'unknown');
-  const storage = {
-    writeCache: pick(o.writeCache, ['write back', 'write through']),
-    flushHonoured: pick(o.flushHonoured, ['yes', 'no']),
-    fua: pick(o.fua, ['yes', 'no', 'not-advertised']),
-    flushesObserved: pick(o.flushesObserved, ['yes', 'no']),
-    plp: pick(o.plp, ['yes', 'no']),
-    evidence: String(o.storageEvidence ?? '').slice(0, 500),
-    attestedBy: 'operator, from the recorded device evidence',
-  };
-  if (QUALIFYING_MODELS.includes(o.failureModel) && !storageQualifies(storage)) {
-    throw new Error('refused: flush or FUA behaviour is not verified. Needed: write cache known; flush honoured "yes"; FUA "yes", or FUA "not-advertised" together with flushes observed "yes"; and the evidence named. Qualifying cycles must not run (decision 4)');
+  // The three run types never share state: a run continues only a run of its own type (decision: a POWER-CUT series
+  // starts on fresh volumes and never adopts HARNESS-SMOKE or VM-CRASH state).
+  if (o.continues) {
+    const old = runStore(dir, o.continues);
+    if (!old.exists()) throw new Error('refused: unknown earlier run');
+    if (old.run().failureModel !== o.failureModel) throw new Error(`refused: a ${o.failureModel} run cannot continue ${old.run().failureModel} state (run ${o.continues}). A qualifying series starts on fresh, dedicated volumes`);
+  }
+  // Storage evidence: the operator's checklist (storage-evidence.template.json). Refused for a qualifying run if any
+  // critical item is unknown.
+  const raw = o.storage && typeof o.storage === 'object' ? o.storage : {};
+  const storage = Object.fromEntries([...STORAGE_FIELDS, 'writeCache', 'fua', 'flushSupported', 'flushesObserved', 'vendorFlushSemantics', 'plp'].map((k) => [k, typeof raw[k] === 'string' ? raw[k].slice(0, 400) : 'unknown']));
+  storage.attestedBy = 'operator, from the recorded device evidence and the vendor documentation';
+  if (QUALIFYING_MODELS.includes(o.failureModel)) {
+    const problems = storageProblems(storage);
+    if (problems.length) throw new Error(`refused: the storage evidence does not allow a qualifying run:\n- ${problems.join('\n- ')}`);
   }
   // Continuing an earlier run's database and journal (same volumes, nothing reset): only from a run that did not fail,
   // whose last cycle was checked and recovered, and that no other run already continues. The new run must then `adopt`
@@ -95,12 +106,13 @@ export function createRun(dir, o) {
       const f = path.join(runsDir, other, 'run.json');
       if (fs.existsSync(f) && JSON.parse(fs.readFileSync(f, 'utf8')).continues?.run === o.continues) throw new Error(`refused: run ${other} already continues ${o.continues}`);
     }
-    continues = { run: o.continues, lastCycle: last, finalState: done.finalState, stopped: st ? { kind: st.kind, cycle: st.cycle } : null };
+    continues = { run: o.continues, failureModel: old.run().failureModel, lastCycle: last, finalState: done.finalState, stopped: st ? { kind: st.kind, cycle: st.cycle } : null };
   }
   fs.mkdirSync(path.dirname(s.keyFile), { recursive: true, mode: 0o700 });
   writeOnce(s.keyFile, `${newKeyHex()}\n`);
   fs.chmodSync(s.keyFile, 0o600);
   s.create({ run: o.run, failureModel: o.failureModel, createdAt: new Date().toISOString(), machine: o.machine ?? null, operator: o.operator ?? null, storage, continues,
+    rootRun: continues ? (runStore(dir, o.continues).run().rootRun ?? o.continues) : o.run, // the run whose `init` created the volumes
     stopOnInconclusive: QUALIFYING_MODELS.includes(o.failureModel) || o.stopOnInconclusive === true, protocol: 'P7-REQ-1/P7-RES-1 HMAC-SHA256' });
   // Claims an earlier clearance accepted as never committed stay excluded from every later history comparison.
   if (continues) for (const u of runStore(dir, o.continues).accepted()) s.accept({ ...u, fromRun: u.fromRun ?? o.continues, acceptedAt: u.acceptedAt ?? u.at });
@@ -169,7 +181,8 @@ export function runStatus(s) {
   const events = s.events();
   const finals = s.results().map((r) => ({ cycle: r.cycle, verdict: r.verdict, status: finalStatus(r, recoveryOf(events, r.cycle)) }));
   const { run, ...rest } = s.run();
-  return { run: { run, ...rest }, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: s.rejections().length };
+  const attestations = events.filter((e) => e.kind === 'attestation').map((e) => ({ item: e.item, evidence: e.evidence, at: e.at, attestation: 'operator' }));
+  return { run: { run, ...rest }, attestations, cyclesStarted: new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle)).size, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: s.rejections().length };
 }
 
 // ───────────────────────────────────────────── server ─────────────────────────────────────────────
@@ -266,6 +279,12 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (run0.continues && !events.some((e) => e.kind === 'adopted')) return refuse(409, 'not_adopted');
           // A run never starts on volumes it neither created (init, which refuses a non-empty database) nor adopted.
           if (!run0.continues && !events.some((e) => e.kind === 'initialised')) return refuse(409, 'not_initialised');
+          // Every cycle runs on the volumes the series started on.
+          if (volumeOf(dir, run0.rootRun ?? run0.run)?.pgSystemId !== String(body.pgSystemId ?? '')) return refuse(409, 'volume_differs_from_series');
+          if (run0.failureModel === 'POWER-CUT') {
+            const have = new Set(events.filter((e) => e.kind === 'attestation').map((e) => e.item));
+            if (REQUIRED_ATTESTATIONS.some((x) => !have.has(x))) return refuse(409, 'attestations_missing');
+          }
           if (run0.continues && body.dbHead < run0.continues.finalState.head) return refuse(409, 'head_below_predecessor');
           if (!/^[a-z]$/.test(body.proc ?? '') || !Number.isInteger(body.workers) || body.workers < 1 || body.workers > 12 || !Number.isInteger(body.dbHead) || body.dbHead < 0) return refuse(400, 'invalid_start');
           if (open && open !== n) return refuse(409, `cycle_${open}_is_open`);
@@ -306,19 +325,37 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (body.cycle !== null && body.cycle !== undefined) {
             if (!isCycle(n) || body.cycleId !== startsOf(events, n)[0]?.cycleId) return refuse(409, 'wrong_cycle_id');
           }
-          if (body.kind === 'initialised' && run0.continues) return refuse(409, 'continuing_run_uses_adopt');
+          if (['volume_claimed', 'initialised'].includes(body.kind) && run0.continues) return refuse(409, 'continuing_run_uses_adopt');
+          if (body.kind === 'volume_claimed') {
+            // Before `init` creates anything: the volumes must be new to the recorder and, for a qualifying run, empty and unused.
+            if (volumeOf(dir, run0.run)) return refuse(409, 'already_claimed');
+            const vol = body.volume ?? {};
+            if (!/^\d{10,24}$/.test(String(vol.pgSystemId ?? ''))) return refuse(400, 'volume_identity_missing');
+            const owner = volumeOwner(dir, vol.pgSystemId);
+            if (owner) return refuse(409, `volume_already_used_by_${owner.run}`);
+            if (QUALIFYING_MODELS.includes(run0.failureModel) && freshVolumeProblems(vol).length) return refuse(409, 'volume_not_fresh');
+            registerVolume(dir, { pgSystemId: String(vol.pgSystemId), run: run0.run, failureModel: run0.failureModel, emptyStateEvidence: { publicRelations: vol.publicRelations ?? null, stateEntries: vol.stateEntries ?? null, walLsnBytes: vol.walLsnBytes ?? null, serverVersion: String(vol.serverVersion ?? '').slice(0, 40) } });
+          }
+          if (body.kind === 'initialised' && !volumeOf(dir, run0.run)) return refuse(409, 'volume_not_claimed');
           if (body.kind === 'initialised' && events.some((e) => e.kind === 'initialised')) return refuse(409, 'already_initialised');
           if (body.kind === 'adopted') {
             if (!run0.continues) return refuse(409, 'not_a_continuing_run');
             if (events.some((e) => e.kind === 'adopted')) return refuse(409, 'already_adopted');
             if (!sameState(run0.continues.finalState, body.finalState)) return refuse(409, 'state_differs_from_predecessor');
+            if (volumeOf(dir, run0.rootRun)?.pgSystemId !== String(body.pgSystemId ?? '')) return refuse(409, 'volume_differs_from_series');
           }
           if (body.kind === 'quarantine_observed') {
             const r = s.result(n);
             if (!r?.quarantineRequired || recoveryOf(events, n)) return refuse(409, 'no_quarantine_expected');
           }
-          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...stamp });
+          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...(body.kind === 'initialised' ? { installationId: String(body.installationId ?? '').slice(0, 64) } : {}), ...stamp });
           return reply(200, { ok: true });
+        }
+
+        if (rest === 'volume-check') {
+          // Read-only (preflight): who, if anyone, these volumes are registered to. Nothing is recorded.
+          const owner = volumeOwner(dir, body.pgSystemId);
+          return reply(200, { registeredTo: owner?.run ?? null, registeredModel: owner?.failureModel ?? null });
         }
 
         if (rest === 'boot') {
@@ -392,9 +429,9 @@ async function main() {
     args: argv,
     options: {
       dir: { type: 'string' }, run: { type: 'string' }, cycle: { type: 'string' }, host: { type: 'string', default: '127.0.0.1' }, port: { type: 'string', default: '8787' },
-      'failure-model': { type: 'string' }, 'write-cache': { type: 'string' }, 'flush-honoured': { type: 'string' }, fua: { type: 'string' }, plp: { type: 'string' }, machine: { type: 'string' }, operator: { type: 'string' },
+      'failure-model': { type: 'string' }, machine: { type: 'string' }, operator: { type: 'string' },
       'min-seconds': { type: 'string' }, 'max-seconds': { type: 'string' }, 'command-json': { type: 'string' }, 'power-was-cut': { type: 'string' }, evidence: { type: 'string' }, 'attested-from': { type: 'string' }, 'attested-to': { type: 'string' },
-      'flushes-observed': { type: 'string' }, 'storage-evidence': { type: 'string' }, continues: { type: 'string' }, 'stop-on-inconclusive': { type: 'boolean' },
+      'storage-json': { type: 'string' }, item: { type: 'string' }, continues: { type: 'string' }, 'stop-on-inconclusive': { type: 'boolean' },
     },
   });
   if (!a.dir) throw new Error('--dir is required');
@@ -403,7 +440,8 @@ async function main() {
     return;
   }
   if (cmd === 'create-run') {
-    const r = createRun(a.dir, { run: a.run, failureModel: a['failure-model'], writeCache: a['write-cache'], flushHonoured: a['flush-honoured'], fua: a.fua, plp: a.plp, flushesObserved: a['flushes-observed'], storageEvidence: a['storage-evidence'], continues: a.continues, stopOnInconclusive: a['stop-on-inconclusive'], machine: a.machine, operator: a.operator });
+    const storage = a['storage-json'] ? JSON.parse(fs.readFileSync(a['storage-json'], 'utf8')) : undefined;
+    const r = createRun(a.dir, { run: a.run, failureModel: a['failure-model'], storage, continues: a.continues, stopOnInconclusive: a['stop-on-inconclusive'], machine: a.machine, operator: a.operator });
     // The key itself is never printed: copy the file to the test machine (P7_KEY_FILE_HOST), mode 0600.
     console.log(JSON.stringify({ run: r.run, keyFile: r.keyFile }, null, 2));
     return;
@@ -449,9 +487,15 @@ async function main() {
       attested = { from: from.toISOString(), to: to.toISOString(), label: 'operator attestation, not an independent observation' };
     }
     s.event({ cycle: n, kind: 'cut_confirmed', powerWasCut: a['power-was-cut'], operatorEvidence: (a.evidence ?? '').slice(0, 500), operatorAttestedCut: attested, attestation: 'operator' });
+  } else if (cmd === 'attest') {
+    // What the operator did on the actual Linux host. Recorded as an attestation; the recorder cannot observe it.
+    if (!REQUIRED_ATTESTATIONS.includes(a.item)) throw new Error(`--item must be one of ${REQUIRED_ATTESTATIONS.join(', ')}`);
+    if (!(a.evidence ?? '').trim()) throw new Error('--evidence is required: what was done, when, and where its output is kept');
+    s.event({ cycle: null, kind: 'attestation', item: a.item, evidence: a.evidence.slice(0, 500), attestation: 'operator' });
+    console.log(`recorded operator attestation: ${a.item}`);
   } else if (cmd === 'status') {
     console.log(JSON.stringify(runStatus(s), null, 2));
-  } else throw new Error('commands: serve, create-run, cut, confirm-cut, status');
+  } else throw new Error('commands: serve, create-run, attest, cut, confirm-cut, status');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((e) => { console.error(String(e.message)); process.exit(1); });

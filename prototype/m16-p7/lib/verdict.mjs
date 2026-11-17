@@ -114,16 +114,35 @@ const DURABLE = { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on' 
 export const durableSettings = (s) => Object.entries(DURABLE).every(([k, v]) => s?.[k] === v);
 
 export const QUALIFYING_MODELS = ['POWER-CUT', 'VM-CRASH'];
+export const STORAGE_FIELDS = ['driveModel', 'firmware', 'controller', 'dbDevice', 'journalDevice', 'filesystem', 'vendorDoc', 'evidenceFiles'];
+const known = (v) => typeof v === 'string' && v.trim().length > 0 && !/^(unknown|n\/a|tbd|\?+)$/i.test(v.trim());
+
 /**
- * The operator's storage attestation qualifies only when, with evidence named:
- * - the write-cache state is known, and the device is documented to honour flushes; and
- * - FUA is advertised and honoured, OR FUA is not advertised and the kernel was OBSERVED issuing flushes to that
- *   device for fsync (the flush counter moved in host-evidence.sh --flush-probe). A missing FUA flag proves nothing by
- *   itself; anything unknown does not qualify.
+ * Why the operator's storage evidence does not allow a qualifying run (empty = it does). Five separate things, never
+ * merged: the device's cache configuration; whether the device reports flush support; whether the kernel was OBSERVED
+ * issuing flushes on this path; what the VENDOR documents about flush/FUA durability; and FUA. None of them is a
+ * measurement of PostgreSQL's or the journal's durability: only the power-cut cycles test that.
  */
-export const storageQualifies = (st) => ['write back', 'write through'].includes(st?.writeCache) && st?.flushHonoured === 'yes'
-  && (st?.fua === 'yes' || (st?.fua === 'not-advertised' && st?.flushesObserved === 'yes'))
-  && typeof st?.evidence === 'string' && st.evidence.trim().length > 0;
+export function storageProblems(st) {
+  const out = [];
+  for (const k of STORAGE_FIELDS) if (!known(st?.[k])) out.push(`${k} is missing or unknown`);
+  if (!['write back', 'write through'].includes(st?.writeCache)) out.push('writeCache must be "write back" or "write through"');
+  if (!['yes', 'no', 'not-advertised'].includes(st?.fua)) out.push('fua must be "yes", "no" or "not-advertised"');
+  if (!['yes', 'no'].includes(st?.flushSupported)) out.push('flushSupported (device reports flush support) must be "yes" or "no"');
+  if (!['yes', 'no'].includes(st?.flushesObserved)) out.push('flushesObserved (kernel flush requests seen in the flush probe) must be "yes" or "no"');
+  if (st?.vendorFlushSemantics !== 'yes') out.push('vendorFlushSemantics must be "yes": the vendor documentation named in vendorDoc must support flush/FUA durability');
+  if (out.length) return out;
+  if (st.fua === 'no') out.push('FUA is advertised but reported as not working');
+  if (st.writeCache === 'write back') {
+    // A volatile cache: durability depends on flushes. They must be supported by the device AND seen from the kernel.
+    if (st.flushSupported !== 'yes') out.push('write-back cache, but the device does not report flush support');
+    if (st.flushesObserved !== 'yes') out.push('write-back cache, but no kernel flush requests were observed on this path');
+  } else if (st.fua !== 'yes' && st.flushesObserved !== 'yes') {
+    out.push('write-through drive without FUA and without demonstrable flushes: not approved for qualifying testing');
+  }
+  return out;
+}
+export const storageQualifies = (st) => storageProblems(st).length === 0;
 
 /**
  * run: { failureModel, storage } (fixed on the recorder when the run is created).
