@@ -58,6 +58,7 @@
   - The harness must find exactly its two bridge addresses (`p7db`, `p7gw`) and probe both. None, one, or an unexpected third fails.
   - **The gateway checks its own way out.** Only the gateway has a route, so only it can show that the firewall limits it to the recorder. On port 8788 (internal network only) it probes a fixed list: four internet addresses, two other ports of the recorder host, and its own bridge addresses. It takes no input, so it can't be asked to connect anywhere. Strict mode fails if any of those is reachable, or if the list comes back empty, incomplete or not at all.
   - A smoke run only reports a host that answers and an open gateway; on Docker Desktop both are expected.
+  - **Side effect to know about:** each network check makes the gateway attempt those connections. Where no firewall is applied (Docker Desktop, and the real host before the firewall), the attempts to the four public addresses (1.1.1.1, 8.8.8.8, 9.9.9.9, 140.82.112.3) and to the recorder host's other ports really leave the machine: a TCP handshake, no data.
 - **Tested with fake probes only** (`test/netcheck.test.mjs`). The gateway's self-check and the strict rules have never run in a container or against a real firewall.
 
 ## The rules it enforces
@@ -206,7 +207,7 @@ A `POWER-CUT` cycle starts only while the configuration is exactly the one a suc
 - **A qualifying cycle runs the recorded workload.** `run` takes it from the record; the flags may be left out, and a flag that differs is refused. The recorder also refuses a start with another worker count or a process beyond the recorded number (`--procs 2` allows `--proc a` and `--proc b`).
 - **No new record once the first cycle has started.** Undoing the change makes the record valid again. A change that can't be undone ends the run as a qualifying series: start a new run on fresh volumes.
 - **Because the registry is bound byte for byte, no other run may claim volumes on that recorder during the series** (no smoke or supplementary run on other volumes in between).
-- **Not bound, on purpose:** sequence heads, boot ids, WAL positions, times and probe outcomes (a timeout and "unreachable" both mean blocked). Whether the bound values really stay the same across a real power cut and reboot has not been observed; every start of a smoke or supplementary run notes the binding it ran on (`bindingDigest`, unenforced), so the host rehearsal will show it.
+- **Not bound, on purpose:** sequence heads, boot ids, WAL positions, times and probe outcomes (a timeout and "unreachable" both mean blocked). Whether the bound values really stay the same across a real power cut and reboot has not been observed; every start of a smoke or supplementary run stores the configuration it reported (`bindingNoted`, unenforced), so the host rehearsal can show which values stay the same. Its workload part varies there with the measured rate; the other parts are the ones to compare.
 
 | Check | Blocked when |
 |---|---|

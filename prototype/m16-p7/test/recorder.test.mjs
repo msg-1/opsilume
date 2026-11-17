@@ -884,6 +884,7 @@ describe('readiness record: a qualifying cycle starts only on the exact configur
     assert.match((await post('sm', 'cycles/1/start', { pgSystemId: X(5), proc: 'b', workers: 1, dbHead: 0, readiness: null })).data.cycleId, /^[0-9a-f]{32}$/);
     const starts = runStore(dir, 'sm').events().filter((e) => e.kind === 'cycle_start');
     assert.match(starts[0].bindingDigest, /^unenforced:[0-9a-f]{64}$/);
+    assert.deepEqual(starts[0].bindingNoted, TB(X(5), 1), 'the reported half is kept, so a rehearsal shows which field moved');
     assert.equal(starts[1].bindingDigest, null);
   });
 });
@@ -910,6 +911,9 @@ describe('recorder identity', () => {
     assert.equal((await go()).data.error, 'readiness_stale: recorder.recorderId');
     assert.equal((await callerFor(srv.base, dir, 'i1')('POST', '/runs/i1/readiness', { test: TB(pg('i1'), 1) })).data.error, 'recorder_identity_missing');
     assert.throws(() => createRun(dir, { run: 'i3', failureModel: 'POWER-CUT', storage: STORAGE }), /holds runs but has no identity/);
+    // The run-type and storage refusals keep their own messages there (the development smoke directory is such a directory).
+    assert.throws(() => createRun(dir, { run: 'i3', failureModel: 'POWER-CUT' }), /driveModel is missing/);
+    assert.throws(() => createRun(dir, { run: 'i3', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'i2' }), /POWER-CUT run cannot continue HARNESS-SMOKE state/);
     assert.ok(!fs.existsSync(runStore(dir, 'i3').root) && !fs.existsSync(runStore(dir, 'i3').keyFile));
     createRun(dir, { run: 'i4', failureModel: 'HARNESS-SMOKE' });
     assert.equal(recorderId(dir), null, 'no new identity is invented for a directory with history');

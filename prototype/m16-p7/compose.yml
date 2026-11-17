@@ -2,7 +2,9 @@
 # Network isolation (verified by `p7.mjs netcheck`, which `run` performs before every cycle):
 #   p7db  internal  db + harness            PostgreSQL is reachable only from the harness
 #   p7gw  internal  harness + gateway       the harness's ONLY way out is the gateway
-#   egress          gateway only            the gateway forwards to one fixed address: the recorder on the other host
+#   egress          gateway only            the gateway forwards to one fixed address: the recorder on the other host.
+#                                           Its port 8788 (reachable on p7gw only) reports whether the gateway can reach a
+#                                           fixed list of destinations it must not reach (lib/netcheck.mjs).
 # The harness has no outbound route (no internet, no webhook destination, no other host); nothing is published.
 # Restart policy: after a power cut the Docker daemon brings the stack back by itself, so PostgreSQL crash recovery
 # starts at boot and the harness's boot probe records when the database became reachable (decision 5).

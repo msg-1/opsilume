@@ -164,7 +164,6 @@ export function createRun(dir, o) {
   const s = runStore(dir, o.run);
   if (s.exists() || fs.existsSync(s.keyFile)) throw new Error('run already exists');
   registry(dir); // no new run beside a registry that lost history
-  if (o.failureModel === 'POWER-CUT' && dirState(dir) === 'recorder' && !recorderId(dir)) throw new Error('refused: this recorder directory holds runs but has no identity (recorder-id.json). It predates readiness records, or the file was removed. A qualifying run needs a recorder directory with its identity intact')
   // The three run types never share state: a run continues only a run of its own type (decision: a POWER-CUT series
   // starts on fresh volumes and never adopts HARNESS-SMOKE or VM-CRASH state).
   if (o.continues) {
@@ -181,6 +180,8 @@ export function createRun(dir, o) {
     const problems = storageProblems(storage);
     if (problems.length) throw new Error(`refused: the storage evidence does not allow a qualifying run:\n- ${problems.join('\n- ')}`);
   }
+  // After the run-type and storage refusals, so those keep their own messages.
+  if (o.failureModel === 'POWER-CUT' && dirState(dir) === 'recorder' && !recorderId(dir)) throw new Error('refused: this recorder directory holds runs but has no identity (recorder-id.json). It predates readiness records, or the file was removed. A qualifying run needs a recorder directory with its identity intact')
   // Continuing an earlier run's database and journal (same volumes, nothing reset): only from a run that did not fail,
   // whose last cycle was checked and recovered, and that no other run already continues. The new run must then `adopt`
   // exactly the state the recorder holds for the predecessor.
@@ -386,7 +387,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           }
           // A qualifying cycle starts only on exactly the configuration a successful preflight recorded for THIS run.
           // The recorder's half is recomputed now; the test machine's half is what it reports for this start.
-          let bindingDigest = null;
+          let bindingDigest = null, noted = null;
           if (run0.failureModel === 'POWER-CUT') {
             const ready = latestReadiness(events);
             if (!ready) return refuse(409, 'readiness_missing');
@@ -398,7 +399,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             const w = test.workload;
             if (body.workers !== w.workers || !/^[a-z]$/.test(body.proc ?? '') || body.proc.charCodeAt(0) - 97 >= w.procs) return refuse(409, 'start_differs_from_ready_workload');
             bindingDigest = ready.digest;
-          } else if (body.readiness) bindingDigest = `unenforced:${digestOf(vetTestBinding(body.readiness).test)}`; // lets a rehearsal show whether the binding is stable
+          } else if (body.readiness) { noted = vetTestBinding(body.readiness).test; bindingDigest = `unenforced:${digestOf(noted)}`; } // a rehearsal shows what stays the same across reboots
           if (run0.continues && body.dbHead < run0.continues.finalState.head) return refuse(409, 'head_below_predecessor');
           if (!/^[a-z]$/.test(body.proc ?? '') || !Number.isInteger(body.workers) || body.workers < 1 || body.workers > 12 || !Number.isInteger(body.dbHead) || body.dbHead < 0) return refuse(400, 'invalid_start');
           if (open && open !== n) return refuse(409, `cycle_${open}_is_open`);
@@ -413,7 +414,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           // leaves the database untouched and the same start can be retried.
           if (body.vet === true) return reply(200, { vetted: true });
           const cycleId = startsOf(events, n)[0]?.cycleId ?? randomBytes(16).toString('hex');
-          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bindingDigest, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
+          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bindingDigest, ...(noted ? { bindingNoted: noted } : {}), bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
           return reply(200, { cycleId });
         }
 

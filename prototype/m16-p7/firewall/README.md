@@ -5,7 +5,7 @@
 ## Why Docker alone is not enough
 
 - The harness container can reach the **test machine's own bridge addresses**. A host service listening on all addresses (sshd, for example) would be reachable from it.
-- The **gateway container and the host** have ordinary outbound access. The gateway's code connects only to the recorder, but Docker doesn't confine it.
+- The **gateway container and the host** have ordinary outbound access. The gateway's code connects only to the recorder, but Docker doesn't confine it. Its self-check (port 8788, used by `p7.mjs netcheck`) also attempts a fixed list of destinations it must **not** reach, to show that these rules stop it; until the rules are applied, those attempts leave the machine (a TCP handshake, no data).
 
 ## What the rules do
 
