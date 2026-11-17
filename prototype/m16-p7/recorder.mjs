@@ -295,6 +295,9 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           }
           if (events.some((e) => e.cycle === n && e.kind === 'cut_sent')) return refuse(409, 'cycle_already_cut');
           if (startsOf(events, n).some((e) => e.proc === body.proc)) return refuse(409, 'process_already_started_in_cycle');
+          // `vet`: every check above, nothing recorded. The harness asks this before it seeds a single action, so a refusal
+          // leaves the database untouched and the same start can be retried.
+          if (body.vet === true) return reply(200, { vetted: true });
           const cycleId = startsOf(events, n)[0]?.cycleId ?? randomBytes(16).toString('hex');
           s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
           return reply(200, { cycleId });

@@ -7,6 +7,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
 import { createRecorder, createRun, cutRefusal, cycleView, registerVolume, runStore, volumeOwner } from '../recorder.mjs';
@@ -386,6 +388,9 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
     assert.deepEqual(runStore(dir, 'a2').accepted().map((u) => [u.seq, u.actionId, u.fromRun]), [[31, unc.actionId, 'a1']], 'accepted claims carry over');
     assert.notEqual(fs.readFileSync(runStore(dir, 'a2').keyFile, 'utf8'), fs.readFileSync(runStore(dir, 'a1').keyFile, 'utf8'), 'a new key');
     assert.throws(() => createRun(dir, { run: 'a3', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'a1' }), /already continues/);
+    // The reverse direction: qualifying state is never continued by a smoke or supplementary run.
+    assert.throws(() => createRun(dir, { run: 'a4', failureModel: 'HARNESS-SMOKE', continues: 'a1' }), /HARNESS-SMOKE run cannot continue POWER-CUT state/);
+    assert.throws(() => createRun(dir, { run: 'a5', failureModel: 'VM-CRASH', storage: STORAGE, continues: 'a1' }), /VM-CRASH run cannot continue POWER-CUT state/);
     assert.deepEqual(frozen('a1'), before, 'the earlier run\'s record is untouched');
   });
 
@@ -545,5 +550,53 @@ describe('qualifying runs never share volumes or state with smoke or supplementa
     assert.equal((await c('POST', '/runs/s2/event', { kind: 'volume_claimed', volume: EMPTY('7333333333333333333') })).data.error, 'continuing_run_uses_adopt');
     assert.equal((await c('POST', '/runs/s2/event', { kind: 'adopted', finalState: S, pgSystemId: pg('pc1') })).data.error, 'volume_differs_from_series');
     assert.equal((await c('POST', '/runs/s2/event', { kind: 'adopted', finalState: S, pgSystemId: pg('s1') })).status, 200);
+  });
+});
+
+describe('start vetting and operator commands', () => {
+  const dir = path.join(tmp, 'ops');
+  const cli = fileURLToPath(new URL('../recorder.mjs', import.meta.url));
+  const template = fileURLToPath(new URL('../storage-evidence.template.json', import.meta.url));
+  const run = (...args) => spawnSync(process.execPath, [cli, ...args, '--dir', dir], { encoding: 'utf8' });
+  let srv;
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+
+  test('create-run --storage-json: the unfilled template is refused with every reason; a filled one is accepted', () => {
+    const r = run('create-run', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', template);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /driveModel is missing or unknown[\s\S]*vendorDoc is missing[\s\S]*writeCache must be/);
+    assert.ok(!fs.existsSync(path.join(dir, 'keys', 'pc.key')));
+    const filled = path.join(tmp, 'storage-filled.json');
+    fs.writeFileSync(filled, JSON.stringify({ ...JSON.parse(fs.readFileSync(template, 'utf8')), ...STORAGE }));
+    const ok = run('create-run', '--run', 'pc', '--failure-model', 'POWER-CUT', '--storage-json', filled);
+    assert.equal(ok.status, 0, ok.stderr);
+    const out = JSON.parse(ok.stdout);
+    assert.equal(out.run.storage.firmware, STORAGE.firmware);
+    assert.ok(!ok.stdout.includes(fs.readFileSync(out.keyFile, 'utf8').trim()), 'the key is not printed');
+    assert.notEqual(run('create-run', '--run', 'no-evidence', '--failure-model', 'POWER-CUT').status, 0);
+  });
+
+  test('attest: only the three known items, with evidence; recorded as operator attestations', () => {
+    assert.match(run('attest', '--run', 'pc', '--item', 'something-else', '--evidence', 'x').stderr, /--item must be one of/);
+    assert.match(run('attest', '--run', 'pc', '--item', 'firewall-verified-on-host').stderr, /--evidence is required/);
+    for (const item of REQUIRED_ATTESTATIONS) assert.equal(run('attest', '--run', 'pc', '--item', item, '--evidence', `done on the host, see host/${item}`).status, 0);
+    const ev = runStore(dir, 'pc').events().filter((e) => e.kind === 'attestation');
+    assert.deepEqual(ev.map((e) => [e.item, e.attestation]), REQUIRED_ATTESTATIONS.map((i) => [i, 'operator']));
+  });
+
+  test('a vetted start records nothing; a refused vet leaves the cycle clean and retryable', async () => {
+    const call = callerFor(srv.base, dir, 'pc');
+    const body = { pgSystemId: '7444444444444444444', proc: 'a', workers: 1, dbHead: 0 };
+    assert.equal((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data.error, 'not_initialised');
+    assert.equal((await call('POST', '/runs/pc/event', { kind: 'volume_claimed', volume: { pgSystemId: body.pgSystemId, publicRelations: 0, stateEntries: 0, walLsnBytes: 26_000_000 } })).status, 200);
+    assert.equal((await call('POST', '/runs/pc/event', { kind: 'initialised', installationId: 'inst-pc' })).status, 200);
+    const eventsBefore = runStore(dir, 'pc').events().length;
+    assert.deepEqual((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data, { vetted: true });
+    assert.deepEqual((await call('POST', '/runs/pc/cycles/1/start', { ...body, vet: true })).data, { vetted: true }, 'vetting twice is fine');
+    assert.equal(runStore(dir, 'pc').events().length, eventsBefore, 'nothing was recorded');
+    assert.equal(cycleView(runStore(dir, 'pc'), 1).starts.length, 0);
+    assert.match((await call('POST', '/runs/pc/cycles/1/start', body)).data.cycleId, /^[0-9a-f]{32}$/);
+    assert.equal(cycleView(runStore(dir, 'pc'), 1).authenticatedRejections, 0, 'the earlier refusal does not count against the cycle');
   });
 });

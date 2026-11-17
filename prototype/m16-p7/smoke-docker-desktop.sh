@@ -104,6 +104,8 @@ node -e 'const r=JSON.parse(process.argv[1]);const t=r.reasons.join(" | ");const
 P init
 ls "$work/evidence/$run/init"/initial-empty-state-*.json >/dev/null && dc exec -T harness cat /state/p7-volume.json | grep -q "$runA" && echo "ok: initial empty-state evidence and the volume marker were recorded" || { echo "SMOKE FAILED: init evidence"; exit 1; }
 expect_refusal "init refused" P init
+pre="$(P preflight --max-seconds 40 --rate 300 --workers 2)" || true
+node -e 'const r=JSON.parse(process.argv[1]);const t=r.reasons.join(" | ");const v=r.checks.find(c=>/initialised by this run/.test(c.name));if(r.status!=="BLOCKED"||!v||!v.ok||/database is not empty|already used by run/.test(t)){console.error("SMOKE FAILED: preflight after init",t);process.exit(1)}console.log("ok: preflight after init: the volume check passes (registered to this run, journal at its initial state); still BLOCKED for the other reasons")' "$pre"
 
 echo "== RUN A ($runA). Sizing: an undersized or unsized pool is refused before anything is seeded or started"
 expect_refusal "too small" P run --cycle 1 --proc a --workers 1 --max-seconds 600 --rate 250 --pool 50000
@@ -147,7 +149,11 @@ dbid="$(dc ps -q db)"
 dc up -d --wait                                            # recreates only the harness container with the new run and key
 [ "$(dc ps -q db)" = "$dbid" ] && [ "$(db_head)" = "$headA" ] && echo "ok: the database container and its state were not touched (head $headA)" || { echo "SMOKE FAILED: database changed"; exit 1; }
 expect_refusal "use \"adopt\"" P init
+actions_before="$(q "SELECT count(*) FROM action")"
 expect_refusal "not_adopted" P run --cycle 1 --proc a --workers 1 $SIZE
+[ "$(q "SELECT count(*) FROM action")" = "$actions_before" ] && echo "ok: the refused start seeded nothing" || { echo "SMOKE FAILED: a refused start seeded actions"; exit 1; }
+pre="$(P preflight --max-seconds 40 --rate 300 --workers 2)" || true
+node -e 'const r=JSON.parse(process.argv[1]);const t=r.reasons.join(" | ");if(r.status!=="BLOCKED"||!/earlier run .* is HARNESS-SMOKE: a POWER-CUT run never continues other state/.test(t)||/not trusted|not in the state recorded|not the ones the series started on/.test(t)){console.error("SMOKE FAILED: preflight before adopt",t);process.exit(1)}console.log("ok: preflight on the continuing run: BLOCKED (smoke state can never qualify); the state itself is trusted, unchanged and on the series volumes")' "$pre"
 P adopt
 expect_refusal "already_adopted" P adopt
 R status | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);if(r.cycles.length||r.streak.consecutivePhysicalPasses||r.stopped)process.exit(1);console.log("ok: run B starts with no cycles and a count of zero; continues",r.run.continues.run,"at head",r.run.continues.finalState.head)})'
@@ -161,6 +167,7 @@ dc up -d --wait
 expect_exit 3 P check --cycle 1
 # If the kill lands between b's claim append and its commit, the journal is one ahead and a's workers stop too (safe).
 assert_json "$(result 1)" "r.fails.length===0 && r.inconclusive.includes('WORKLOAD_STOPPED_BEFORE_CUT') && r.silentWorkerStops.filter(w=>w.proc==='b').length===2 && (r.silentWorkerStops.length===2 || r.relation==='journal-one-ahead')"
+node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const st=v.starts.map(s=>s.proc).sort().join();const ak=[...new Set(v.acks.map(a=>a.proc))].sort().join();if(st!=="a,b"||ak!=="a,b"){console.error("SMOKE FAILED: both processes must start and acknowledge in this cycle",st,ak);process.exit(1)}console.log("ok: both processes started and acknowledged claims (a: "+v.acks.filter(a=>a.proc==="a"&&a.kind==="claim").length+", b: "+v.acks.filter(a=>a.proc==="b"&&a.kind==="claim").length+")")' "$(dirname "$(result 1)")/recorder-cycle.json"
 assert_json "$(result 1)" "r.cut.how==='manual prompt' && r.cut.independentlyConfirmed===false && /attestation/.test(r.cut.operatorAttestedCut.label) && r.cut.operatorAttestedCut.from<=r.cut.operatorAttestedCut.to && r.cut.requestedAt<=r.cut.operatorAttestedCut.from && r.timeline.independentlyObservedCutAt===null"
 assert_json "$(result 1)" "r.counts.windowFrom===$headA && r.counts.historyJournalClaims>r.counts.cycleJournalClaims && !r.fails.includes('HISTORY_DIFFERS')"
 [ "$(db_unique)" = t ] && echo "ok: still unique across both runs" || { echo "SMOKE FAILED: duplicate committed claims"; exit 1; }

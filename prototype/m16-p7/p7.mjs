@@ -74,9 +74,9 @@ async function retireUnclaimed(p, j, run, cycle, { failInside = false } = {}) {
   const jBefore = { bytes: fs.statSync(j.file).size, sha256: sha256File(j.file) };
   const digests = async (tx) => (await tx.$queryRaw`
     SELECT
-      (SELECT count(*)::int FROM action WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note = ${RETIRE_NOTE})))) AS others,
+      (SELECT count(*)::int FROM action WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note IS NOT DISTINCT FROM ${RETIRE_NOTE})))) AS others,
       (SELECT md5(coalesce(string_agg(id || '|' || status || '|' || attempts || '|' || coalesce(outcome, '') || '|' || coalesce(note, ''), ',' ORDER BY id), '')) FROM action
-        WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note = ${RETIRE_NOTE})))) AS others_digest,
+        WHERE id LIKE ${like} AND NOT (attempts = 0 AND (status = 'APPROVED' OR (status = 'PROPOSED' AND note IS NOT DISTINCT FROM ${RETIRE_NOTE})))) AS others_digest,
       (SELECT count(*)::int FROM action WHERE id NOT LIKE ${like} AND status = 'APPROVED') AS approved_elsewhere,
       (SELECT count(*)::int FROM audit) AS audit_rows,
       (SELECT md5(coalesce(string_agg(id::text || '|' || action || '|' || coalesce(ref, '') || '|' || coalesce(meta::text, ''), ',' ORDER BY id), '')) FROM audit) AS audit_digest`)[0];
@@ -88,7 +88,8 @@ async function retireUnclaimed(p, j, run, cycle, { failInside = false } = {}) {
     if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('retirement would have changed a claimed action or an audit row');
     return { retired, claimedOrOtherActionsUnchanged: before.others, auditRowsUnchanged: before.audit_rows, approvedElsewhereUntouched: before.approved_elsewhere };
   }, { timeout: 600_000, maxWait: 60_000 });
-  const secondPass = await p.$executeRaw`UPDATE action SET status = 'PROPOSED', note = ${RETIRE_NOTE} WHERE id LIKE ${like} AND status = 'APPROVED' AND attempts = 0`;
+  // Idempotence, checked without changing anything: nothing is left for a second pass.
+  const [{ left: secondPass }] = await p.$queryRaw`SELECT count(*)::int AS left FROM action WHERE id LIKE ${like} AND status = 'APPROVED' AND attempts = 0`;
   const jAfter = { bytes: fs.statSync(j.file).size, sha256: sha256File(j.file) };
   if (jAfter.bytes !== jBefore.bytes || jAfter.sha256 !== jBefore.sha256) throw Object.assign(new Error('the journal changed during retirement'), { journalChanged: true });
   if (secondPass !== 0) throw new Error(`a second retirement pass found ${secondPass} more actions`);
@@ -211,7 +212,8 @@ async function cmdNetcheck(a, { quiet = false } = {}) {
 // ───────────────────────────────────────────── preflight ────────────────────────────────────────────
 /**
  * Read-only. Gathers the facts for a qualifying run and prints READY_FOR_OPERATOR_REVIEW or BLOCKED with the exact
- * reasons. It writes nothing here or on the recorder, seeds nothing, and never starts a workload or a cut.
+ * reasons. It changes nothing on the test machine, seeds nothing, and never starts a workload or a cut. On the recorder
+ * the only trace is its log of the two unauthenticated probes this command sends on purpose (rejections.jsonl).
  */
 async function cmdPreflight(a) {
   const f = { run: {}, volume: {}, recorder: { authenticated: false, unsignedRejected: false } };
@@ -375,6 +377,9 @@ async function cmdRun(a) {
   const mp = markerProblem(j0, pgSystemId);
   if (mp) throw new Error(`refused: ${mp}`);
   const prefix = `${runTag(a.run)}c${pad(cycle)}${proc}`;
+  // The recorder vets the start (adoption, volumes, attestations, cycle order) BEFORE anything is seeded.
+  const startBody = { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() };
+  await rec('POST', `/runs/${a.run}/cycles/${cycle}/start`, { ...startBody, vet: true });
   // Clearance (inspect -> clear) was validated up to 1,000,000 affected actions (Phase 0.5). Every APPROVED action is
   // affected, so the actions waiting at any moment must stay inside that envelope.
   const [{ waiting }] = await p.$queryRaw`SELECT count(*)::int AS waiting FROM action WHERE status = 'APPROVED'`;
@@ -385,7 +390,7 @@ async function cmdRun(a) {
     await p.$executeRawUnsafe(`INSERT INTO action (id, org_id, status) SELECT '${prefix}w${w}-' || g, 'org-p7', 'APPROVED' FROM generate_series(1, ${pool}) g`);
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
-  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() });
+  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, startBody);
   const cycleId = started.data.cycleId;
   await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` });
   console.log(`cycle ${cycle} (${proc}): ${workers} worker(s) claiming from head ${row.journal_seq}; waiting for the cut`);

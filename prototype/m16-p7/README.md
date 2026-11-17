@@ -17,9 +17,10 @@
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `recorder.mjs` | **Another host** (for example the Mac), never on the switched outlet | Authenticates every request; stores each accepted acknowledgement with `fsync` **before** replying; holds the failure model, storage attestation, cut times (its own clock), results, recoveries and the stop marker. Operator commands: `create-run`, `cut`, `confirm-cut`, `status` |
+| `storage-evidence.template.json` | Filled by the operator | The storage evidence checklist, passed to `create-run --storage-json` |
+| `recorder.mjs` | **Another host** (for example the Mac), never on the switched outlet | Authenticates every request; stores each accepted acknowledgement with `fsync` **before** replying; holds the failure model, storage attestation, cut times (its own clock), results, recoveries and the stop marker. Operator commands: `create-run`, `attest`, `cut`, `confirm-cut`, `status` |
 | `gateway.mjs` | The machine under test, `gateway` container | The harness's only way out: forwards TCP to one fixed address, the recorder |
-| `p7.mjs` | The machine under test, `harness` container | `boot-probe` (entrypoint), `netcheck`, `init` (once, on empty volumes; never wipes), `adopt` (a run that continues an earlier one), `run`, `check`, `recover` |
+| `p7.mjs` | The machine under test, `harness` container | `boot-probe` (entrypoint), `netcheck`, `preflight` (read-only), `init` (once, on empty volumes; never wipes), `adopt` (a run that continues an earlier one), `run`, `check`, `recover` |
 | `firewall/` | The machine under test, on the host | `p7-firewall.sh` and its README: the mandatory host firewall. **Prepared, never applied** |
 | `host-evidence.sh` | The machine under test, on the host, as root | OS, kernel, virtualisation, mounts, devices, write cache, FUA, SMART, kernel log, PostgreSQL log. Read-only. **Not yet exercised on a real Linux machine** (required before qualifying cycles) |
 | `lib/` | — | `protocol.mjs` (authentication, acknowledgement streams), `ledger.mjs`, `scan.mjs`, `verdict.mjs`, `sizing.mjs` |
@@ -67,7 +68,7 @@
 - **After an INCONCLUSIVE cycle** the run is stopped, but the state is kept:
   1. `recover` that cycle. This is still allowed, and quarantine and clearance are not skipped.
   2. Investigate and resolve the cause.
-  3. On the recorder: `create-run --run <new> --continues <old>` (a new key and a new record; the old run's record is never changed).
+  3. On the recorder: `create-run --run <new> --failure-model <same type> --continues <old>` (a new key and a new record; the old run's record is never changed). A `POWER-CUT` run needs `--storage-json` again, and the three operator attestations again.
   4. On the test machine: set `P7_RUN` and `P7_KEY_FILE_HOST` to the new run, `docker compose up -d` (only the harness container is recreated; the volumes are untouched), then `p7.mjs adopt`.
   - `adopt` changes nothing. It refuses unless the journal verifies in full, the state is trusted, and it is exactly the state the recorder holds from the old run's last recovery.
   - The new run's count starts at zero, at its own cycle 1. Claims an earlier clearance accepted as never committed carry over, so every history comparison still covers the whole journal.
@@ -95,6 +96,9 @@ How "fresh and dedicated" is enforced:
 - **Every cycle start, and `adopt`, must name the cluster the series started on.** A marker in the journal volume ties it to that cluster, so the two volumes can't be mixed.
 - **`create-run --continues` refuses a different run type,** so a qualifying run never adopts smoke or supplementary state.
 - **Evidence:** `evidence/<run>/init/initial-empty-state-*.json` on the test machine, and `volumes.jsonl` on the recorder. Smoke evidence stays in its own run directories.
+- **Order on the real host:** smoke rehearsal first, then `docker compose down -v`, then the qualifying run on new volumes.
+- **Limits:** the registry knows only runs recorded in the same recorder directory; beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
+- **A start is vetted before anything is seeded,** so a refused start leaves the database untouched and can be retried.
 
 ## Storage evidence checklist
 
@@ -135,7 +139,7 @@ FUA not advertised is accepted only with observed flushes **and** the vendor doc
 
 `docker compose exec -T harness node p7.mjs preflight --max-seconds <s> --rate <r> [--workers n]`
 
-It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It writes nothing on the test machine or the recorder, seeds nothing, and **never starts a workload or a cut**. `READY_FOR_OPERATOR_REVIEW` is not approval.
+It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It changes nothing on the test machine, seeds nothing, and **never starts a workload or a cut**. On the recorder its only trace is the log of the two unauthenticated probes it sends on purpose. `READY_FOR_OPERATOR_REVIEW` is not approval, and it has never been produced end to end: that needs the real host.
 
 | Check | Blocked when |
 |---|---|
