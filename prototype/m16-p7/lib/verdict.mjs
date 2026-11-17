@@ -57,6 +57,12 @@ export function compareCycle({ journal, db, acks, accepted = [], windowFrom }) {
   if (notCommitted.length) finding(findings, 'fail', 'JOURNAL_CLAIM_NOT_COMMITTED', { count: notCommitted.length, seqs: notCommitted.slice(0, LIMIT) });
   if (dispatchUncommitted.length) finding(findings, 'fail', 'DISPATCH_INTENT_WITHOUT_COMMITTED_CLAIM', { count: dispatchUncommitted.length, seqs: dispatchUncommitted.slice(0, LIMIT) });
   if (db.duplicates) finding(findings, 'fail', 'DUPLICATE_COMMITTED_CLAIM', { count: db.duplicates });
+  // One action claimed under two sequence numbers would mean two workers (or processes) both claimed it.
+  for (const [where, m] of [['journal', journal.claims], ['database', db.claims]]) {
+    const ids = [...m.values()].map((c) => c.actionId);
+    const dup = ids.length - new Set(ids).size;
+    if (dup) finding(findings, 'fail', 'DUPLICATE_ACTION_CLAIM', { where, count: dup });
+  }
 
   // Acknowledgements: each one must be durable in the journal AND (for claims) committed in the database.
   const seen = new Map();
@@ -107,39 +113,69 @@ export function compareCycle({ journal, db, acks, accepted = [], windowFrom }) {
 const DURABLE = { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on' };
 export const durableSettings = (s) => Object.entries(DURABLE).every(([k, v]) => s?.[k] === v);
 
+export const QUALIFYING_MODELS = ['POWER-CUT', 'VM-CRASH'];
+/** Decisions 4 and 6: the write cache known, flushes honoured, and FUA honoured or not advertised (the kernel then flushes). */
+export const storageQualifies = (st) => ['write back', 'write through'].includes(st?.writeCache) && st?.flushHonoured === 'yes' && ['yes', 'not-advertised'].includes(st?.fua);
+
 /**
- * run: { failureModel, storage: { writeCache, flushHonoured } } (fixed when the run is created).
- * cycle: { settings, cutSentAt, cutConfirmed: 'yes' | 'no' | undefined, workerStopsBeforeCut: [...] }.
+ * run: { failureModel, storage } (fixed on the recorder when the run is created).
+ * cycle: { settings, cutSentAt, cutConfirmed, workerStopsBeforeCut, silentWorkerStops, rebootObservedAfterCut, authenticatedRejections }.
+ * A PASS here is provisional when recovery is needed: it becomes final only when the recorder holds a verified recovery
+ * (finalStatus). A journal one claim ahead is never an unconditional pass (decision 2).
  */
 export function classifyCycle({ comparison, run, cycle }) {
   const fails = comparison.findings.filter((f) => f.severity === 'fail').map((f) => f.code);
   const inconclusive = [];
   if (!FAILURE_MODELS.includes(run.failureModel)) inconclusive.push('UNKNOWN_FAILURE_MODEL');
   if (run.failureModel === 'HARNESS-SMOKE') inconclusive.push('NOT_A_DURABILITY_RUN');
-  if (run.storage?.flushHonoured !== 'yes' || !['write back', 'write through'].includes(run.storage?.writeCache)) inconclusive.push('STORAGE_FLUSH_BEHAVIOUR_UNVERIFIED');
+  if (!storageQualifies(run.storage)) inconclusive.push('STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED');
   if (!durableSettings(cycle.settings)) inconclusive.push('POSTGRESQL_DURABILITY_SETTINGS_NOT_ON');
   if (!cycle.cutSentAt) inconclusive.push('NO_CUT_RECORDED');
   if (cycle.cutConfirmed !== 'yes') inconclusive.push(run.failureModel === 'VM-CRASH' ? 'CRASH_NOT_CONFIRMED' : 'POWER_LOSS_NOT_CONFIRMED');
-  if (cycle.workerStopsBeforeCut?.length) inconclusive.push('WORKLOAD_STOPPED_BEFORE_CUT');
+  if (QUALIFYING_MODELS.includes(run.failureModel) && cycle.rebootObservedAfterCut !== true) inconclusive.push('REBOOT_AFTER_CUT_NOT_OBSERVED');
+  if (cycle.workerStopsBeforeCut?.length || cycle.silentWorkerStops?.length) inconclusive.push('WORKLOAD_STOPPED_BEFORE_CUT');
+  if (cycle.authenticatedRejections) inconclusive.push('RECORDER_REJECTED_AUTHENTICATED_MESSAGES');
   if (!comparison.counts?.claimAcks) inconclusive.push('NO_ACKNOWLEDGED_CLAIMS');
   const verdict = fails.length ? 'FAIL' : inconclusive.length ? 'INCONCLUSIVE' : 'PASS';
+  const needsRecovery = verdict === 'FAIL' ? [] : comparison.needsRecovery;
   return {
     verdict,
     failureModel: run.failureModel,
     fails,
     inconclusive,
-    countsTowardPhysicalPowerLoss: verdict === 'PASS' && run.failureModel === 'POWER-CUT',
-    needsRecovery: verdict === 'FAIL' ? [] : comparison.needsRecovery,
+    quarantineRequired: verdict !== 'FAIL' && comparison.relation === 'journal-one-ahead',
+    needsRecovery,
+    countsTowardPhysicalPowerLoss: false, // decided by the recorder after recovery (finalStatus)
   };
 }
 
-/** Consecutive passing POWER-CUT cycles, ending at the latest. INCONCLUSIVE resets the streak (conservative); FAIL stops the run. */
-export function physicalStreak(results) {
-  let streak = 0;
-  let stopped = null;
-  for (const r of [...results].sort((a, b) => a.cycle - b.cycle)) {
-    if (r.verdict === 'FAIL') { stopped = r.cycle; streak = 0; break; }
-    streak = r.countsTowardPhysicalPowerLoss ? streak + 1 : 0;
+/**
+ * The cycle's final status on the recorder: FAIL, INCONCLUSIVE, PENDING_RECOVERY (checked, recovery not yet verified)
+ * or PASS. `recovered` is the recorder's record of a verified recovery; for a journal one claim ahead it must show
+ * that quarantine was observed and clearance completed.
+ */
+export function finalStatus(result, recovered) {
+  if (!result) return 'NOT_CHECKED';
+  if (result.verdict !== 'PASS') return result.verdict;
+  if (!recovered) return 'PENDING_RECOVERY';
+  if (result.quarantineRequired && !(recovered.quarantineObserved && recovered.cleared)) return 'PENDING_RECOVERY';
+  return 'PASS';
+}
+
+/**
+ * Decision 1 and 9: the qualifying series is the run's cycles from cycle 1, in order, each with final status PASS in a
+ * POWER-CUT run. The first cycle that isn't (FAIL, INCONCLUSIVE, pending) ends the count; the recorder stops the run
+ * on FAIL or INCONCLUSIVE, so a new series is a new run starting at cycle 1.
+ */
+export function physicalStreak(finals, failureModel) {
+  let count = 0;
+  let brokenAt = null, brokenBy = null;
+  const sorted = [...finals].sort((a, b) => a.cycle - b.cycle);
+  for (const [i, f] of sorted.entries()) {
+    if (f.cycle !== i + 1 || f.status !== 'PASS' || failureModel !== 'POWER-CUT') { brokenAt = f.cycle; brokenBy = f.cycle !== i + 1 ? 'gap' : failureModel !== 'POWER-CUT' ? `not a POWER-CUT run (${failureModel})` : f.status; break; }
+    count += 1;
   }
-  return { consecutivePhysicalPasses: streak, required: REQUIRED_CONSECUTIVE, met: !stopped && streak >= REQUIRED_CONSECUTIVE, stoppedAtCycle: stopped };
+  // 20 from cycle 1 meet the requirement; any FAIL anywhere in the run (even after 20 passes) means it is not met.
+  const anyFail = sorted.some((f) => f.status === 'FAIL');
+  return { consecutivePhysicalPasses: count, required: REQUIRED_CONSECUTIVE, met: !anyFail && count >= REQUIRED_CONSECUTIVE, brokenAtCycle: brokenAt, brokenBy, anyFail };
 }

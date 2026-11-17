@@ -8,9 +8,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { GENESIS, serialize } from '../../m16-phase05/lib/journal.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal } from '../lib/scan.mjs';
-import { classifyCycle, compareCycle, physicalStreak } from '../lib/verdict.mjs';
+import { classifyCycle, compareCycle } from '../lib/verdict.mjs';
 import { appendDurable, readLedger, writeOnce } from '../lib/ledger.mjs';
-import { createRecorder, runStore } from '../recorder.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-harness-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -51,8 +50,8 @@ function scenario({ n = 5, windowFrom = 0, journalEntries, dbClaims, dbHead, ack
   return { journal, db, acks: ackList, windowFrom };
 }
 const codes = (c) => c.findings.filter((f) => f.severity === 'fail').map((f) => f.code).sort();
-const RUN = { failureModel: 'POWER-CUT', storage: { writeCache: 'write back', flushHonoured: 'yes', plp: 'unknown' } };
-const CYCLE = { settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync' }, cutSentAt: AT, cutConfirmed: 'yes', workerStopsBeforeCut: [] };
+const RUN = { failureModel: 'POWER-CUT', storage: { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown' } };
+const CYCLE = { settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync' }, cutSentAt: AT, cutConfirmed: 'yes', workerStopsBeforeCut: [], silentWorkerStops: [], rebootObservedAfterCut: true, authenticatedRejections: 0 };
 
 describe('journal scan', () => {
   test('claims and dispatch intents: head, count, fingerprint and the cycle window', () => {
@@ -203,25 +202,29 @@ describe('comparison', () => {
 
 describe('classification', () => {
   const ok = () => compareCycle(scenario());
-  test('everything verified: PASS, and it counts toward the physical requirement', () => {
+  test('everything verified: PASS, provisional (the recorder decides whether it counts, after recovery)', () => {
     const r = classifyCycle({ comparison: ok(), run: RUN, cycle: CYCLE });
     assert.equal(r.verdict, 'PASS');
-    assert.equal(r.countsTowardPhysicalPowerLoss, true);
+    assert.equal(r.quarantineRequired, false);
+    assert.equal(r.countsTowardPhysicalPowerLoss, false);
   });
   for (const [name, run, cycle, code] of [
-    ['write cache unknown', { ...RUN, storage: { writeCache: 'unknown', flushHonoured: 'yes' } }, CYCLE, 'STORAGE_FLUSH_BEHAVIOUR_UNVERIFIED'],
-    ['flush behaviour unknown', { ...RUN, storage: { writeCache: 'write back', flushHonoured: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_BEHAVIOUR_UNVERIFIED'],
+    ['write cache unknown', { ...RUN, storage: { ...RUN.storage, writeCache: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['flush behaviour unknown', { ...RUN, storage: { ...RUN.storage, flushHonoured: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['FUA behaviour unknown', { ...RUN, storage: { ...RUN.storage, fua: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['synchronous_commit off', RUN, { ...CYCLE, settings: { ...CYCLE.settings, synchronous_commit: 'off' } }, 'POSTGRESQL_DURABILITY_SETTINGS_NOT_ON'],
     ['no cut recorded', RUN, { ...CYCLE, cutSentAt: null }, 'NO_CUT_RECORDED'],
     ['power loss not confirmed', RUN, { ...CYCLE, cutConfirmed: 'no' }, 'POWER_LOSS_NOT_CONFIRMED'],
-    ['a worker stopped before the cut', RUN, { ...CYCLE, workerStopsBeforeCut: [{ kind: 'worker_stopped' }] }, 'WORKLOAD_STOPPED_BEFORE_CUT'],
+    ['no reboot observed after the cut', RUN, { ...CYCLE, rebootObservedAfterCut: false }, 'REBOOT_AFTER_CUT_NOT_OBSERVED'],
+    ['a worker reported stopping before the cut', RUN, { ...CYCLE, workerStopsBeforeCut: [{ kind: 'worker_stopped' }] }, 'WORKLOAD_STOPPED_BEFORE_CUT'],
+    ['a worker went silent before the cut', RUN, { ...CYCLE, silentWorkerStops: [{ proc: 'b', worker: 1 }] }, 'WORKLOAD_STOPPED_BEFORE_CUT'],
+    ['the recorder rejected an authenticated message', RUN, { ...CYCLE, authenticatedRejections: 1 }, 'RECORDER_REJECTED_AUTHENTICATED_MESSAGES'],
     ['a harness smoke run', { ...RUN, failureModel: 'HARNESS-SMOKE' }, CYCLE, 'NOT_A_DURABILITY_RUN'],
   ]) {
     test(`${name}: INCONCLUSIVE`, () => {
       const r = classifyCycle({ comparison: ok(), run, cycle });
       assert.equal(r.verdict, 'INCONCLUSIVE');
       assert.ok(r.inconclusive.includes(code), r.inconclusive.join());
-      assert.equal(r.countsTowardPhysicalPowerLoss, false);
     });
   }
   test('no acknowledged claims: INCONCLUSIVE', () => {
@@ -235,27 +238,21 @@ describe('classification', () => {
     assert.equal(r.verdict, 'FAIL');
     assert.deepEqual(r.needsRecovery, []);
   });
-  test('a VM crash can pass but never counts toward the physical power-loss requirement', () => {
+  test('decision 2: a journal one claim ahead is a provisional PASS that requires quarantine and clearance', () => {
+    const s = scenario({ journalEntries: [...claimsAndDispatches(1, 5), { type: 'claim', seq: 6, actionId: 'a-6' }], dbClaims: [1, 2, 3, 4, 5].map((i) => [i, `a-${i}`]) });
+    const r = classifyCycle({ comparison: compareCycle(s), run: RUN, cycle: CYCLE });
+    assert.equal(r.verdict, 'PASS');
+    assert.equal(r.quarantineRequired, true);
+    assert.deepEqual(r.needsRecovery, ['clear']);
+  });
+  test('the same action claimed under two sequence numbers fails', () => {
+    const s = scenario({ journalEntries: [...claimsAndDispatches(1, 2), { type: 'claim', seq: 3, actionId: 'a-1' }, { type: 'dispatch', seq: 3 }], dbClaims: [[1, 'a-1'], [2, 'a-2'], [3, 'a-1']] });
+    assert.ok(codes(compareCycle(s)).includes('DUPLICATE_ACTION_CLAIM'));
+  });
+  test('a VM crash can pass but is never counted here', () => {
     const r = classifyCycle({ comparison: ok(), run: { ...RUN, failureModel: 'VM-CRASH' }, cycle: CYCLE });
     assert.equal(r.verdict, 'PASS');
     assert.equal(r.countsTowardPhysicalPowerLoss, false);
-  });
-});
-
-describe('physical streak', () => {
-  const pass = (cycle) => ({ cycle, verdict: 'PASS', countsTowardPhysicalPowerLoss: true });
-  test('20 consecutive physical passes meet the requirement; 19 do not', () => {
-    assert.equal(physicalStreak(Array.from({ length: 20 }, (_, i) => pass(i + 1))).met, true);
-    assert.equal(physicalStreak(Array.from({ length: 19 }, (_, i) => pass(i + 1))).met, false);
-  });
-  test('an inconclusive cycle resets the streak', () => {
-    const rs = Array.from({ length: 21 }, (_, i) => pass(i + 1));
-    rs[1] = { cycle: 2, verdict: 'INCONCLUSIVE', countsTowardPhysicalPowerLoss: false };
-    assert.deepEqual(physicalStreak(rs), { consecutivePhysicalPasses: 19, required: 20, met: false, stoppedAtCycle: null });
-  });
-  test('a failure stops the run whatever came before', () => {
-    const rs = [...Array.from({ length: 25 }, (_, i) => pass(i + 1)), { cycle: 26, verdict: 'FAIL' }];
-    assert.deepEqual(physicalStreak(rs), { consecutivePhysicalPasses: 0, required: 20, met: false, stoppedAtCycle: 26 });
   });
 });
 
@@ -276,57 +273,8 @@ describe('ledger', () => {
   });
 });
 
-describe('recorder', () => {
-  const dir = path.join(tmp, 'recorder');
-  let server, base;
-  before(async () => {
-    server = createRecorder(dir);
-    await new Promise((r) => server.listen(0, '127.0.0.1', r));
-    base = `http://127.0.0.1:${server.address().port}`;
-    for (const run of ['r1', 'r2']) runStore(dir, run).create({ run, failureModel: 'POWER-CUT', storage: RUN.storage });
-  });
-  after(() => server.close());
-  const call = async (method, p, body) => {
-    const r = await fetch(`${base}${p}`, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
-    return { status: r.status, body: await r.json() };
-  };
-
-  test('an acknowledgement is on disk before the reply, and only for a started cycle', async () => {
-    assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: 1, actionId: 'a-1' })).status, 409);
-    assert.equal((await call('POST', '/runs/r1/cycles/1/start', { proc: 'a', dbHead: 0, journalHead: 0, workers: 1 })).status, 200);
-    assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: 1, actionId: 'a-1' })).status, 200);
-    assert.deepEqual(runStore(dir, 'r1').acks(1).map((a) => [a.cycle, a.kind, a.seq, a.actionId]), [[1, 'claim', 1, 'a-1']]);
-    assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: '2', actionId: 'a-2' })).status, 400);
-    assert.equal((await call('POST', '/runs/r1/event', { cycle: 1, kind: 'cut_sent' })).status, 400, 'cut events only from the operator command');
-  });
-  test('the next cycle cannot start before this one is checked; a result is write-once', async () => {
-    assert.equal((await call('POST', '/runs/r1/cycles/2/start', { dbHead: 1 })).status, 409);
-    assert.equal((await call('POST', '/runs/r1/cycles/1/result', { verdict: 'PASS', needsRecovery: ['clear'], countsTowardPhysicalPowerLoss: true })).status, 200);
-    assert.equal((await call('POST', '/runs/r1/cycles/1/result', { verdict: 'PASS' })).status, 409);
-    assert.equal((await call('POST', '/runs/r1/ack', { cycle: 1, kind: 'claim', seq: 2, actionId: 'a-2' })).status, 409, 'no acknowledgements after the check');
-  });
-  test('recovery gates the next cycle and records the uncommitted claim it accepted', async () => {
-    assert.match((await call('POST', '/runs/r1/cycles/2/start', { dbHead: 1 })).body.error, /needs recovery/);
-    assert.equal((await call('POST', '/runs/r1/cycles/1/recovered', { uncommitted: { seq: 2, actionId: 'a-2' }, digest: 'd', steps: [] })).status, 200);
-    assert.equal((await call('POST', '/runs/r1/cycles/2/start', { dbHead: 2 })).status, 200);
-    assert.deepEqual((await call('GET', '/runs/r1')).body.accepted.map((u) => [u.seq, u.actionId]), [[2, 'a-2']]);
-  });
-  test('a FAIL stops the run: no further starts or acknowledgements', async () => {
-    assert.equal((await call('POST', '/runs/r2/cycles/1/start', { dbHead: 0 })).status, 200);
-    const r = await call('POST', '/runs/r2/cycles/1/result', { verdict: 'FAIL', fails: ['ACKNOWLEDGED_CLAIM_MISSING_FROM_JOURNAL'] });
-    assert.equal(r.body.stopped, true);
-    assert.equal((await call('POST', '/runs/r2/ack', { cycle: 1, kind: 'claim', seq: 1, actionId: 'a' })).status, 409);
-    assert.equal((await call('POST', '/runs/r2/cycles/2/start', { dbHead: 0 })).status, 409);
-    assert.equal((await call('GET', '/runs/r2')).body.streak.stoppedAtCycle, 1);
-  });
-  test('run ids cannot escape the storage directory', async () => {
-    assert.equal((await call('GET', '/runs/..%2Fx')).status, 400);
-    assert.equal((await call('GET', '/runs/unknown')).status, 404);
-  });
-});
-
-describe('review fixes', () => {
-  test('repair detection: a second recovery call sees the repair already applied (re-entrancy)', () => {
+describe('torn-tail repair re-entrancy', () => {
+  test('a second recovery call sees the repair already applied', () => {
     const base = journalOf(claimsAndDispatches(1, 2), { tail: '{"type":"claim","seq":3' });
     const torn = scanJournal(base.file);
     const end = torn.fileBytes;
@@ -335,38 +283,17 @@ describe('review fixes', () => {
     assert.equal(repairAppliedAt(base.file, end, torn.tornBytes), true);
     assert.equal(repairAppliedAt(base.file, end, torn.tornBytes + 1), false, 'a different fragment length is not this repair');
   });
-
-  describe('recorder at volume and recorder-owned labels', () => {
-    const dir = path.join(tmp, 'recorder-2');
-    let server, base;
-    before(async () => {
-      server = createRecorder(dir);
-      await new Promise((r) => server.listen(0, '127.0.0.1', r));
-      base = `http://127.0.0.1:${server.address().port}`;
-      runStore(dir, 'vol').create({ run: 'vol', failureModel: 'POWER-CUT', storage: RUN.storage });
-      runStore(dir, 'vm').create({ run: 'vm', failureModel: 'VM-CRASH', storage: RUN.storage });
-    });
-    after(() => server.close());
-    const post = (p, body) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json() }));
-
-    test('3,000 acknowledgements over two cycles are all stored, each cycle in its own file', async () => {
-      await post('/runs/vol/cycles/1/start', { dbHead: 0 });
-      for (let seq = 1; seq <= 1500; seq++) assert.equal((await post('/runs/vol/ack', { cycle: 1, kind: 'claim', seq, actionId: `a-${seq}` })).status, 200);
-      await post('/runs/vol/cycles/1/result', { verdict: 'PASS', needsRecovery: [] });
-      await post('/runs/vol/cycles/2/start', { dbHead: 1500 });
-      for (let seq = 1501; seq <= 3000; seq++) assert.equal((await post('/runs/vol/ack', { cycle: 2, kind: 'claim', seq, actionId: `a-${seq}` })).status, 200);
-      const s = runStore(dir, 'vol');
-      assert.equal(s.acks(1).length, 1500);
-      assert.equal(s.acks(2).length, 1500);
-      assert.deepEqual(s.acks(2).slice(0, 1).map((a) => a.seq), [1501]);
-    });
-    test('the recorder, not the test machine, decides the failure model and whether a PASS counts', async () => {
-      await post('/runs/vm/cycles/1/start', { dbHead: 0 });
-      await post('/runs/vm/cycles/1/result', { verdict: 'PASS', failureModel: 'POWER-CUT', countsTowardPhysicalPowerLoss: true, needsRecovery: [] });
-      const r = runStore(dir, 'vm').result(1);
-      assert.equal(r.failureModel, 'VM-CRASH');
-      assert.equal(r.reportedFailureModel, 'POWER-CUT');
-      assert.equal(r.countsTowardPhysicalPowerLoss, false);
-    });
+  test('decision 3: a complete final line with an invalid hash is never treated as a torn tail', () => {
+    const j = journalOf(claimsAndDispatches(1, 2));
+    const text = fs.readFileSync(j.file, 'utf8');
+    fs.writeFileSync(j.file, text.replace(/"hash":"([0-9a-f])(?=[0-9a-f]{63}"\}\n$)/, (m0, c) => `"hash":"${c === 'a' ? 'b' : 'a'}`));
+    const s = scanJournal(j.file);
+    assert.equal(s.status, 'corrupt');
+    assert.equal(s.corruptIsFinalLine, true);
+    assert.equal(s.tornBytes, undefined, 'no torn bytes: nothing for the repair path to act on');
+    assert.equal(repairAppliedAt(j.file, s.fileBytes, 0), false);
+    const c = compareCycle({ ...scenario(), journal: { ...s, installationId: 'inst-1' } });
+    assert.deepEqual(codes(c), ['JOURNAL_CORRUPT']);
+    assert.deepEqual(classifyCycle({ comparison: c, run: RUN, cycle: CYCLE }).needsRecovery, []);
   });
 });

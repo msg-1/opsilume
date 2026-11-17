@@ -1,31 +1,38 @@
 #!/usr/bin/env node
 // P7 harness, test-machine side. Runs inside the `harness` container of compose.yml (Node 22 + Prisma runtime).
-// Commands: init, run, check, recover. It reuses the Phase 0.5 prototype library unchanged (claim, appendLocked,
-// inspect, clear, the journal and its verifier); it connects to PostgreSQL directly (no fault proxy); and it never
-// sends a request to a remediation destination: a dispatch is only a synthetic `dispatch` intent record.
-//
+// Commands: boot-probe (container entrypoint), netcheck, init, run, check, recover.
+// - Reuses the Phase 0.5 prototype library unchanged (claim, appendLocked, inspect, clear, the journal and verifier).
+// - Connects to PostgreSQL directly (no fault proxy). Never sends a request to a remediation destination: a dispatch is
+//   only a synthetic `dispatch` intent record. The only outbound connection is the recorder, through the gateway.
+// - Every recorder call is authenticated both ways (lib/protocol.mjs); the run key is read from P7_KEY_FILE and never
+//   printed, logged or copied into evidence.
 // NOT production code, and NOT a durability result by itself: see README.md and docs/p7-physical-linux-test-plan.md.
 import fs from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import dns from 'node:dns/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect, journalAt } from '../m16-phase05/lib/proto.mjs';
 import { trustProblem } from '../m16-phase05/lib/journal.mjs';
 import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
+import { keyFromHex, makeClient } from './lib/protocol.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
-const REC = process.env.P7_RECORDER_URL;
 const EVIDENCE = process.env.P7_EVIDENCE_DIR ?? '/evidence';
 const pad = (n) => String(n).padStart(4, '0');
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lastLine = (e) => String(e?.message ?? e).split('\n').filter(Boolean).at(-1)?.slice(0, 200);
+const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
+const diff = (a, b) => (Number.isFinite(a) && Number.isFinite(b) ? b - a : null);
 
-async function rec(method, p, body) {
-  if (!REC) throw new Error('P7_RECORDER_URL is not set');
-  const r = await fetch(`${REC}${p}`, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
-  const text = await r.text();
-  if (!r.ok) throw Object.assign(new Error(`recorder ${method} ${p}: ${r.status} ${text.slice(0, 200)}`), { status: r.status });
-  return text ? JSON.parse(text) : null;
-}
+let call; // signed recorder client, set in main()
+const rec = async (method, p, body) => (await call(method, p, body)).data;
+
+// Host facts. boot_id and btime are not namespaced: inside the container they are the machine's.
+const bootId = () => fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+const bootTimeMs = () => Number(/^btime (\d+)$/m.exec(fs.readFileSync('/proc/stat', 'utf8'))[1]) * 1000;
 
 async function settings(p) {
   const out = {};
@@ -57,11 +64,96 @@ async function scanDatabase(p, windowFrom) {
   return { count, fingerprint: hex(sum), claims, duplicates };
 }
 
+function evidenceFile(run, sub, name, data) {
+  const dir = path.join(EVIDENCE, run, sub);
+  fs.mkdirSync(dir, { recursive: true });
+  writeOnce(path.join(dir, name), data);
+  return path.join(dir, name);
+}
+
+// ───────────────────────────────────────────── boot-probe ─────────────────────────────────────────────
+/** Container entrypoint: records when this boot's database became reachable (crash recovery finished), then reports it. */
+async function cmdBootProbe(a) {
+  const startedAt = Date.now();
+  const r = { bootId: bootId(), bootTime: bootTimeMs(), containerStartedAt: startedAt, postmasterStartedAt: null, databaseReachableAt: null };
+  const p = db();
+  for (const deadline = startedAt + 15 * 60_000; Date.now() < deadline; await sleep(200)) {
+    try {
+      const [row] = await p.$queryRaw`SELECT pg_postmaster_start_time() AS t`;
+      r.postmasterStartedAt = new Date(row.t).getTime();
+      r.databaseReachableAt = Date.now(); // PostgreSQL accepts connections only after crash recovery completed
+      break;
+    } catch { /* still starting or recovering */ }
+  }
+  await p.$disconnect().catch(() => {});
+  evidenceFile(a.run, 'boots', `boot-${r.bootId}-${startedAt}.json`, r);
+  console.log(`boot probe: ${JSON.stringify({ ...r, bootTime: iso(r.bootTime), databaseReachableAt: iso(r.databaseReachableAt) })}`);
+  for (let i = 0; i < 120; i++) { // the recorder may not be up yet; each attempt is a new signed request
+    try { const x = await call('POST', `/runs/${a.run}/boot`, r); console.log(`boot reported (cycle ${x.data.cycle})`); return; } catch (e) { if (e.status === 401 || e.status === 404) break; await sleep(5000); }
+  }
+  console.log('boot report not delivered to the recorder');
+}
+
+// ───────────────────────────────────────────── netcheck ─────────────────────────────────────────────
+function tcp(host, port, ms = 1500) {
+  return new Promise((resolve) => {
+    const s = net.connect({ host, port });
+    const done = (o) => { s.destroy(); resolve(o); };
+    s.setTimeout(ms, () => done('timeout'));
+    s.once('connect', () => done('connected'));
+    s.once('error', (e) => done(e.code === 'ECONNREFUSED' ? 'refused' : `error:${e.code}`));
+  });
+}
+
+/**
+ * Verifies the isolation the compose file intends, from inside the harness: the recorder is reachable only through the
+ * gateway and only with the protocol; PostgreSQL is reachable; nothing else is (internet addresses, external DNS, the
+ * recorder host directly, the host or bridge gateways). `refused` from an internet address would mean a route exists.
+ */
+export async function netcheck(run) {
+  const probes = [];
+  const add = (name, expect, outcome, ok) => probes.push({ name, expect, outcome, ok });
+  try { await call('GET', `/runs/${run}`); add('recorder through the gateway, authenticated', 'reachable', 'authenticated', true); } catch (e) { add('recorder through the gateway, authenticated', 'reachable', lastLine(e), false); }
+  const unsigned = await fetch(`${process.env.P7_RECORDER_URL}/runs/${run}`, { signal: AbortSignal.timeout(5000) }).then((r) => r.status, (e) => `error:${e.cause?.code ?? e.name}`);
+  add('recorder without authentication', 'rejected (401)', unsigned, unsigned === 401);
+  const d = await tcp('db', 5432);
+  add('postgresql (db:5432, internal network)', 'reachable', d, d === 'connected');
+  const [th, tp] = [(process.env.P7_RECORDER_TARGET ?? '').replace(/:\d+$/, ''), Number(/:(\d+)$/.exec(process.env.P7_RECORDER_TARGET ?? '')?.[1])];
+  if (th && tp) { const o = await tcp(th, tp); add(`recorder host directly (${th}:${tp}), bypassing the gateway`, 'blocked', o, o !== 'connected'); }
+  for (const [h, port] of [['1.1.1.1', 443], ['8.8.8.8', 53], ['9.9.9.9', 443], ['140.82.112.3', 443]]) {
+    const o = await tcp(h, port);
+    add(`internet ${h}:${port}`, 'blocked', o, o !== 'connected' && o !== 'refused');
+  }
+  const r = await dns.lookup('example.com').then((x) => `resolved:${x.address}`, (e) => `error:${e.code}`);
+  add('external DNS (example.com)', 'blocked', r, !r.startsWith('resolved'));
+  for (const port of [22, 80, 443, 5432]) { const o = await tcp('gateway', port); add(`gateway:${port} (only 8787 is forwarded)`, 'blocked', o, o !== 'connected'); }
+  // Host and bridge gateways: the first address of every subnet this container is on.
+  const hosts = new Set();
+  for (const ifs of Object.values(os.networkInterfaces())) for (const i of ifs ?? []) if (i.family === 'IPv4' && !i.internal) {
+    const ip = i.address.split('.').map(Number), mask = i.netmask.split('.').map(Number);
+    hosts.add(ip.map((b, k) => (k === 3 ? (b & mask[k]) + 1 : b & mask[k])).join('.'));
+  }
+  for (const h of ['host.docker.internal', ...hosts]) for (const port of [22, 80, 443, 2375, 2376, 5432, 8787, tp].filter(Boolean)) {
+    const o = await tcp(h, port, 1000);
+    add(`host or bridge ${h}:${port}`, 'blocked', o, o !== 'connected');
+  }
+  return { ok: probes.every((p) => p.ok), probes, at: new Date().toISOString(), bootId: bootId() };
+}
+async function cmdNetcheck(a, { quiet = false } = {}) {
+  const r = await netcheck(a.run);
+  evidenceFile(a.run, 'netcheck', `netcheck-${Date.now()}.json`, r);
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'netcheck', detail: r.ok ? 'isolation verified' : `isolation FAILED: ${r.probes.filter((p) => !p.ok).map((p) => p.name).join('; ')}` }).catch(() => {});
+  if (!quiet) console.log(JSON.stringify(r, null, 1));
+  if (!r.ok) process.exitCode = 5;
+  return r;
+}
+
 // ─────────────────────────────────────────────── init ───────────────────────────────────────────────
 /** Once per run. Refuses a non-empty database or state directory: it never wipes anything. */
 async function cmdInit(a) {
   const st = await rec('GET', `/runs/${a.run}`);
   if (st.stopped) throw new Error('run is stopped');
+  if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('init refused: network isolation not verified (see evidence/netcheck)');
   const p = db();
   const j = journalAt();
   const [{ t }] = await p.$queryRaw`SELECT to_regclass('installation_state')::text AS t`;
@@ -73,16 +165,17 @@ async function cmdInit(a) {
   for (const q of GUARD) await p.$executeRawUnsafe(q);
   const id = await init(p, j);
   await p.$executeRawUnsafe(`INSERT INTO org (id) VALUES ('org-p7')`);
-  await rec('POST', `/runs/${a.run}/event`, { cycle: 1, kind: 'initialised', detail: `installation ${id}` });
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'initialised', detail: `installation ${id}` });
   console.log(JSON.stringify({ initialised: id, settings: s }));
   await p.$disconnect();
 }
 
 // ─────────────────────────────────────────────── run ────────────────────────────────────────────────
 /**
- * Claims in a loop until the machine loses power. After a claim CERTAINLY committed: acknowledge it to the recorder,
- * append a synthetic dispatch-intent record under the lock, acknowledge that. Anything else (uncertain commit,
- * quarantine, an error, the recorder unreachable) stops that worker: an ambiguous claim is never retried or acknowledged.
+ * Claims in a loop until the machine loses power. After a claim CERTAINLY committed (claim() resolved claimed: true,
+ * i.e. the transaction's COMMIT returned): acknowledge it, append a synthetic dispatch-intent record under the lock,
+ * acknowledge that. Each worker is its own ordered stream (n = 1, 2, ...). Anything else stops that worker; an
+ * ambiguous claim is never retried or acknowledged.
  */
 async function cmdRun(a) {
   const cycle = Number(a.cycle);
@@ -94,6 +187,7 @@ async function cmdRun(a) {
   if (st.stopped) throw new Error(`run is stopped: ${JSON.stringify(st.stopped)}`);
   const smokeCrash = a['smoke-crash-after-claim-append'];
   if (smokeCrash && st.run.failureModel !== 'HARNESS-SMOKE') throw new Error('--smoke-crash-after-claim-append is only for HARNESS-SMOKE runs');
+  if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('refused: network isolation not verified (see evidence/netcheck)');
   const p = db();
   const s = await settings(p);
   if (!durableSettings(s)) throw new Error(`refused: PostgreSQL durability settings are not all on: ${JSON.stringify(s)}`);
@@ -109,16 +203,19 @@ async function cmdRun(a) {
     await p.$executeRawUnsafe(`INSERT INTO action (id, org_id, status) SELECT '${prefix}w${w}-' || g, 'org-p7', 'APPROVED' FROM generate_series(1, ${pool}) g`);
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
-  await rec('POST', `/runs/${a.run}/cycles/${cycle}/start`, { proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s });
+  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, bootId: bootId() });
+  const cycleId = started.data.cycleId;
+  await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` });
   console.log(`cycle ${cycle} (${proc}): ${workers} worker(s) claiming from head ${row.journal_seq}; waiting for the cut`);
-  const ack = (body) => rec('POST', `/runs/${a.run}/ack`, { cycle, proc, ...body });
   const stop = async (worker, kind, detail) => {
-    console.log(`worker ${worker} stopped: ${kind} ${detail ?? ''}`);
-    await rec('POST', `/runs/${a.run}/event`, { cycle, kind: 'worker_stopped', proc, worker, detail: `${kind}${detail ? `: ${detail}` : ''}` }).catch(() => {});
+    console.log(`worker ${proc}/${worker} stopped: ${kind} ${detail ?? ''}`);
+    await rec('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'worker_stopped', proc, worker, detail: `${kind}${detail ? `: ${detail}` : ''}` }).catch(() => {});
   };
   await Promise.all(Array.from({ length: workers }, async (_, i) => {
     const w = i + 1;
     const j = journalAt();
+    let msg = 0;
+    const ack = (kind, seq, actionId) => rec('POST', `/runs/${a.run}/ack`, { cycle, cycleId, proc, worker: w, n: ++msg, kind, seq, actionId });
     for (let k = 1; k <= pool; k++) {
       const actionId = `${prefix}w${w}-${k}`;
       let c;
@@ -128,9 +225,9 @@ async function cmdRun(a) {
         return stop(w, 'claim_error', lastLine(e));
       }
       if (!c.claimed) return stop(w, `claim_${c.reason}`, c.problem ?? c.error); // includes 'uncertain': never retried
-      try { await ack({ kind: 'claim', seq: c.seq, actionId, worker: w }); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
+      try { await ack('claim', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
       try { await appendLocked(p, j, { type: 'dispatch', seq: c.seq, synthetic: true, at: new Date().toISOString() }); } catch (e) { return stop(w, 'dispatch_intent_failed', lastLine(e)); }
-      try { await ack({ kind: 'dispatch', seq: c.seq, actionId, worker: w }); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
+      try { await ack('dispatch', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
     }
     return stop(w, 'pool_exhausted');
   }));
@@ -142,7 +239,8 @@ async function cmdRun(a) {
 async function cmdCheck(a) {
   const cycle = Number(a.cycle);
   const st = await rec('GET', `/runs/${a.run}`);
-  const v = await rec('GET', `/runs/${a.run}/cycles/${cycle}`);
+  const got = await call('GET', `/runs/${a.run}/cycles/${cycle}`);
+  const v = got.data;
   if (v.result) throw new Error(`cycle ${cycle} was already checked`);
   if (!v.starts.length) throw new Error(`cycle ${cycle} never started`);
   const windowFrom = Math.min(...v.starts.map((x) => x.dbHead));
@@ -150,12 +248,12 @@ async function cmdCheck(a) {
   fs.mkdirSync(path.dirname(dir), { recursive: true });
   fs.mkdirSync(dir); // throws if it exists: evidence is never overwritten
   const j = journalAt();
-  // 1. Preserve the journal exactly as found, before anything else reads or repairs it.
+  // 1. Preserve the journal exactly as found, on disk, before anything else reads or repairs it.
   const files = {};
   for (const [src, name] of [[j.file, 'journal-as-found.jsonl'], [j.idFile, 'installation-as-found.json']]) {
     if (!fs.existsSync(src)) { files[name] = null; continue; }
     fs.copyFileSync(src, path.join(dir, name), fs.constants.COPYFILE_EXCL);
-    fsyncFile(path.join(dir, name)); // the machine may be cut again, or left off after a FAIL: the copy must be on disk
+    fsyncFile(path.join(dir, name));
     files[name] = { bytes: fs.statSync(src).size, sha256: sha256File(path.join(dir, name)), sourceSha256: sha256File(src) };
   }
   fsyncDir(dir);
@@ -164,29 +262,61 @@ async function cmdCheck(a) {
   const row = await stateRow(p);
   const journal = { ...scanJournal(j.file, { windowFrom }), installationId: j.identity() };
   const dbs = { ...(await scanDatabase(p, windowFrom)), installationId: row?.installation_id ?? null, head: row?.journal_seq ?? null, headHash: row?.head_hash ?? null };
+  // 2. Reboot evidence: a different boot id than at the cycle's start, booted after the cut was requested (recorder clock).
+  const offset = got.clockOffsetMs; // recorder minus this machine
+  const nowBoot = { bootId: bootId(), bootTime: bootTimeMs() };
+  const startBootIds = [...new Set(v.starts.map((x) => x.bootId))];
+  const bootTimeOnRecorderClock = nowBoot.bootTime + offset;
+  const rebootObservedAfterCut = Boolean(v.cutRequestedAtMs) && !startBootIds.includes(nowBoot.bootId) && bootTimeOnRecorderClock >= v.cutRequestedAtMs - 5000;
+  const bootsDir = path.join(EVIDENCE, a.run, 'boots');
+  const probe = (fs.existsSync(bootsDir) ? fs.readdirSync(bootsDir) : []).filter((f) => f.startsWith(`boot-${nowBoot.bootId}-`)).map((f) => JSON.parse(fs.readFileSync(path.join(bootsDir, f), 'utf8'))).sort((x, y) => x.containerStartedAt - y.containerStartedAt).at(-1) ?? null;
   const comparison = compareCycle({ journal, db: dbs, acks: v.acks, accepted: st.accepted, windowFrom });
-  const verdict = classifyCycle({ comparison, run: st.run, cycle: { ...v, settings: s } });
+  const verdict = classifyCycle({ comparison, run: st.run, cycle: { settings: s, cutSentAt: v.cutRequestedAt, cutConfirmed: v.cutConfirmed, workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, rebootObservedAfterCut, authenticatedRejections: v.authenticatedRejections } });
+  const verifiedAt = Date.now();
+  const toRec = (ms) => (Number.isFinite(ms) ? ms + offset : null); // this machine's clock -> recorder clock
+  const timeline = {
+    clocks: 'recorder clock unless stated; clockOffsetMs = recorder minus test machine',
+    clockOffsetMs: offset,
+    cutRequestedAt: v.cutRequestedAt,
+    independentlyObservedCutAt: null,
+    cutBounds: { lastDurableAckAt: v.lastDurableAck?.at ?? null, firstContactAfterCutAt: v.firstContactAfterCut?.at ?? null, note: 'the cut lies between these recorder observations; no device observes the cut itself' },
+    bootTime: iso(toRec(nowBoot.bootTime)),
+    postgresStartedAt: iso(toRec(probe?.postmasterStartedAt)),
+    databaseReachableAt: iso(toRec(probe?.databaseReachableAt)),
+    verificationCompletedAt: iso(toRec(verifiedAt)),
+    durationsMs: {
+      cutToBoot: diff(v.cutRequestedAtMs, toRec(nowBoot.bootTime)),
+      bootToDatabaseReachable: diff(nowBoot.bootTime, probe?.databaseReachableAt),
+      postgresCrashRecovery: diff(probe?.postmasterStartedAt, probe?.databaseReachableAt),
+      cutToVerificationCompleted: diff(v.cutRequestedAtMs, toRec(verifiedAt)),
+    },
+  };
   const result = {
-    run: a.run, cycle, failureModel: st.run.failureModel, ...verdict,
+    run: a.run, cycle, cycleId: v.cycleId, failureModel: st.run.failureModel, ...verdict,
     findings: comparison.findings, relation: comparison.relation, uncommitted: comparison.uncommitted, counts: comparison.counts,
-    journal: { status: journal.status, head: journal.head, headHash: journal.headHash ?? null, tornBytes: journal.tornBytes ?? 0, fileBytes: journal.fileBytes, records: journal.records, fingerprint: journal.fingerprint ?? null },
+    lastJournalSeq: journal.head ?? null, lastDatabaseSeq: dbs.head, lastDurableAck: v.lastDurableAck,
+    journal: { status: journal.status, head: journal.head, headHash: journal.headHash ?? null, tornBytes: journal.tornBytes ?? 0, fileBytes: journal.fileBytes, records: journal.records, fingerprint: journal.fingerprint ?? null, corruptIsFinalLine: journal.corruptIsFinalLine ?? null },
     database: { head: dbs.head, headHash: dbs.headHash, committedClaims: dbs.count, fingerprint: dbs.fingerprint },
-    settings: s, storage: st.run.storage, cut: { sentAt: v.cutSentAt, confirmed: v.cutConfirmed ?? null }, workerStopsBeforeCut: v.workerStopsBeforeCut,
-    files, checkedAt: new Date().toISOString(),
+    reboot: { observedAfterCut: rebootObservedAfterCut, bootIdAtStart: startBootIds, bootIdNow: nowBoot.bootId, bootProbe: probe },
+    settings: s, storage: st.run.storage,
+    cut: { requestedAt: v.cutRequestedAt, how: v.cutHow, commandStatus: v.cutCommandStatus, operatorConfirmed: v.cutConfirmed ?? null, operatorEvidence: v.operatorEvidence, independentlyConfirmed: false },
+    workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, authenticatedRejections: v.authenticatedRejections,
+    timeline, files, checkedAt: new Date(verifiedAt).toISOString(),
   };
   writeOnce(path.join(dir, 'recorder-cycle.json'), v);
   writeOnce(path.join(dir, 'result.json'), result);
-  await rec('POST', `/runs/${a.run}/cycles/${cycle}/result`, result); // a FAIL stops the run on the recorder
-  console.log(JSON.stringify({ cycle, verdict: result.verdict, fails: result.fails, inconclusive: result.inconclusive, relation: result.relation, needsRecovery: result.needsRecovery, counts: result.counts }));
+  const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/result`, result); // FAIL (and INCONCLUSIVE in a qualifying run) stops the run
+  console.log(JSON.stringify({ cycle, verdict: result.verdict, fails: result.fails, inconclusive: result.inconclusive, relation: result.relation, quarantineRequired: result.quarantineRequired, needsRecovery: result.needsRecovery, runStopped: posted.stopped, counts: result.counts }));
   await p.$disconnect();
   process.exitCode = { PASS: 0, FAIL: 2, INCONCLUSIVE: 3 }[result.verdict];
 }
 
 // ────────────────────────────────────────────── recover ─────────────────────────────────────────────
 /**
- * Only after a non-failing check that asked for it. Repairs a torn final line (N1) under the state-row lock, then, if
- * the journal is one claim ahead, clears through the prototype's inspect -> clear(digest): the operator must pass the
- * digest printed by the first call. Any surprise stops the run.
+ * Every cycle ends here (the recorder requires it before the next start). For a journal one claim ahead (decision 2):
+ * show the quarantine holds (a claim is refused), repair a torn tail if any, inspect, and clear only with the digest
+ * the operator passes from the inspection. A torn final line alone is repaired (N1). Nothing else is ever repaired:
+ * a corrupt journal is a FAIL and the run is already stopped. Re-entrant. Any surprise stops the run.
  */
 async function cmdRecover(a) {
   const cycle = Number(a.cycle);
@@ -196,6 +326,7 @@ async function cmdRecover(a) {
   const r = v.result;
   if (!r || r.verdict === 'FAIL') throw new Error('nothing to recover: no non-failing result for this cycle');
   if (v.recovered) throw new Error('already recovered');
+  const startedAt = Date.now();
   const dir = path.join(EVIDENCE, a.run, `cycle-${pad(cycle)}`);
   const p = db();
   const j = journalAt();
@@ -205,11 +336,19 @@ async function cmdRecover(a) {
     writeOnce(path.join(dir, `recovery-stopped-${Date.now()}.json`), { why, steps });
     throw new Error(`recovery stopped the run: ${why}`);
   };
+  let quarantine = { required: !!r.quarantineRequired, observed: v.events.some((e) => e.kind === 'quarantine_observed') };
+  if (r.quarantineRequired && !quarantine.observed) {
+    // The probe goes through the real claim path: the trust check refuses before any write (no such action exists either).
+    const probe = await claim(p, j, '__p7_quarantine_probe__');
+    if (probe.claimed || probe.reason !== 'quarantined') await fail(`quarantine did not hold: a claim was not refused (${probe.reason})`);
+    await rec('POST', `/runs/${a.run}/event`, { cycle, cycleId: r.cycleId, kind: 'quarantine_observed', detail: probe.problem });
+    quarantine = { required: true, observed: true, refusal: probe.problem, at: new Date().toISOString() };
+    steps.push({ step: 'quarantine-observed', refusal: probe.problem });
+  }
   if (r.needsRecovery.includes('repair-torn-tail')) {
     const done = await p.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT 1 FROM installation_state WHERE id = 1 FOR UPDATE`;
       const before = j.state({ forceFull: true });
-      // Re-entrant: an earlier call (e.g. the one that printed the clearance digest) may already have repaired it.
       if (before.status === 'ok' && before.head === r.journal.head && repairAppliedAt(j.file, r.journal.fileBytes, r.journal.tornBytes)) return { ok: true, after: before, head: before.head, alreadyApplied: true };
       if (before.status !== 'torn_tail' || before.tornBytes !== r.journal.tornBytes) return { ok: false, before };
       const bytes = repairBytes(before.tornBytes, before.lastHash);
@@ -225,22 +364,21 @@ async function cmdRecover(a) {
     if (!done.ok || done.after.status !== 'ok' || done.after.head !== done.head) await fail(`torn-tail repair did not verify (${JSON.stringify(done).slice(0, 200)})`);
     steps.push({ step: 'repair-torn-tail', ignoredBytes: r.journal.tornBytes + 1, journalHead: done.after.head, alreadyApplied: !!done.alreadyApplied });
   }
-  let uncommitted = null, digest = null;
+  let uncommitted = null, digest = null, cleared = false;
   const row = await stateRow(p);
   const problem = trustProblem(row, j.state({ forceFull: true }));
-  if (!problem && r.relation === 'journal-one-ahead') {
-    // Re-entrant: cleared by an earlier call whose report to the recorder didn't arrive. The claim is still accepted as uncommitted.
+  if (!problem && r.quarantineRequired) {
     if (row.journal_seq < r.uncommitted.seq) await fail('trusted, but the database head is below the uncommitted claim');
-    uncommitted = r.uncommitted;
+    uncommitted = r.uncommitted; cleared = true;
     steps.push({ step: 'clear', alreadyApplied: true });
   }
   if (problem) {
-    if (r.relation !== 'journal-one-ahead') await fail(`history not trusted after repair: ${problem}`);
+    if (!r.quarantineRequired) await fail(`history not trusted after repair: ${problem}`);
     const ins = await inspect(p, j);
     if (ins.journalHead !== r.uncommitted.seq || ins.dbHead !== r.uncommitted.seq - 1) await fail('state changed since the check');
     if (!a['clear-digest']) {
       writeOnce(path.join(dir, `inspection-${Date.now()}.json`), ins);
-      console.log(JSON.stringify({ inspection: ins, next: `recover --run ${a.run} --cycle ${cycle} --clear-digest ${ins.digest}` }));
+      console.log(JSON.stringify({ quarantine, inspection: ins, next: `recover --run ${a.run} --cycle ${cycle} --clear-digest ${ins.digest}` }));
       process.exitCode = 4;
       return p.$disconnect();
     }
@@ -248,22 +386,37 @@ async function cmdRecover(a) {
     const cl = await clear(p, j, { digest: ins.digest, reason: `P7 cycle ${cycle}: journal one claim ahead after the crash` });
     if (!cl.cleared) await fail(`clearance refused: ${cl.reason}`);
     steps.push({ step: 'clear', digest: ins.digest, ...cl });
-    uncommitted = r.uncommitted;
-    digest = ins.digest;
+    uncommitted = r.uncommitted; digest = ins.digest; cleared = true;
     const again = trustProblem(await stateRow(p), j.state({ forceFull: true }));
     if (again) await fail(`not trusted after clearance: ${again}`);
   }
-  writeOnce(path.join(dir, `recovery-${Date.now()}.json`), { steps, uncommitted, at: new Date().toISOString() });
-  await rec('POST', `/runs/${a.run}/cycles/${cycle}/recovered`, { steps, uncommitted, digest });
-  console.log(JSON.stringify({ recovered: cycle, steps }));
+  const completedAt = Date.now();
+  const summary = {
+    run: a.run, cycleId: r.cycleId, cycle, failureModel: r.failureModel,
+    cut: r.cut, timeline: { ...r.timeline, recoveryStartedAt: new Date(startedAt).toISOString(), recoveryCompletedAt: new Date(completedAt).toISOString(), note: 'recovery times on the test machine clock' },
+    lastDurableAck: r.lastDurableAck, lastJournalSeq: r.lastJournalSeq, lastDatabaseSeq: r.lastDatabaseSeq,
+    reboot: r.reboot, quarantine, clearance: { required: !!r.quarantineRequired, cleared, digest, uncommitted }, steps,
+    checkVerdict: r.verdict, fails: r.fails, inconclusive: r.inconclusive,
+  };
+  const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/recovered`, { cycleId: r.cycleId, steps, uncommitted, digest, cleared, summary });
+  writeOnce(path.join(dir, `cycle-summary-${completedAt}.json`), { ...summary, finalStatus: posted.final });
+  console.log(JSON.stringify({ recovered: cycle, final: posted.final, steps }));
   await p.$disconnect();
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
 const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' } } });
-const commands = { init: cmdInit, run: cmdRun, check: cmdCheck, recover: cmdRecover };
-if (!commands[cmd] || !/^[A-Za-z0-9_-]{1,64}$/.test(values.run ?? '') || (cmd !== 'init' && !(Number(values.cycle) >= 1))) {
-  console.error('usage: p7.mjs init|run|check|recover --run <id> [--cycle <n>] [--workers k] [--pool n] [--proc a] [--clear-digest d]');
+values.run ??= process.env.P7_RUN;
+if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
+const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, init: cmdInit, run: cmdRun, check: cmdCheck, recover: cmdRecover };
+if (!commands[cmd] || !/^[A-Za-z0-9_-]{1,64}$/.test(values.run ?? '') || (['run', 'check', 'recover'].includes(cmd) && !(Number(values.cycle) >= 1))) {
+  console.error('usage: p7.mjs boot-probe|netcheck|init|run|check|recover [--run <id>] [--cycle <n>] [--workers k] [--pool n] [--proc a] [--clear-digest d]');
+  process.exit(1);
+}
+try {
+  call = makeClient({ baseUrl: process.env.P7_RECORDER_URL, key: keyFromHex(fs.readFileSync(process.env.P7_KEY_FILE ?? '/run/p7/run.key', 'utf8')), run: values.run });
+} catch {
+  console.error('the run key file is missing or invalid (P7_KEY_FILE)');
   process.exit(1);
 }
 commands[cmd](values).catch((e) => { console.error(lastLine(e)); process.exit(1); });

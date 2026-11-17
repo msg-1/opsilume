@@ -1,41 +1,66 @@
-# P7 durability harness (Milestone 16). Its own Compose project. PostgreSQL is on an internal network only; the
-# harness container also joins `egress`, solely to reach the acknowledgement recorder on ANOTHER host. Nothing is
-# published to the host. No fault proxy and no webhook receiver: dispatches are synthetic intent records only.
+# P7 durability harness (Milestone 16). Its own Compose project; never the default `opspilot` project.
+# Network isolation (verified by `p7.mjs netcheck`, which `run` performs before every cycle):
+#   p7db  internal  db + harness            PostgreSQL is reachable only from the harness
+#   p7gw  internal  harness + gateway       the harness's ONLY way out is the gateway
+#   egress          gateway only            the gateway forwards to one fixed address: the recorder on the other host
+# The harness has no outbound route (no internet, no webhook destination, no other host); nothing is published.
+# Restart policy: after a power cut the Docker daemon brings the stack back by itself, so PostgreSQL crash recovery
+# starts at boot and the harness's boot probe records when the database became reachable (decision 5).
 # The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime (build it with `npm run isolated:up`).
-# Override the project name for a smoke run (-p opspilot-m16-p7-smoke); never use the default `opspilot` project.
 name: opspilot-m16-p7
+
+x-recorder: &recorder
+  P7_RECORDER_TARGET: ${P7_RECORDER_TARGET:?set P7_RECORDER_TARGET to the recorder host:port, e.g. 192.168.1.20:8787}
 
 services:
   db:
     image: postgres:16-alpine
-    restart: "no"
+    restart: unless-stopped
     environment: { POSTGRES_USER: proto, POSTGRES_PASSWORD: proto, POSTGRES_DB: proto }
-    # P7 decision 4: all three required. wal_sync_method is left at the platform default and recorded (decision 5).
+    # Decision 4: all three required. wal_sync_method is left at the platform default and recorded (decision 5).
     command: ["postgres", "-c", "fsync=on", "-c", "full_page_writes=on", "-c", "synchronous_commit=on", "-c", "max_connections=100", "-c", "shared_buffers=512MB"]
     volumes: [pgdata:/var/lib/postgresql/data]
     networks: [p7db]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 60 }
+  gateway:
+    image: opspilot-isolated-api:latest
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    entrypoint: ["node", "/prototype/m16-p7/gateway.mjs"]
+    environment: *recorder
+    volumes: ["../:/prototype:ro"]
+    networks: [p7gw, egress]
+    healthcheck: { disable: true }
   harness:
     image: opspilot-isolated-api:latest
-    restart: "no"
+    restart: unless-stopped
     user: "0:0"
-    entrypoint: ["sleep", "infinity"]
+    entrypoint: ["sh", "-c", "node p7.mjs boot-probe; exec sleep infinity"]
     working_dir: /prototype/m16-p7
     environment:
+      <<: *recorder
       PROTO_DATABASE_URL: postgresql://proto:proto@db:5432/proto?sslmode=disable&connection_limit=16
       PROTO_DIRECT_URL: postgresql://proto:proto@db:5432/proto?sslmode=disable&connection_limit=16
       PROTO_STATE_DIR: /state
       P7_EVIDENCE_DIR: /evidence
-      P7_RECORDER_URL: ${P7_RECORDER_URL:?set P7_RECORDER_URL to the recorder on the other host, e.g. http://192.168.1.20:8787}
+      P7_RECORDER_URL: http://gateway:8787
+      P7_RUN: ${P7_RUN:?set P7_RUN to the run id created on the recorder}
+      P7_KEY_FILE: /run/p7/run.key
     volumes:
       - state:/state
       - ../:/prototype:ro
       - ${P7_EVIDENCE_HOST:-./evidence}:/evidence
-    networks: [p7db, egress]
-    depends_on: { db: { condition: service_healthy } }
+      # The run key, copied from the recorder host by the operator. Read-only; never copied into evidence or logs.
+      - ${P7_KEY_FILE_HOST:?set P7_KEY_FILE_HOST to the run key file copied from the recorder host}:/run/p7/run.key:ro
+    networks: [p7db, p7gw]
+    healthcheck: { disable: true }
+    depends_on: { db: { condition: service_healthy }, gateway: { condition: service_started } }
 
 networks:
   p7db: { internal: true }
+  p7gw: { internal: true }
   egress: {}
 volumes:
   pgdata:
