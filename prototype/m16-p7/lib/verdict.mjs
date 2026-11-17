@@ -114,8 +114,16 @@ const DURABLE = { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on' 
 export const durableSettings = (s) => Object.entries(DURABLE).every(([k, v]) => s?.[k] === v);
 
 export const QUALIFYING_MODELS = ['POWER-CUT', 'VM-CRASH'];
-/** Decisions 4 and 6: the write cache known, flushes honoured, and FUA honoured or not advertised (the kernel then flushes). */
-export const storageQualifies = (st) => ['write back', 'write through'].includes(st?.writeCache) && st?.flushHonoured === 'yes' && ['yes', 'not-advertised'].includes(st?.fua);
+/**
+ * The operator's storage attestation qualifies only when, with evidence named:
+ * - the write-cache state is known, and the device is documented to honour flushes; and
+ * - FUA is advertised and honoured, OR FUA is not advertised and the kernel was OBSERVED issuing flushes to that
+ *   device for fsync (the flush counter moved in host-evidence.sh --flush-probe). A missing FUA flag proves nothing by
+ *   itself; anything unknown does not qualify.
+ */
+export const storageQualifies = (st) => ['write back', 'write through'].includes(st?.writeCache) && st?.flushHonoured === 'yes'
+  && (st?.fua === 'yes' || (st?.fua === 'not-advertised' && st?.flushesObserved === 'yes'))
+  && typeof st?.evidence === 'string' && st.evidence.trim().length > 0;
 
 /**
  * run: { failureModel, storage } (fixed on the recorder when the run is created).

@@ -23,7 +23,9 @@ const RUN_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const isCycle = (n) => Number.isInteger(n) && n >= 1 && n <= 10000;
 const pad = (n) => String(n).padStart(4, '0');
 export const SILENT_STOP_MS = 10_000; // a stream with no acknowledgement for this long before the cut had stopped
-const EVENT_KINDS = ['worker_stopped', 'initialised', 'quarantine_observed', 'netcheck'];
+const EVENT_KINDS = ['worker_stopped', 'initialised', 'adopted', 'quarantine_observed', 'netcheck'];
+const validState = (f) => !!f && typeof f.installationId === 'string' && f.installationId.length > 0 && Number.isInteger(f.head) && f.head >= 0 && /^[0-9a-f]{64}$/.test(f.headHash ?? '');
+const sameState = (f, g) => validState(f) && validState(g) && f.installationId === g.installationId && f.head === g.head && f.headHash === g.headHash;
 
 export function runStore(dir, run) {
   if (!RUN_ID.test(run ?? '')) throw Object.assign(new Error('invalid run id'), { status: 400 });
@@ -63,16 +65,43 @@ export function createRun(dir, o) {
     writeCache: pick(o.writeCache, ['write back', 'write through']),
     flushHonoured: pick(o.flushHonoured, ['yes', 'no']),
     fua: pick(o.fua, ['yes', 'no', 'not-advertised']),
+    flushesObserved: pick(o.flushesObserved, ['yes', 'no']),
     plp: pick(o.plp, ['yes', 'no']),
+    evidence: String(o.storageEvidence ?? '').slice(0, 500),
     attestedBy: 'operator, from the recorded device evidence',
   };
   if (QUALIFYING_MODELS.includes(o.failureModel) && !storageQualifies(storage)) {
-    throw new Error('refused: flush or FUA behaviour is not verified (write cache known, flush honoured "yes", FUA "yes" or "not-advertised"). Qualifying cycles must not run (decision 4)');
+    throw new Error('refused: flush or FUA behaviour is not verified. Needed: write cache known; flush honoured "yes"; FUA "yes", or FUA "not-advertised" together with flushes observed "yes"; and the evidence named. Qualifying cycles must not run (decision 4)');
+  }
+  // Continuing an earlier run's database and journal (same volumes, nothing reset): only from a run that did not fail,
+  // whose last cycle was checked and recovered, and that no other run already continues. The new run must then `adopt`
+  // exactly the state the recorder holds for the predecessor.
+  let continues = null;
+  if (o.continues) {
+    const old = runStore(dir, o.continues);
+    if (!old.exists()) throw new Error('refused: unknown earlier run');
+    const st = old.stopped();
+    const events = old.events();
+    if (old.results().some((r) => r.verdict === 'FAIL') || (st && st.kind !== 'inconclusive')) throw new Error('refused: the earlier run failed, or its recovery failed. Its state must not be continued');
+    const { last, open } = openCycle(old, events);
+    if (!last) throw new Error('refused: the earlier run never ran a cycle');
+    if (open) throw new Error(`refused: cycle ${open} of the earlier run has not been checked`);
+    const done = recoveryOf(events, last);
+    if (!validState(done?.finalState)) throw new Error(`refused: cycle ${last} of the earlier run has not been recovered (run "recover" there first; quarantine and clearance are not skipped)`);
+    const runsDir = path.join(dir, 'runs');
+    for (const other of fs.readdirSync(runsDir)) {
+      const f = path.join(runsDir, other, 'run.json');
+      if (fs.existsSync(f) && JSON.parse(fs.readFileSync(f, 'utf8')).continues?.run === o.continues) throw new Error(`refused: run ${other} already continues ${o.continues}`);
+    }
+    continues = { run: o.continues, lastCycle: last, finalState: done.finalState, stopped: st ? { kind: st.kind, cycle: st.cycle } : null };
   }
   fs.mkdirSync(path.dirname(s.keyFile), { recursive: true, mode: 0o700 });
   writeOnce(s.keyFile, `${newKeyHex()}\n`);
   fs.chmodSync(s.keyFile, 0o600);
-  s.create({ run: o.run, failureModel: o.failureModel, createdAt: new Date().toISOString(), machine: o.machine ?? null, operator: o.operator ?? null, storage, protocol: 'P7-REQ-1/P7-RES-1 HMAC-SHA256' });
+  s.create({ run: o.run, failureModel: o.failureModel, createdAt: new Date().toISOString(), machine: o.machine ?? null, operator: o.operator ?? null, storage, continues,
+    stopOnInconclusive: QUALIFYING_MODELS.includes(o.failureModel) || o.stopOnInconclusive === true, protocol: 'P7-REQ-1/P7-RES-1 HMAC-SHA256' });
+  // Claims an earlier clearance accepted as never committed stay excluded from every later history comparison.
+  if (continues) for (const u of runStore(dir, o.continues).accepted()) s.accept({ ...u, fromRun: u.fromRun ?? o.continues, acceptedAt: u.acceptedAt ?? u.at });
   return { run: s.run(), keyFile: s.keyFile };
 }
 
@@ -118,6 +147,8 @@ export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS } = {}) {
     cutCommandStatus: events.find((e) => e.kind === 'cut_command_finished')?.status ?? null,
     cutConfirmed: confirm?.powerWasCut,
     operatorEvidence: confirm?.operatorEvidence ?? null,
+    // What the operator says about when the power went. An attestation: never an independent observation.
+    operatorAttestedCut: confirm?.operatorAttestedCut ?? null,
     // Nothing on this host observes the cut itself; the cut lies between the last acknowledgement and the first contact after it.
     independentlyObservedCutAt: null,
     firstContactAfterCut: cut ? (boots.find((b) => b.atMs > cut.atMs) ?? null) : null,
@@ -166,7 +197,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
     const { entries, tornBytes } = s.ackFile(n);
     const c = { streams: new Map(), claimSeqs: new Set(), damaged: tornBytes ? 'recorder acknowledgement file has a torn final line' : null };
     for (const a of entries) {
-      const r = nextStream(c.streams.get(streamKey(a)), a, n);
+      const r = nextStream(c.streams.get(streamKey(a)), a, n, s.run().run);
       if (r.error) { c.damaged = `recorder acknowledgement file is inconsistent (${r.error})`; break; }
       c.streams.set(streamKey(a), r.st);
       if (a.kind === 'claim') c.claimSeqs.add(a.seq);
@@ -230,6 +261,8 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (!isCycle(n)) return refuse(400, 'invalid_cycle');
           if (s.stopped()) return refuse(409, 'run_stopped');
           if (QUALIFYING_MODELS.includes(run0.failureModel) && !storageQualifies(run0.storage)) return refuse(409, 'storage_not_qualifying');
+          if (run0.continues && !events.some((e) => e.kind === 'adopted')) return refuse(409, 'not_adopted');
+          if (run0.continues && body.dbHead < run0.continues.finalState.head) return refuse(409, 'head_below_predecessor');
           if (!/^[a-z]$/.test(body.proc ?? '') || !Number.isInteger(body.workers) || body.workers < 1 || body.workers > 12 || !Number.isInteger(body.dbHead) || body.dbHead < 0) return refuse(400, 'invalid_start');
           if (open && open !== n) return refuse(409, `cycle_${open}_is_open`);
           if (!open && n !== last + 1) return refuse(409, 'cycles_must_be_consecutive');
@@ -240,7 +273,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (events.some((e) => e.cycle === n && e.kind === 'cut_sent')) return refuse(409, 'cycle_already_cut');
           if (startsOf(events, n).some((e) => e.proc === body.proc)) return refuse(409, 'process_already_started_in_cycle');
           const cycleId = startsOf(events, n)[0]?.cycleId ?? randomBytes(16).toString('hex');
-          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
+          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing: body.sizing ?? null, bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
           return reply(200, { cycleId });
         }
 
@@ -255,7 +288,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (c.damaged) return refuse(409, 'recorder_ack_file_damaged');
           const a = { cycle: n, cycleId: body.cycleId, proc: body.proc, worker: body.worker, n: body.n, kind: body.kind, seq: body.seq, actionId: body.actionId };
           if (!(a.seq > Math.min(...starts.map((e) => e.dbHead)))) return refuse(409, 'outside_cycle');
-          const next = nextStream(c.streams.get(streamKey(a)), a, n);
+          const next = nextStream(c.streams.get(streamKey(a)), a, n, run0.run);
           if (next.error) return refuse(409, next.error);
           if (a.kind === 'claim' && c.claimSeqs.has(a.seq)) return refuse(409, 'duplicate_claim_seq');
           s.ack({ ...a, ...stamp });
@@ -269,11 +302,17 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (body.cycle !== null && body.cycle !== undefined) {
             if (!isCycle(n) || body.cycleId !== startsOf(events, n)[0]?.cycleId) return refuse(409, 'wrong_cycle_id');
           }
+          if (body.kind === 'initialised' && run0.continues) return refuse(409, 'continuing_run_uses_adopt');
+          if (body.kind === 'adopted') {
+            if (!run0.continues) return refuse(409, 'not_a_continuing_run');
+            if (events.some((e) => e.kind === 'adopted')) return refuse(409, 'already_adopted');
+            if (!sameState(run0.continues.finalState, body.finalState)) return refuse(409, 'state_differs_from_predecessor');
+          }
           if (body.kind === 'quarantine_observed') {
             const r = s.result(n);
             if (!r?.quarantineRequired || recoveryOf(events, n)) return refuse(409, 'no_quarantine_expected');
           }
-          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...stamp });
+          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...stamp });
           return reply(200, { ok: true });
         }
 
@@ -290,15 +329,18 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (!['PASS', 'FAIL', 'INCONCLUSIVE'].includes(body.verdict)) return refuse(400, 'invalid_verdict');
           // The failure model comes from THIS host's run record, never from the test machine.
           s.saveResult(n, { ...body, cycle: n, failureModel: run0.failureModel, reportedFailureModel: body.failureModel ?? null, countsTowardPhysicalPowerLoss: false, recordedAt: new Date().toISOString(), ...stamp });
-          if (body.verdict === 'FAIL') s.stop({ cycle: n, reason: 'cycle failed', fails: body.fails });
-          else if (body.verdict === 'INCONCLUSIVE' && QUALIFYING_MODELS.includes(run0.failureModel)) {
-            s.stop({ cycle: n, reason: 'series broken: INCONCLUSIVE (decision 1). Investigate and resolve the cause, then start a new run at cycle 1', inconclusive: body.inconclusive });
+          if (body.verdict === 'FAIL') s.stop({ kind: 'fail', cycle: n, reason: 'cycle failed', fails: body.fails });
+          else if (body.verdict === 'INCONCLUSIVE' && (run0.stopOnInconclusive ?? QUALIFYING_MODELS.includes(run0.failureModel))) {
+            s.stop({ kind: 'inconclusive', cycle: n, reason: 'series broken: INCONCLUSIVE. Recover this cycle, investigate and resolve the cause, then create a new run that continues this one (the count restarts at zero; the database and journal are kept)', inconclusive: body.inconclusive });
           }
           return reply(200, { ok: true, stopped: !!s.stopped() });
         }
 
         if (cm?.[2] === 'recovered') {
-          if (s.stopped()) return refuse(409, 'run_stopped');
+          // A run stopped by an INCONCLUSIVE cycle may still recover that cycle (so its state can be continued); nothing else.
+          const stp = s.stopped();
+          if (stp && !(stp.kind === 'inconclusive' && stp.cycle === n)) return refuse(409, 'run_stopped');
+          if (!validState(body.finalState)) return refuse(400, 'final_state_missing');
           const r = s.result(n);
           if (!r || r.verdict === 'FAIL') return refuse(409, 'nothing_to_recover');
           if (body.cycleId !== startsOf(events, n)[0]?.cycleId) return refuse(409, 'wrong_cycle_id');
@@ -308,12 +350,12 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             if (body.cleared !== true || body.uncommitted?.seq !== r.uncommitted?.seq || body.uncommitted?.actionId !== r.uncommitted?.actionId) return refuse(409, 'clearance_not_shown');
             s.accept({ cycle: n, seq: r.uncommitted.seq, actionId: r.uncommitted.actionId, digest: body.digest ?? null });
           }
-          s.event({ cycle: n, kind: 'recovered', cycleId: body.cycleId, steps: body.steps ?? [], cleared: body.cleared === true, summary: body.summary ?? null, ...stamp });
+          s.event({ cycle: n, kind: 'recovered', cycleId: body.cycleId, steps: body.steps ?? [], cleared: body.cleared === true, finalState: body.finalState, summary: body.summary ?? null, ...stamp });
           return reply(200, { ok: true, final: cycleView(s, n, { silentStopMs }).final });
         }
 
         if (rest === 'stop') {
-          s.stop({ cycle: Number.isInteger(body.cycle) ? body.cycle : null, reason: String(body.reason ?? 'stopped').slice(0, 300), ...stamp });
+          s.stop({ kind: 'recovery-failed', cycle: Number.isInteger(body.cycle) ? body.cycle : null, reason: String(body.reason ?? 'stopped').slice(0, 300), ...stamp });
           return reply(200, { ok: true });
         }
         return refuse(404, 'not_found');
@@ -334,7 +376,8 @@ async function main() {
     options: {
       dir: { type: 'string' }, run: { type: 'string' }, cycle: { type: 'string' }, host: { type: 'string', default: '127.0.0.1' }, port: { type: 'string', default: '8787' },
       'failure-model': { type: 'string' }, 'write-cache': { type: 'string' }, 'flush-honoured': { type: 'string' }, fua: { type: 'string' }, plp: { type: 'string' }, machine: { type: 'string' }, operator: { type: 'string' },
-      'min-seconds': { type: 'string' }, 'max-seconds': { type: 'string' }, 'command-json': { type: 'string' }, 'power-was-cut': { type: 'string' }, evidence: { type: 'string' },
+      'min-seconds': { type: 'string' }, 'max-seconds': { type: 'string' }, 'command-json': { type: 'string' }, 'power-was-cut': { type: 'string' }, evidence: { type: 'string' }, 'attested-from': { type: 'string' }, 'attested-to': { type: 'string' },
+      'flushes-observed': { type: 'string' }, 'storage-evidence': { type: 'string' }, continues: { type: 'string' }, 'stop-on-inconclusive': { type: 'boolean' },
     },
   });
   if (!a.dir) throw new Error('--dir is required');
@@ -343,7 +386,7 @@ async function main() {
     return;
   }
   if (cmd === 'create-run') {
-    const r = createRun(a.dir, { run: a.run, failureModel: a['failure-model'], writeCache: a['write-cache'], flushHonoured: a['flush-honoured'], fua: a.fua, plp: a.plp, machine: a.machine, operator: a.operator });
+    const r = createRun(a.dir, { run: a.run, failureModel: a['failure-model'], writeCache: a['write-cache'], flushHonoured: a['flush-honoured'], fua: a.fua, plp: a.plp, flushesObserved: a['flushes-observed'], storageEvidence: a['storage-evidence'], continues: a.continues, stopOnInconclusive: a['stop-on-inconclusive'], machine: a.machine, operator: a.operator });
     // The key itself is never printed: copy the file to the test machine (P7_KEY_FILE_HOST), mode 0600.
     console.log(JSON.stringify({ run: r.run, keyFile: r.keyFile }, null, 2));
     return;
@@ -371,12 +414,22 @@ async function main() {
       const r = spawnSync(cmdArgv[0], cmdArgv.slice(1), { timeout: 30_000, stdio: 'ignore' });
       s.event({ cycle: n, kind: 'cut_command_finished', status: r.status, error: r.error ? String(r.error.code ?? 'error') : null });
       console.log(`cut command exited with ${r.status}`);
-    } else console.log('\n*** CUT THE POWER NOW ***\n');
+    } else {
+      console.log(`\n*** CUT THE POWER NOW ***  (requested at ${new Date().toISOString()})\n`);
+      console.log('Note the time you cut it. Afterwards: confirm-cut --power-was-cut yes --attested-from <ISO time> [--attested-to <ISO time>] --evidence "<what you saw>"');
+    }
   } else if (cmd === 'confirm-cut') {
     if (!['yes', 'no'].includes(a['power-was-cut'])) throw new Error('--power-was-cut yes|no');
     if (!cycleView(s, n).cutRequestedAt) throw new Error('no cut recorded for this cycle');
     // An operator attestation, recorded as such. It is not independent evidence of the cut.
-    s.event({ cycle: n, kind: 'cut_confirmed', powerWasCut: a['power-was-cut'], operatorEvidence: (a.evidence ?? '').slice(0, 500), attestation: 'operator' });
+    // Optional: when the operator saw the power go, as one instant (--attested-from only) or an interval.
+    let attested = null;
+    if (a['attested-from']) {
+      const from = new Date(a['attested-from']), to = new Date(a['attested-to'] ?? a['attested-from']);
+      if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || to < from) throw new Error('--attested-from / --attested-to must be ISO times, from <= to');
+      attested = { from: from.toISOString(), to: to.toISOString(), label: 'operator attestation, not an independent observation' };
+    }
+    s.event({ cycle: n, kind: 'cut_confirmed', powerWasCut: a['power-was-cut'], operatorEvidence: (a.evidence ?? '').slice(0, 500), operatorAttestedCut: attested, attestation: 'operator' });
   } else if (cmd === 'status') {
     console.log(JSON.stringify(runStatus(s), null, 2));
   } else throw new Error('commands: serve, create-run, cut, confirm-cut, status');

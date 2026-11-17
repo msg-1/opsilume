@@ -7,13 +7,15 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { keyFromHex, makeClient, nextStream, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
+import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
 import { createRecorder, createRun, cycleView, runStore } from '../recorder.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-recorder-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
-const STORAGE = { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown' };
+const STORAGE = { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown', storageEvidence: 'host/baseline/queue-nvme0n1.txt, datasheet' };
+const FS = { installationId: 'inst-1', head: 9, headHash: 'ab'.repeat(32) };
+const T = (run, rest) => `${runTag(run)}${rest}`; // action ids carry the run's tag
 const sha = (f) => (fs.existsSync(f) ? createHash('sha256').update(fs.readFileSync(f)).digest('hex') : null);
 const listFiles = (d) => fs.readdirSync(d, { recursive: true }).filter((f) => fs.statSync(path.join(d, f)).isFile()).sort();
 
@@ -60,17 +62,17 @@ describe('protocol', () => {
     await new Promise((r) => fake.close(r));
   });
   test('acknowledgement streams: in order, claim then its dispatch, own actions only', () => {
-    const a = (n, kind, seq, actionId = `c0001aw1-${seq}`) => ({ proc: 'a', worker: 1, n, kind, seq, actionId });
-    let st = nextStream(undefined, a(1, 'claim', 5), 1).st;
-    assert.equal(nextStream(st, a(1, 'claim', 6), 1).error, 'duplicate_or_replayed');
-    assert.equal(nextStream(st, a(3, 'dispatch', 5), 1).error, 'out_of_order');
-    assert.equal(nextStream(st, a(2, 'claim', 6), 1).error, 'out_of_order', 'a claim before the previous dispatch intent');
-    assert.equal(nextStream(st, a(2, 'dispatch', 4), 1).error, 'mismatched_dispatch');
-    st = nextStream(st, a(2, 'dispatch', 5), 1).st;
-    assert.equal(nextStream(st, a(3, 'claim', 5), 1).error, 'out_of_order', 'claims strictly increase per stream');
-    assert.equal(nextStream(st, a(3, 'claim', 9, 'c0001bw1-9'), 1).error, 'action_does_not_belong_to_this_stream');
-    assert.equal(nextStream(st, a(3, 'claim', 9, 'c0002aw1-9'), 1).error, 'action_does_not_belong_to_this_stream');
-    assert.ok(nextStream(st, a(3, 'claim', 9), 1).st);
+    const a = (n, kind, seq, actionId = T('r', `c0001aw1-${seq}`)) => ({ proc: 'a', worker: 1, n, kind, seq, actionId });
+    let st = nextStream(undefined, a(1, 'claim', 5), 1, 'r').st;
+    assert.equal(nextStream(st, a(1, 'claim', 6), 1, 'r').error, 'duplicate_or_replayed');
+    assert.equal(nextStream(st, a(3, 'dispatch', 5), 1, 'r').error, 'out_of_order');
+    assert.equal(nextStream(st, a(2, 'claim', 6), 1, 'r').error, 'out_of_order', 'a claim before the previous dispatch intent');
+    assert.equal(nextStream(st, a(2, 'dispatch', 4), 1, 'r').error, 'mismatched_dispatch');
+    st = nextStream(st, a(2, 'dispatch', 5), 1, 'r').st;
+    assert.equal(nextStream(st, a(3, 'claim', 5), 1, 'r').error, 'out_of_order', 'claims strictly increase per stream');
+    assert.equal(nextStream(st, a(3, 'claim', 9, T('r', 'c0001bw1-9')), 1, 'r').error, 'action_does_not_belong_to_this_stream');
+    assert.equal(nextStream(st, a(3, 'claim', 9, T('r', 'c0002aw1-9')), 1, 'r').error, 'action_does_not_belong_to_this_stream');
+    assert.ok(nextStream(st, a(3, 'claim', 9), 1, 'r').st);
   });
 });
 
@@ -80,6 +82,11 @@ describe('createRun (decision 4)', () => {
     assert.throws(() => createRun(dir, { run: 'q1', failureModel: 'POWER-CUT', ...STORAGE, flushHonoured: 'unknown' }), /decision 4/);
     assert.throws(() => createRun(dir, { run: 'q2', failureModel: 'POWER-CUT', ...STORAGE, fua: undefined }), /decision 4/);
     assert.throws(() => createRun(dir, { run: 'q3', failureModel: 'VM-CRASH', ...STORAGE, writeCache: 'unknown' }), /decision 4/);
+    assert.throws(() => createRun(dir, { run: 'q4', failureModel: 'POWER-CUT', ...STORAGE, storageEvidence: '' }), /decision 4/, 'the evidence must be named');
+    // FUA not advertised: only with flushes observed on the actual path. A missing flag alone proves nothing.
+    assert.throws(() => createRun(dir, { run: 'q5', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised' }), /decision 4/);
+    assert.throws(() => createRun(dir, { run: 'q6', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised', flushesObserved: 'no' }), /decision 4/);
+    assert.equal(createRun(dir, { run: 'q7', failureModel: 'POWER-CUT', ...STORAGE, fua: 'not-advertised', flushesObserved: 'yes' }).run.storage.flushesObserved, 'yes');
     assert.ok(createRun(dir, { run: 's1', failureModel: 'HARNESS-SMOKE' }).keyFile);
     assert.ok(!fs.existsSync(runStore(dir, 'q1').root), 'nothing is created for a refused run');
   });
@@ -96,7 +103,7 @@ describe('recorder protocol and state machine', () => {
   const dir = path.join(tmp, 'rec');
   let srv, call, cycleId;
   const ack = (body) => call('POST', '/runs/p/ack', { cycle: 1, cycleId, ...body });
-  const act = (proc, w, k) => `c0001${proc}w${w}-${k}`;
+  const act = (proc, w, k) => T('p', `c0001${proc}w${w}-${k}`);
   before(async () => {
     createRun(dir, { run: 'p', failureModel: 'POWER-CUT', ...STORAGE });
     createRun(dir, { run: 'other', failureModel: 'POWER-CUT', ...STORAGE });
@@ -182,13 +189,13 @@ describe('recorder protocol and state machine', () => {
     assert.equal((await call('POST', '/runs/p/cycles/1/result', result)).status, 200);
     assert.equal(cycleView(runStore(dir, 'p'), 1).final, 'PENDING_RECOVERY');
     assert.equal((await call('POST', '/runs/p/cycles/2/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
+    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
     assert.equal((await call('POST', '/runs/p/event', { cycle: 1, cycleId, kind: 'quarantine_observed', detail: 'database head 8 is behind the journal head 9' })).status, 200);
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { cycleId, cleared: false })).data.error, 'clearance_not_shown');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { cycleId, cleared: true, uncommitted: { seq: 8, actionId: 'x' } })).data.error, 'clearance_not_shown');
-    const ok = await call('POST', '/runs/p/cycles/1/recovered', { cycleId, cleared: true, uncommitted: result.uncommitted, digest: 'd' });
+    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: false })).data.error, 'clearance_not_shown');
+    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: { seq: 8, actionId: 'x' } })).data.error, 'clearance_not_shown');
+    const ok = await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted, digest: 'd' });
     assert.equal(ok.data.final, 'PASS');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'already_recovered', 'repeated recovery');
+    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'already_recovered', 'repeated recovery');
     assert.deepEqual(runStore(dir, 'p').accepted().map((u) => [u.seq, u.actionId]), [[9, act('a', 1, 9)]]);
     assert.equal((await call('POST', '/runs/p/cycles/1/result', { cycleId, verdict: 'PASS' })).data.error, 'cycle_not_open', 'a result is write-once');
   });
@@ -197,9 +204,13 @@ describe('recorder protocol and state machine', () => {
     const c2 = (await call('POST', '/runs/p/cycles/2/start', { proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
     assert.equal((await call('POST', '/runs/p/cycles/2/result', { cycleId: c2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
     assert.equal((await call('POST', '/runs/p/cycles/3/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
-    assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { cycleId: c2 })).data.error, 'run_stopped');
+    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId })).data.error, 'run_stopped', 'only the inconclusive cycle may still be recovered');
+    assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { cycleId: c2 })).data.error, 'final_state_missing');
+    assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { finalState: FS, cycleId: c2 })).status, 200, 'so that a new run can continue this state');
+    assert.equal((await call('POST', '/runs/p/cycles/3/start', { proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
     const st = (await call('GET', '/runs/p')).data;
     assert.match(st.stopped.reason, /series broken/);
+    assert.equal(st.stopped.kind, 'inconclusive');
     assert.deepEqual([st.streak.consecutivePhysicalPasses, st.streak.brokenAtCycle, st.streak.brokenBy, st.streak.met], [1, 2, 'INCONCLUSIVE', false]);
   });
 });
@@ -211,19 +222,19 @@ describe('recorder: replay from a previous cycle, and refusals before a cycle st
   after(() => srv.close());
   test('cycle-1 acknowledgements cannot be replayed into cycle 2, by body or byte for byte', async () => {
     const id1 = (await call('POST', '/runs/rp/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
-    const old = { cycle: 1, cycleId: id1, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: 'c0001aw1-1' };
+    const old = { cycle: 1, cycleId: id1, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('rp', 'c0001aw1-1') };
     const body = JSON.stringify(old);
     const h = signRequest(keyOf(dir, 'rp'), { method: 'POST', path: '/runs/rp/ack', run: 'rp', body });
     assert.equal((await rawSend(srv.base, 'POST', '/runs/rp/ack', h, body)).status, 200);
     assert.equal((await call('POST', '/runs/rp/cycles/1/result', { cycleId: id1, verdict: 'INCONCLUSIVE', needsRecovery: [] })).status, 200);
     // A start refused because the operator forgot `recover` must not count against cycle 2.
     assert.equal((await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.error, 'previous_cycle_not_recovered');
-    assert.equal((await call('POST', '/runs/rp/cycles/1/recovered', { cycleId: id1 })).status, 200);
+    assert.equal((await call('POST', '/runs/rp/cycles/1/recovered', { finalState: FS, cycleId: id1 })).status, 200);
     const id2 = (await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.cycleId;
     assert.notEqual(id2, id1);
     assert.equal(cycleView(runStore(dir, 'rp'), 2).authenticatedRejections, 0);
     assert.equal((await call('POST', '/runs/rp/ack', old)).data.error, 'cycle_not_open', 'a cycle-1 acknowledgement, freshly signed');
-    assert.equal((await call('POST', '/runs/rp/ack', { ...old, cycle: 2, actionId: 'c0002aw1-1', seq: 2 })).data.error, 'wrong_cycle_id', 'cycle 2 with cycle 1\'s id');
+    assert.equal((await call('POST', '/runs/rp/ack', { ...old, cycle: 2, actionId: T('rp', 'c0002aw1-1'), seq: 2 })).data.error, 'wrong_cycle_id', 'cycle 2 with cycle 1\'s id');
     assert.equal((await rawSend(srv.base, 'POST', '/runs/rp/ack', h, body)).data.error, 'replayed_nonce', 'the original request, byte for byte');
     assert.equal(runStore(dir, 'rp').acks(2).length, 0);
     assert.equal(runStore(dir, 'rp').acks(1).length, 1);
@@ -245,7 +256,7 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
 
   test('a FAIL stops the run; nothing afterwards changes the recorded evidence; the rejection log only grows', async () => {
     const id = (await call('POST', '/runs/f/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
-    assert.equal((await call('POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: 'c0001aw1-1' })).status, 200);
+    assert.equal((await call('POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('f', 'c0001aw1-1') })).status, 200);
     assert.equal((await call('POST', '/runs/f/cycles/1/result', { cycleId: id, verdict: 'FAIL', fails: ['ACKNOWLEDGED_CLAIM_MISSING_FROM_JOURNAL'] })).data.stopped, true);
     const root = runStore(dir, 'f').root;
     const frozen = Object.fromEntries(listFiles(root).filter((f) => f !== 'rejections.jsonl').map((f) => [f, sha(path.join(root, f))]));
@@ -253,9 +264,9 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
     const rejBefore = fs.existsSync(rejFile) ? fs.readFileSync(rejFile, 'utf8') : '';
     for (const [m, p, b] of [
       ['POST', '/runs/f/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 }],
-      ['POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 2, kind: 'dispatch', seq: 1, actionId: 'c0001aw1-1' }],
+      ['POST', '/runs/f/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 2, kind: 'dispatch', seq: 1, actionId: T('f', 'c0001aw1-1') }],
       ['POST', '/runs/f/cycles/1/result', { cycleId: id, verdict: 'PASS' }],
-      ['POST', '/runs/f/cycles/1/recovered', { cycleId: id }],
+      ['POST', '/runs/f/cycles/1/recovered', { finalState: FS, cycleId: id }],
     ]) assert.equal((await call(m, p, b)).status, 409, p);
     assert.deepEqual(Object.fromEntries(listFiles(root).filter((f) => f !== 'rejections.jsonl').map((f) => [f, sha(path.join(root, f))])), frozen);
     const rejAfter = fs.readFileSync(rejFile, 'utf8');
@@ -269,19 +280,19 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
     const c = callerFor(srv.base, dir, 'smoke');
     const id = (await c('POST', '/runs/smoke/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     assert.equal((await c('POST', '/runs/smoke/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: [] })).data.stopped, false);
-    assert.equal((await c('POST', '/runs/smoke/cycles/1/recovered', { cycleId: id })).status, 200);
+    assert.equal((await c('POST', '/runs/smoke/cycles/1/recovered', { finalState: FS, cycleId: id })).status, 200);
     assert.equal((await c('POST', '/runs/smoke/cycles/2/start', { proc: 'a', workers: 1, dbHead: 0 })).status, 200);
   });
 
   test('a torn line in the recorder\'s own acknowledgement file blocks further acknowledgements for that cycle', async () => {
     const c = callerFor(srv.base, dir, 'torn');
     const id = (await c('POST', '/runs/torn/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
-    assert.equal((await c('POST', '/runs/torn/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: 'c0001aw1-1' })).status, 200);
+    assert.equal((await c('POST', '/runs/torn/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('torn', 'c0001aw1-1') })).status, 200);
     fs.appendFileSync(path.join(runStore(dir, 'torn').root, 'acks', 'cycle-0001.jsonl'), '{"cycle":1,"ki');
     await srv.close();
     srv = await serve(dir, { silentStopMs: 1000 });
     const c2 = callerFor(srv.base, dir, 'torn');
-    assert.equal((await c2('POST', '/runs/torn/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 2, kind: 'dispatch', seq: 1, actionId: 'c0001aw1-1' })).data.error, 'recorder_ack_file_damaged');
+    assert.equal((await c2('POST', '/runs/torn/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 2, kind: 'dispatch', seq: 1, actionId: T('torn', 'c0001aw1-1') })).data.error, 'recorder_ack_file_damaged');
     call = callerFor(srv.base, dir, 'f');
   });
 
@@ -289,7 +300,7 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
     const c = callerFor(srv.base, dir, 'smoke');
     const s = runStore(dir, 'smoke');
     const id = cycleView(s, 2).cycleId;
-    assert.equal((await c('POST', '/runs/smoke/ack', { cycle: 2, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: 'c0002aw1-1' })).status, 200);
+    assert.equal((await c('POST', '/runs/smoke/ack', { cycle: 2, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('smoke', 'c0002aw1-1') })).status, 200);
     await new Promise((r) => setTimeout(r, 1200));
     s.event({ cycle: 2, kind: 'cut_sent', how: 'command' }); // as `recorder.mjs cut` writes it
     assert.equal((await c('POST', '/runs/smoke/boot', { bootId: 'boot-2', bootTime: Date.now() - 500, databaseReachableAt: Date.now() })).data.cycle, 2);
@@ -324,5 +335,77 @@ describe('final status and the qualifying series (decisions 1, 2, 9)', () => {
   });
   test('a FAIL after 20 passes means the requirement is not met', () => {
     assert.equal(physicalStreak([...Array.from({ length: 20 }, (_, i) => P(i + 1)), P(21, 'FAIL')], 'POWER-CUT').met, false);
+  });
+});
+
+describe('run lifecycle: a new run continues the same state after INCONCLUSIVE', () => {
+  const dir = path.join(tmp, 'life');
+  let srv;
+  const S1 = { installationId: 'inst-9', head: 40, headHash: 'cd'.repeat(32) };
+  const frozen = (run) => { const root = runStore(dir, run).root; return Object.fromEntries(listFiles(root).map((f) => [f, sha(path.join(root, f))])); };
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+
+  test('only a recovered, non-failed run can be continued, and only once', async () => {
+    createRun(dir, { run: 'a1', failureModel: 'POWER-CUT', ...STORAGE });
+    const call = callerFor(srv.base, dir, 'a1');
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /never ran a cycle/);
+    // cycle 1: PASS with the journal one claim ahead -> quarantine, clearance: one claim accepted as never committed
+    const id1 = (await call('POST', '/runs/a1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const unc = { seq: 31, actionId: T('a1', 'c0001aw1-31') };
+    await call('POST', '/runs/a1/cycles/1/result', { cycleId: id1, verdict: 'PASS', quarantineRequired: true, uncommitted: unc, needsRecovery: ['clear'] });
+    await call('POST', '/runs/a1/event', { cycle: 1, cycleId: id1, kind: 'quarantine_observed' });
+    assert.equal((await call('POST', '/runs/a1/cycles/1/recovered', { cycleId: id1, cleared: true, uncommitted: unc, digest: 'd', finalState: { ...S1, head: 31 } })).data.final, 'PASS');
+    // cycle 2: INCONCLUSIVE -> the run stops
+    const id2 = (await call('POST', '/runs/a1/cycles/2/start', { proc: 'a', workers: 1, dbHead: 31 })).data.cycleId;
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /has not been checked/);
+    assert.equal((await call('POST', '/runs/a1/cycles/2/result', { cycleId: id2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /has not been recovered/, 'recovery is never skipped');
+    assert.equal((await call('POST', '/runs/a1/cycles/2/recovered', { cycleId: id2, finalState: S1 })).status, 200);
+    const before = frozen('a1');
+    const { run } = createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' });
+    assert.deepEqual(run.continues, { run: 'a1', lastCycle: 2, finalState: S1, stopped: { kind: 'inconclusive', cycle: 2 } });
+    assert.deepEqual(runStore(dir, 'a2').accepted().map((u) => [u.seq, u.actionId, u.fromRun]), [[31, unc.actionId, 'a1']], 'accepted claims carry over');
+    assert.notEqual(fs.readFileSync(runStore(dir, 'a2').keyFile, 'utf8'), fs.readFileSync(runStore(dir, 'a1').keyFile, 'utf8'), 'a new key');
+    assert.throws(() => createRun(dir, { run: 'a3', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /already continues/);
+    assert.deepEqual(frozen('a1'), before, 'the earlier run\'s record is untouched');
+  });
+
+  test('the new run must adopt exactly the recorded state before its first cycle; the count restarts at zero', async () => {
+    const before = frozen('a1');
+    const call = callerFor(srv.base, dir, 'a2');
+    assert.equal((await callerFor(srv.base, dir, 'a2', keyOf(dir, 'a1'))('GET', '/runs/a2')).status, 401, 'the earlier run\'s key does not open the new run');
+    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 40 })).data.error, 'not_adopted');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'initialised' })).data.error, 'continuing_run_uses_adopt');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: { ...S1, head: 41 } })).data.error, 'state_differs_from_predecessor');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: { ...S1, headHash: 'ef'.repeat(32) } })).data.error, 'state_differs_from_predecessor');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted' })).data.error, 'state_differs_from_predecessor');
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1 })).status, 200);
+    assert.equal((await call('POST', '/runs/a2/event', { kind: 'adopted', finalState: S1 })).data.error, 'already_adopted');
+    assert.equal((await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 39 })).data.error, 'head_below_predecessor');
+    const st = (await call('GET', '/runs/a2')).data;
+    assert.deepEqual([st.cycles.length, st.streak.consecutivePhysicalPasses, st.stopped], [0, 0, null]);
+    const id = (await call('POST', '/runs/a2/cycles/1/start', { proc: 'a', workers: 1, dbHead: 40 })).data.cycleId;
+    // The same cycle number as the earlier run, but its own actions: an earlier run's action id is refused.
+    assert.equal((await call('POST', '/runs/a2/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 41, actionId: T('a1', 'c0001aw1-41') })).data.error, 'action_does_not_belong_to_this_stream');
+    assert.equal((await call('POST', '/runs/a2/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 41, actionId: T('a2', 'c0001aw1-41') })).status, 200);
+    assert.deepEqual(frozen('a1'), before, 'nothing in the new run changed the earlier run\'s evidence');
+    assert.equal((await callerFor(srv.base, dir, 'a1')('POST', '/runs/a1/cycles/3/start', { proc: 'a', workers: 1, dbHead: 40 })).data.error, 'run_stopped', 'the earlier run stays stopped');
+  });
+
+  test('a failed run, or one not recovered, can never be continued', async () => {
+    createRun(dir, { run: 'f1', failureModel: 'POWER-CUT', ...STORAGE });
+    let call = callerFor(srv.base, dir, 'f1');
+    let id = (await call('POST', '/runs/f1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    await call('POST', '/runs/f1/cycles/1/result', { cycleId: id, verdict: 'FAIL', fails: ['JOURNAL_CORRUPT'] });
+    assert.equal((await call('POST', '/runs/f1/cycles/1/recovered', { cycleId: id, finalState: S1 })).status, 409);
+    assert.throws(() => createRun(dir, { run: 'f2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'f1' }), /failed/);
+    createRun(dir, { run: 'g1', failureModel: 'HARNESS-SMOKE' });
+    call = callerFor(srv.base, dir, 'g1');
+    id = (await call('POST', '/runs/g1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    await call('POST', '/runs/g1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: ['repair-torn-tail'] });
+    await call('POST', '/runs/g1/stop', { cycle: 1, reason: 'recovery: torn-tail repair did not verify' });
+    assert.equal(runStore(dir, 'g1').stopped().kind, 'recovery-failed');
+    assert.throws(() => createRun(dir, { run: 'g2', failureModel: 'HARNESS-SMOKE', continues: 'g1' }), /recovery failed/);
   });
 });

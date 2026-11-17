@@ -58,10 +58,11 @@ services:
     healthcheck: { disable: true }
     depends_on: { db: { condition: service_healthy }, gateway: { condition: service_started } }
 
+# Fixed bridge names, so the host firewall (firewall/p7-firewall.sh) can name them.
 networks:
-  p7db: { internal: true }
-  p7gw: { internal: true }
-  egress: {}
+  p7db: { internal: true, driver_opts: { com.docker.network.bridge.name: p7db0 } }
+  p7gw: { internal: true, driver_opts: { com.docker.network.bridge.name: p7gw0 } }
+  egress: { driver_opts: { com.docker.network.bridge.name: p7eg0 } }
 volumes:
   pgdata:
   state:

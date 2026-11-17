@@ -50,7 +50,7 @@ function scenario({ n = 5, windowFrom = 0, journalEntries, dbClaims, dbHead, ack
   return { journal, db, acks: ackList, windowFrom };
 }
 const codes = (c) => c.findings.filter((f) => f.severity === 'fail').map((f) => f.code).sort();
-const RUN = { failureModel: 'POWER-CUT', storage: { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown' } };
+const RUN = { failureModel: 'POWER-CUT', storage: { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown', evidence: 'host/baseline' } };
 const CYCLE = { settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync' }, cutSentAt: AT, cutConfirmed: 'yes', workerStopsBeforeCut: [], silentWorkerStops: [], rebootObservedAfterCut: true, authenticatedRejections: 0 };
 
 describe('journal scan', () => {
@@ -212,6 +212,8 @@ describe('classification', () => {
     ['write cache unknown', { ...RUN, storage: { ...RUN.storage, writeCache: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['flush behaviour unknown', { ...RUN, storage: { ...RUN.storage, flushHonoured: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['FUA behaviour unknown', { ...RUN, storage: { ...RUN.storage, fua: 'unknown' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['FUA not advertised and flushes not observed', { ...RUN, storage: { ...RUN.storage, fua: 'not-advertised' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
+    ['no storage evidence named', { ...RUN, storage: { ...RUN.storage, evidence: '' } }, CYCLE, 'STORAGE_FLUSH_OR_FUA_BEHAVIOUR_UNVERIFIED'],
     ['synchronous_commit off', RUN, { ...CYCLE, settings: { ...CYCLE.settings, synchronous_commit: 'off' } }, 'POSTGRESQL_DURABILITY_SETTINGS_NOT_ON'],
     ['no cut recorded', RUN, { ...CYCLE, cutSentAt: null }, 'NO_CUT_RECORDED'],
     ['power loss not confirmed', RUN, { ...CYCLE, cutConfirmed: 'no' }, 'POWER_LOSS_NOT_CONFIRMED'],
@@ -227,6 +229,10 @@ describe('classification', () => {
       assert.ok(r.inconclusive.includes(code), r.inconclusive.join());
     });
   }
+  test('FUA not advertised is acceptable only with flushes observed on the actual path', () => {
+    const r = classifyCycle({ comparison: ok(), run: { ...RUN, storage: { ...RUN.storage, fua: 'not-advertised', flushesObserved: 'yes' } }, cycle: CYCLE });
+    assert.equal(r.verdict, 'PASS');
+  });
   test('no acknowledged claims: INCONCLUSIVE', () => {
     const r = classifyCycle({ comparison: compareCycle(scenario({ acks: [] })), run: RUN, cycle: CYCLE });
     assert.deepEqual(r.inconclusive, ['NO_ACKNOWLEDGED_CLAIMS']);

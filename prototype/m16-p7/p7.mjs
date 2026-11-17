@@ -16,7 +16,8 @@ import { parseArgs } from 'node:util';
 import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect, journalAt } from '../m16-phase05/lib/proto.mjs';
 import { trustProblem } from '../m16-phase05/lib/journal.mjs';
 import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
-import { keyFromHex, makeClient } from './lib/protocol.mjs';
+import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
+import { measuredRate, sizePool } from './lib/sizing.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
@@ -160,6 +161,7 @@ async function cmdNetcheck(a, { quiet = false } = {}) {
 async function cmdInit(a) {
   const st = await rec('GET', `/runs/${a.run}`);
   if (st.stopped) throw new Error('run is stopped');
+  if (st.run.continues) throw new Error(`init refused: this run continues ${st.run.continues.run}; use "adopt" (the database and journal are kept)`);
   if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('init refused: network isolation not verified (see evidence/netcheck)');
   const p = db();
   const j = journalAt();
@@ -177,6 +179,39 @@ async function cmdInit(a) {
   await p.$disconnect();
 }
 
+// ─────────────────────────────────────────────── adopt ──────────────────────────────────────────────
+/**
+ * First step of a run that continues an earlier run (after an INCONCLUSIVE cycle): the database and journal are kept
+ * exactly as they are. Refuses unless the state is trusted (full verification, under the lock) AND identical to the
+ * state the recorder holds from the earlier run's last recovery. It changes nothing.
+ */
+async function cmdAdopt(a) {
+  const st = await rec('GET', `/runs/${a.run}`);
+  if (st.stopped) throw new Error('run is stopped');
+  const c = st.run.continues;
+  if (!c) throw new Error('adopt refused: this run does not continue an earlier run (use "init" on empty volumes)');
+  if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('adopt refused: network isolation not verified (see evidence/netcheck)');
+  const p = db();
+  const s = await settings(p);
+  if (!durableSettings(s)) throw new Error(`adopt refused: PostgreSQL durability settings are not all on: ${JSON.stringify(s)}`);
+  const j = journalAt();
+  const { row, js } = await p.$transaction(async (tx) => {
+    const [r0] = await tx.$queryRaw`SELECT installation_id, journal_seq, head_hash FROM installation_state WHERE id = 1 FOR UPDATE`;
+    return { row: r0, js: j.state({ forceFull: true }) };
+  }, { timeout: 120_000, maxWait: 60_000 });
+  const problem = trustProblem(row, js);
+  if (problem || js.status !== 'ok') throw new Error(`adopt refused: the state is not trusted (${problem ?? js.status}). Nothing was changed`);
+  const state = { installationId: row.installation_id, head: row.journal_seq, headHash: row.head_hash };
+  const f = c.finalState;
+  if (state.installationId !== f.installationId || state.head !== f.head || state.headHash !== f.headHash) {
+    throw new Error(`adopt refused: the database and journal are not in the state recorded at the end of run ${c.run} (head ${state.head}, recorded ${f.head}). Nothing was changed`);
+  }
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'adopted', finalState: state, detail: `continues ${c.run} after cycle ${c.lastCycle}` });
+  evidenceFile(a.run, 'adoption', `adoption-${Date.now()}.json`, { continues: c, state, journal: { status: js.status, head: js.head }, settings: s, at: new Date().toISOString() });
+  console.log(JSON.stringify({ adopted: c.run, lastCycle: c.lastCycle, head: state.head, carriedOverAccepted: st.accepted.length }));
+  await p.$disconnect();
+}
+
 // ─────────────────────────────────────────────── run ────────────────────────────────────────────────
 /**
  * Claims in a loop until the machine loses power. After a claim CERTAINLY committed (claim() resolved claimed: true,
@@ -187,9 +222,8 @@ async function cmdInit(a) {
 async function cmdRun(a) {
   const cycle = Number(a.cycle);
   const workers = Number(a.workers ?? 1);
-  const pool = Number(a.pool ?? 50000); // per worker; an exhausted pool before the cut makes the cycle INCONCLUSIVE
   const proc = a.proc ?? 'a';
-  if (!/^[a-z]$/.test(proc) || !(workers >= 1 && workers <= 12) || !(pool >= 1)) throw new Error('bad --proc, --workers (1-12) or --pool');
+  if (!/^[a-z]$/.test(proc) || !(workers >= 1 && workers <= 12)) throw new Error('bad --proc or --workers (1-12)');
   const st = await rec('GET', `/runs/${a.run}`);
   if (st.stopped) throw new Error(`run is stopped: ${JSON.stringify(st.stopped)}`);
   const smokeCrash = a['smoke-crash-after-claim-append'];
@@ -202,6 +236,19 @@ async function cmdRun(a) {
     if (!prev.result) throw new Error(`refused: cycle ${cycle - 1} has not been checked`);
     if (!prev.recovered) throw new Error(`refused: run "recover" for cycle ${cycle - 1} first`);
   }
+  // Sizing (never an arbitrary pool): the pool must outlast the longest planned wait for the cut with >= 2x headroom.
+  const targetRate = a['target-rate'] ? Number(a['target-rate']) : null; // optional throttle, claims per second per worker
+  let rate = targetRate ?? (a.rate ? Number(a.rate) : null);
+  let rateSource = targetRate ? 'throttle (--target-rate)' : rate ? 'operator (--rate)' : null;
+  if (!rate && cycle > 1) {
+    const m = (await rec('GET', `/runs/${a.run}/cycles/${cycle - 1}`)).result?.measuredRate;
+    if (m?.totalPerSecond) { rate = m.totalPerSecond; rateSource = `measured in cycle ${cycle - 1} (all workers together, an upper bound for one)`; }
+  }
+  if (!rate) throw new Error('refused: no claim rate to size the action pool. Give --rate <claims per second per worker> (from a rehearsal) or --target-rate');
+  const size = sizePool({ ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
+  if (!size.ok) throw new Error(`refused: ${size.reason}${a['max-seconds'] === undefined ? ' (--max-seconds is the longest planned time to the cut)' : ''}`);
+  const pool = size.pool;
+  const sizing = { ratePerWorker: rate, rateSource, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), requiredPerWorker: size.required, poolPerWorker: pool, workers, targetRate };
   const cur = await rec('GET', `/runs/${a.run}/cycles/${cycle}`);
   if (cur.result || cur.cutRequestedAt) throw new Error(`refused: cycle ${cycle} was already cut or checked`);
   if (cur.starts.some((x) => x.proc === proc)) throw new Error(`refused: process ${proc} already started in cycle ${cycle}`);
@@ -217,14 +264,14 @@ async function cmdRun(a) {
   }, { timeout: 120_000, maxWait: 60_000 });
   const problem = trustProblem(row, js);
   if (problem || !['ok', 'empty'].includes(js.status)) throw new Error(`refused: history is not trusted (${problem ?? js.status}); run "recover" for the previous cycle first`);
-  const prefix = `c${pad(cycle)}${proc}`;
+  const prefix = `${runTag(a.run)}c${pad(cycle)}${proc}`;
   const [{ n }] = await p.$queryRaw`SELECT count(*)::int AS n FROM action WHERE id LIKE ${`${prefix}w%`}`;
   if (n) throw new Error(`refused: actions with prefix ${prefix} already exist`);
   for (let w = 1; w <= workers; w++) {
     await p.$executeRawUnsafe(`INSERT INTO action (id, org_id, status) SELECT '${prefix}w${w}-' || g, 'org-p7', 'APPROVED' FROM generate_series(1, ${pool}) g`);
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
-  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, bootId: bootId() });
+  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, { proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, bootId: bootId() });
   const cycleId = started.data.cycleId;
   await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` });
   console.log(`cycle ${cycle} (${proc}): ${workers} worker(s) claiming from head ${row.journal_seq}; waiting for the cut`);
@@ -237,7 +284,9 @@ async function cmdRun(a) {
     const j = journalAt();
     let msg = 0;
     const ack = (kind, seq, actionId) => rec('POST', `/runs/${a.run}/ack`, { cycle, cycleId, proc, worker: w, n: ++msg, kind, seq, actionId });
+    const minGapMs = targetRate ? 1000 / targetRate : 0;
     for (let k = 1; k <= pool; k++) {
+      const t0 = Date.now();
       const actionId = `${prefix}w${w}-${k}`;
       let c;
       try {
@@ -249,8 +298,9 @@ async function cmdRun(a) {
       try { await ack('claim', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
       try { await appendLocked(p, j, { type: 'dispatch', seq: c.seq, synthetic: true, at: new Date().toISOString() }); } catch (e) { return stop(w, 'dispatch_intent_failed', lastLine(e)); }
       try { await ack('dispatch', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
+      if (minGapMs) { const left = minGapMs - (Date.now() - t0); if (left > 0) await sleep(left); }
     }
-    return stop(w, 'pool_exhausted');
+    return stop(w, 'pool_exhausted', `after ${pool} actions; sized for ${rate}/s x ${sizing.maxSeconds} s x ${sizing.headroom}`);
   }));
   await p.$disconnect();
 }
@@ -333,7 +383,9 @@ async function cmdCheck(a) {
     database: { head: dbs.head, headHash: dbs.headHash, committedClaims: dbs.count, fingerprint: dbs.fingerprint },
     reboot: { observedAfterCut: rebootObservedAfterCut, bootIdAtStart: startBootIds, bootIdNow: nowBoot.bootId, bootProbe: probe },
     settings: s, storage: st.run.storage,
-    cut: { requestedAt: v.cutRequestedAt, how: v.cutHow, commandStatus: v.cutCommandStatus, operatorConfirmed: v.cutConfirmed ?? null, operatorEvidence: v.operatorEvidence, independentlyConfirmed: false },
+    cut: { requestedAt: v.cutRequestedAt, how: v.cutHow, commandStatus: v.cutCommandStatus, operatorConfirmed: v.cutConfirmed ?? null, operatorEvidence: v.operatorEvidence, operatorAttestedCut: v.operatorAttestedCut ?? null,
+      independentlyConfirmed: false, note: 'the confirmation and any cut time are the operator\'s attestation, not an independent observation' },
+    measuredRate: measuredRate(v.acks), sizing: v.starts.map((x) => ({ proc: x.proc, ...x.sizing })),
     workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, authenticatedRejections: v.authenticatedRejections,
     timeline, files, evidenceDir: path.basename(dir), earlierAttempts: attempts, checkedAt: new Date(verifiedAt).toISOString(),
   };
@@ -359,7 +411,8 @@ async function cmdCheck(a) {
 async function cmdRecover(a) {
   const cycle = Number(a.cycle);
   const st = await rec('GET', `/runs/${a.run}`);
-  if (st.stopped) throw new Error('run is stopped');
+  // A run stopped by an INCONCLUSIVE cycle may still recover that cycle, so a new run can continue its state.
+  if (st.stopped && !(st.stopped.kind === 'inconclusive' && st.stopped.cycle === cycle)) throw new Error('run is stopped');
   const v = await rec('GET', `/runs/${a.run}/cycles/${cycle}`);
   const r = v.result;
   if (!r || r.verdict === 'FAIL') throw new Error('nothing to recover: no non-failing result for this cycle');
@@ -428,6 +481,12 @@ async function cmdRecover(a) {
     const again = trustProblem(await stateRow(p), j.state({ forceFull: true }));
     if (again) await fail(`not trusted after clearance: ${again}`);
   }
+  // The state every later cycle (or a continuing run) starts from: verified trusted, in full, once more.
+  const fin = await stateRow(p);
+  const finJs = j.state({ forceFull: true });
+  const finProblem = trustProblem(fin, finJs);
+  if (finProblem || finJs.status !== 'ok') await fail(`not trusted at the end of recovery: ${finProblem ?? finJs.status}`);
+  const finalState = { installationId: fin.installation_id, head: fin.journal_seq, headHash: fin.head_hash };
   const completedAt = Date.now();
   const summary = {
     run: a.run, cycleId: r.cycleId, cycle, failureModel: r.failureModel,
@@ -436,19 +495,19 @@ async function cmdRecover(a) {
     reboot: r.reboot, quarantine, clearance: { required: !!r.quarantineRequired, cleared, digest, uncommitted }, steps,
     checkVerdict: r.verdict, fails: r.fails, inconclusive: r.inconclusive,
   };
-  const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/recovered`, { cycleId: r.cycleId, steps, uncommitted, digest, cleared, summary });
+  const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/recovered`, { cycleId: r.cycleId, steps, uncommitted, digest, cleared, finalState, summary });
   writeOnce(path.join(dir, `cycle-summary-${completedAt}.json`), { ...summary, finalStatus: posted.final });
   console.log(JSON.stringify({ recovered: cycle, final: posted.final, steps }));
   await p.$disconnect();
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
-const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' } } });
+const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' } } });
 values.run ??= process.env.P7_RUN;
 if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
-const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, init: cmdInit, run: cmdRun, check: cmdCheck, recover: cmdRecover };
+const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, init: cmdInit, adopt: cmdAdopt, run: cmdRun, check: cmdCheck, recover: cmdRecover };
 if (!commands[cmd] || !/^[A-Za-z0-9_-]{1,64}$/.test(values.run ?? '') || (['run', 'check', 'recover'].includes(cmd) && !(Number(values.cycle) >= 1))) {
-  console.error('usage: p7.mjs boot-probe|netcheck|init|run|check|recover [--run <id>] [--cycle <n>] [--workers k] [--pool n] [--proc a] [--clear-digest d]');
+  console.error('usage: p7.mjs boot-probe|netcheck|init|adopt|run|check|recover [--run <id>] [--cycle <n>] [--proc a] [--workers k] --max-seconds s [--rate r | --target-rate r] [--pool n] [--headroom h] [--clear-digest d]');
   process.exit(1);
 }
 try {

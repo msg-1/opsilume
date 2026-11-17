@@ -65,19 +65,21 @@ export function makeClient({ baseUrl, key, run, timeoutMs = 10_000 }) {
 }
 
 // ─────────────────────────────── acknowledgement streams (one per process and worker) ───────────────────────────────
-export const actionPrefix = (cycle, proc, worker) => `c${String(cycle).padStart(4, '0')}${proc}w${worker}-`;
+/** Actions are named per run, so a run that continues an earlier run's database never collides with its actions. */
+export const runTag = (run) => `r${sha256(run).slice(0, 8)}`;
+export const actionPrefix = (run, cycle, proc, worker) => `${runTag(run)}c${String(cycle).padStart(4, '0')}${proc}w${worker}-`;
 export const streamKey = (a) => `${a.proc}/${a.worker}`;
 
 /**
  * The next state of one (process, worker) stream, or the reason the acknowledgement is refused. A worker sends, in
  * order: claim(seq) as n, dispatch(seq) as n+1, the next claim as n+2, ... with its own claims strictly increasing.
  */
-export function nextStream(st, a, cycle) {
+export function nextStream(st, a, cycle, run) {
   const cur = st ?? { n: 0, lastClaimSeq: 0, pending: null };
   if (!Number.isInteger(a.n) || a.n < 1 || !Number.isInteger(a.seq) || a.seq < 1 || typeof a.actionId !== 'string') return { error: 'malformed' };
   if (a.n <= cur.n) return { error: 'duplicate_or_replayed' };
   if (a.n !== cur.n + 1) return { error: 'out_of_order' };
-  if (!a.actionId.startsWith(actionPrefix(cycle, a.proc, a.worker))) return { error: 'action_does_not_belong_to_this_stream' };
+  if (!a.actionId.startsWith(actionPrefix(run, cycle, a.proc, a.worker))) return { error: 'action_does_not_belong_to_this_stream' };
   if (a.kind === 'claim') {
     if (cur.pending) return { error: 'out_of_order' }; // the previous claim's dispatch intent was never acknowledged
     if (a.seq <= cur.lastClaimSeq) return { error: 'out_of_order' };
