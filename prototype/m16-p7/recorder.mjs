@@ -124,7 +124,8 @@ export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS } = {}) {
     bootReports: boots,
     workerStopsBeforeCut: events.filter((e) => e.kind === 'worker_stopped' && (!cut || e.atMs < cut.atMs)),
     silentWorkerStops,
-    authenticatedRejections: s.rejections().filter((r) => r.authenticated && r.cycle === n).length,
+    // Only refusals after the cycle began count against it: a refused start (e.g. a forgotten recover) must not poison the cycle.
+    authenticatedRejections: starts.length ? s.rejections().filter((r) => r.authenticated && r.cycle === n && r.atMs >= starts[0].atMs).length : 0,
     result,
     recovered,
     final: finalStatus(result, recovered),

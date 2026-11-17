@@ -44,8 +44,11 @@
 | `egress` | `gateway` only | The gateway forwards to `P7_RECORDER_TARGET` and nothing else |
 
 - Nothing is published on the host. There is no webhook receiver.
-- `p7.mjs netcheck` verifies this from inside the harness, and `init` and `run` refuse to proceed unless it passes: the recorder answers only authenticated requests through the gateway; internet addresses, external DNS, the recorder host directly, and the host and bridge addresses are all unreachable.
-- **Limit:** the gateway container itself has ordinary outbound access. It runs fixed code that connects only to the recorder, but a host firewall rule on the test machine (allow only the recorder address) is still recommended and must be checked there.
+- `p7.mjs netcheck` probes this from inside the harness, and `init` and `run` refuse to proceed unless it passes. It checks that the recorder answers through the gateway only to authenticated requests, that PostgreSQL is reachable, and that internet addresses and external DNS are not.
+- **What Docker alone does not block (verified on Docker Desktop only):**
+  - **The test machine's own bridge address answers the harness.** Probes there came back `refused`: the host replied, and only the lack of a listener on those ports stopped the connection. A service listening on all addresses of the host (for example sshd) would be reachable.
+  - **The gateway container and the host keep general outbound access.** The gateway runs fixed code that connects only to the recorder, but Docker doesn't confine it.
+- **A host firewall on the test machine is therefore mandatory before qualifying cycles:** drop traffic from the harness networks to the host, and allow the gateway only the recorder's address and port. In a `POWER-CUT` or `VM-CRASH` run `netcheck` is strict and fails while the host still answers on the bridge address. Nothing has verified this on a real Linux machine yet.
 
 ## The rules it enforces
 
@@ -60,6 +63,7 @@
   - `create-run` refuses a qualifying run whose flush or FUA behaviour is not attested as verified.
   - `VM-CRASH` runs are supplementary and never count.
 - **Continuing state.** The database and journal carry over across cycles; nothing is reset. Every cycle ends with `recover`, which the recorder requires before the next start.
+- **`check` can be retried** without overwriting anything: a saved result is re-sent as it is, and a new attempt gets its own directory.
 - **Evidence** is write-once. Each cycle records: run and cycle ids, failure model, cut-request time, the bounds on the cut (last durable acknowledgement, first contact afterwards), last journal and database sequence, boot time, when PostgreSQL started and became reachable, verification and recovery times, quarantine and clearance results, and the verdict with reasons. The cut itself is **not independently observed**; the operator's confirmation is recorded as an attestation.
 
 ## One cycle (physical power cut)

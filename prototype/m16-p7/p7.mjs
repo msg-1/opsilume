@@ -110,16 +110,17 @@ function tcp(host, port, ms = 1500) {
  * gateway and only with the protocol; PostgreSQL is reachable; nothing else is (internet addresses, external DNS, the
  * recorder host directly, the host or bridge gateways). `refused` from an internet address would mean a route exists.
  */
-export async function netcheck(run) {
+export async function netcheck(run, { strict = false } = {}) {
   const probes = [];
-  const add = (name, expect, outcome, ok) => probes.push({ name, expect, outcome, ok });
+  const add = (name, expect, outcome, ok, note) => probes.push({ name, expect, outcome, ok, ...(note ? { note } : {}) });
+  const NAME = 'the name does not resolve here; this shows no DNS, it is not a routing test';
   try { await call('GET', `/runs/${run}`); add('recorder through the gateway, authenticated', 'reachable', 'authenticated', true); } catch (e) { add('recorder through the gateway, authenticated', 'reachable', lastLine(e), false); }
   const unsigned = await fetch(`${process.env.P7_RECORDER_URL}/runs/${run}`, { signal: AbortSignal.timeout(5000) }).then((r) => r.status, (e) => `error:${e.cause?.code ?? e.name}`);
   add('recorder without authentication', 'rejected (401)', unsigned, unsigned === 401);
   const d = await tcp('db', 5432);
   add('postgresql (db:5432, internal network)', 'reachable', d, d === 'connected');
   const [th, tp] = [(process.env.P7_RECORDER_TARGET ?? '').replace(/:\d+$/, ''), Number(/:(\d+)$/.exec(process.env.P7_RECORDER_TARGET ?? '')?.[1])];
-  if (th && tp) { const o = await tcp(th, tp); add(`recorder host directly (${th}:${tp}), bypassing the gateway`, 'blocked', o, o !== 'connected'); }
+  if (th && tp) { const o = await tcp(th, tp); add(`recorder host directly (${th}:${tp}), bypassing the gateway`, 'blocked', o, o !== 'connected', /EAI_AGAIN|ENOTFOUND/.test(o) ? NAME : undefined); }
   for (const [h, port] of [['1.1.1.1', 443], ['8.8.8.8', 53], ['9.9.9.9', 443], ['140.82.112.3', 443]]) {
     const o = await tcp(h, port);
     add(`internet ${h}:${port}`, 'blocked', o, o !== 'connected' && o !== 'refused');
@@ -133,16 +134,22 @@ export async function netcheck(run) {
     const ip = i.address.split('.').map(Number), mask = i.netmask.split('.').map(Number);
     hosts.add(ip.map((b, k) => (k === 3 ? (b & mask[k]) + 1 : b & mask[k])).join('.'));
   }
+  // `refused` here means the HOST answered: the harness can reach the test machine's own bridge address, and only the
+  // absence of a listener on that port stopped it. A qualifying run therefore requires a host firewall that drops this
+  // traffic (strict: anything but a timeout or an unreachable error fails). A smoke run only reports it.
+  let hostAnswers = false;
   for (const h of ['host.docker.internal', ...hosts]) for (const port of [22, 80, 443, 2375, 2376, 5432, 8787, tp].filter(Boolean)) {
     const o = await tcp(h, port, 1000);
-    add(`host or bridge ${h}:${port}`, 'blocked', o, o !== 'connected');
+    if (o === 'refused') hostAnswers = true;
+    add(`host or bridge ${h}:${port}`, strict ? 'dropped by the host firewall' : 'no service', o, o !== 'connected' && !(strict && o === 'refused'), /EAI_AGAIN|ENOTFOUND/.test(o) ? NAME : o === 'refused' ? 'the host answered: reachable, no listener on this port' : undefined);
   }
-  return { ok: probes.every((p) => p.ok), probes, at: new Date().toISOString(), bootId: bootId() };
+  return { ok: probes.every((p) => p.ok), strict, hostAnswersOnBridge: hostAnswers, probes, at: new Date().toISOString(), bootId: bootId() };
 }
 async function cmdNetcheck(a, { quiet = false } = {}) {
-  const r = await netcheck(a.run);
+  const st = await rec('GET', `/runs/${a.run}`);
+  const r = await netcheck(a.run, { strict: st.run.failureModel !== 'HARNESS-SMOKE' });
   evidenceFile(a.run, 'netcheck', `netcheck-${Date.now()}.json`, r);
-  await rec('POST', `/runs/${a.run}/event`, { kind: 'netcheck', detail: r.ok ? 'isolation verified' : `isolation FAILED: ${r.probes.filter((p) => !p.ok).map((p) => p.name).join('; ')}` }).catch(() => {});
+  await rec('POST', `/runs/${a.run}/event`, { kind: 'netcheck', detail: r.ok ? `isolation checks passed (strict: ${r.strict}; host answers on the bridge address: ${r.hostAnswersOnBridge})` : `isolation FAILED: ${r.probes.filter((p) => !p.ok).map((p) => p.name).join('; ')}` }).catch(() => {});
   if (!quiet) console.log(JSON.stringify(r, null, 1));
   if (!r.ok) process.exitCode = 5;
   return r;
@@ -188,12 +195,26 @@ async function cmdRun(a) {
   const smokeCrash = a['smoke-crash-after-claim-append'];
   if (smokeCrash && st.run.failureModel !== 'HARNESS-SMOKE') throw new Error('--smoke-crash-after-claim-append is only for HARNESS-SMOKE runs');
   if (!(await cmdNetcheck(a, { quiet: true })).ok) throw new Error('refused: network isolation not verified (see evidence/netcheck)');
+  // Ask the recorder BEFORE seeding anything, so a refusal (e.g. the previous cycle was not recovered) leaves no trace
+  // in the database and is not counted against the cycle.
+  if (cycle > 1) {
+    const prev = await rec('GET', `/runs/${a.run}/cycles/${cycle - 1}`);
+    if (!prev.result) throw new Error(`refused: cycle ${cycle - 1} has not been checked`);
+    if (!prev.recovered) throw new Error(`refused: run "recover" for cycle ${cycle - 1} first`);
+  }
+  const cur = await rec('GET', `/runs/${a.run}/cycles/${cycle}`);
+  if (cur.result || cur.cutRequestedAt) throw new Error(`refused: cycle ${cycle} was already cut or checked`);
+  if (cur.starts.some((x) => x.proc === proc)) throw new Error(`refused: process ${proc} already started in cycle ${cycle}`);
   const p = db();
   const s = await settings(p);
   if (!durableSettings(s)) throw new Error(`refused: PostgreSQL durability settings are not all on: ${JSON.stringify(s)}`);
   const j0 = journalAt();
-  const row = await stateRow(p);
-  const js = j0.state({ forceFull: true });
+  // Under the state-row lock: another process (--proc a) may be appending, and an unlocked read could see the journal
+  // one record ahead of the row for a moment.
+  const { row, js } = await p.$transaction(async (tx) => {
+    const [r0] = await tx.$queryRaw`SELECT installation_id, journal_seq, head_hash FROM installation_state WHERE id = 1 FOR UPDATE`;
+    return { row: r0, js: j0.state({ forceFull: true }) };
+  }, { timeout: 120_000, maxWait: 60_000 });
   const problem = trustProblem(row, js);
   if (problem || !['ok', 'empty'].includes(js.status)) throw new Error(`refused: history is not trusted (${problem ?? js.status}); run "recover" for the previous cycle first`);
   const prefix = `c${pad(cycle)}${proc}`;
@@ -244,8 +265,21 @@ async function cmdCheck(a) {
   if (v.result) throw new Error(`cycle ${cycle} was already checked`);
   if (!v.starts.length) throw new Error(`cycle ${cycle} never started`);
   const windowFrom = Math.min(...v.starts.map((x) => x.dbHead));
-  const dir = path.join(EVIDENCE, a.run, `cycle-${pad(cycle)}`);
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const base = path.join(EVIDENCE, a.run, `cycle-${pad(cycle)}`);
+  fs.mkdirSync(path.dirname(base), { recursive: true });
+  // Retryable, without ever overwriting evidence: a result already written but not delivered is re-sent as it is; an
+  // attempt that died earlier keeps its directory and this one gets its own.
+  const attempts = fs.readdirSync(path.dirname(base)).filter((d) => d === path.basename(base) || d.startsWith(`${path.basename(base)}-attempt-`)).sort();
+  for (const d of attempts) {
+    const f = path.join(path.dirname(base), d, 'result.json');
+    if (!fs.existsSync(f)) continue;
+    const saved = JSON.parse(fs.readFileSync(f, 'utf8'));
+    const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/result`, saved);
+    console.log(JSON.stringify({ cycle, verdict: saved.verdict, resent: d, runStopped: posted.stopped, fails: saved.fails, inconclusive: saved.inconclusive }));
+    process.exitCode = { PASS: 0, FAIL: 2, INCONCLUSIVE: 3 }[saved.verdict];
+    return;
+  }
+  const dir = attempts.length ? `${base}-attempt-${Date.now()}` : base;
   fs.mkdirSync(dir); // throws if it exists: evidence is never overwritten
   const j = journalAt();
   // 1. Preserve the journal exactly as found, on disk, before anything else reads or repairs it.
@@ -301,10 +335,14 @@ async function cmdCheck(a) {
     settings: s, storage: st.run.storage,
     cut: { requestedAt: v.cutRequestedAt, how: v.cutHow, commandStatus: v.cutCommandStatus, operatorConfirmed: v.cutConfirmed ?? null, operatorEvidence: v.operatorEvidence, independentlyConfirmed: false },
     workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, authenticatedRejections: v.authenticatedRejections,
-    timeline, files, checkedAt: new Date(verifiedAt).toISOString(),
+    timeline, files, evidenceDir: path.basename(dir), earlierAttempts: attempts, checkedAt: new Date(verifiedAt).toISOString(),
   };
   writeOnce(path.join(dir, 'recorder-cycle.json'), v);
   writeOnce(path.join(dir, 'result.json'), result);
+  if (a['smoke-fail-before-result-post']) { // HARNESS-SMOKE only: as if the recorder were unreachable at this moment
+    if (st.run.failureModel !== 'HARNESS-SMOKE') throw new Error('--smoke-fail-before-result-post is only for HARNESS-SMOKE runs');
+    throw new Error('smoke: stopped before the result was sent');
+  }
   const posted = await rec('POST', `/runs/${a.run}/cycles/${cycle}/result`, result); // FAIL (and INCONCLUSIVE in a qualifying run) stops the run
   console.log(JSON.stringify({ cycle, verdict: result.verdict, fails: result.fails, inconclusive: result.inconclusive, relation: result.relation, quarantineRequired: result.quarantineRequired, needsRecovery: result.needsRecovery, runStopped: posted.stopped, counts: result.counts }));
   await p.$disconnect();
@@ -327,7 +365,7 @@ async function cmdRecover(a) {
   if (!r || r.verdict === 'FAIL') throw new Error('nothing to recover: no non-failing result for this cycle');
   if (v.recovered) throw new Error('already recovered');
   const startedAt = Date.now();
-  const dir = path.join(EVIDENCE, a.run, `cycle-${pad(cycle)}`);
+  const dir = path.join(EVIDENCE, a.run, r.evidenceDir ?? `cycle-${pad(cycle)}`);
   const p = db();
   const j = journalAt();
   const steps = [];
@@ -405,7 +443,7 @@ async function cmdRecover(a) {
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
-const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' } } });
+const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' } } });
 values.run ??= process.env.P7_RUN;
 if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
 const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, init: cmdInit, run: cmdRun, check: cmdCheck, recover: cmdRecover };

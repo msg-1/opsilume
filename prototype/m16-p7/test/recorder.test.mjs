@@ -204,6 +204,33 @@ describe('recorder protocol and state machine', () => {
   });
 });
 
+describe('recorder: replay from a previous cycle, and refusals before a cycle starts', () => {
+  const dir = path.join(tmp, 'replay');
+  let srv, call;
+  before(async () => { createRun(dir, { run: 'rp', failureModel: 'HARNESS-SMOKE' }); srv = await serve(dir); call = callerFor(srv.base, dir, 'rp'); });
+  after(() => srv.close());
+  test('cycle-1 acknowledgements cannot be replayed into cycle 2, by body or byte for byte', async () => {
+    const id1 = (await call('POST', '/runs/rp/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    const old = { cycle: 1, cycleId: id1, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: 'c0001aw1-1' };
+    const body = JSON.stringify(old);
+    const h = signRequest(keyOf(dir, 'rp'), { method: 'POST', path: '/runs/rp/ack', run: 'rp', body });
+    assert.equal((await rawSend(srv.base, 'POST', '/runs/rp/ack', h, body)).status, 200);
+    assert.equal((await call('POST', '/runs/rp/cycles/1/result', { cycleId: id1, verdict: 'INCONCLUSIVE', needsRecovery: [] })).status, 200);
+    // A start refused because the operator forgot `recover` must not count against cycle 2.
+    assert.equal((await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.error, 'previous_cycle_not_recovered');
+    assert.equal((await call('POST', '/runs/rp/cycles/1/recovered', { cycleId: id1 })).status, 200);
+    const id2 = (await call('POST', '/runs/rp/cycles/2/start', { proc: 'a', workers: 1, dbHead: 1 })).data.cycleId;
+    assert.notEqual(id2, id1);
+    assert.equal(cycleView(runStore(dir, 'rp'), 2).authenticatedRejections, 0);
+    assert.equal((await call('POST', '/runs/rp/ack', old)).data.error, 'cycle_not_open', 'a cycle-1 acknowledgement, freshly signed');
+    assert.equal((await call('POST', '/runs/rp/ack', { ...old, cycle: 2, actionId: 'c0002aw1-1', seq: 2 })).data.error, 'wrong_cycle_id', 'cycle 2 with cycle 1\'s id');
+    assert.equal((await rawSend(srv.base, 'POST', '/runs/rp/ack', h, body)).data.error, 'replayed_nonce', 'the original request, byte for byte');
+    assert.equal(runStore(dir, 'rp').acks(2).length, 0);
+    assert.equal(runStore(dir, 'rp').acks(1).length, 1);
+    assert.equal(cycleView(runStore(dir, 'rp'), 2).authenticatedRejections, 1, 'only the refusal that named cycle 2 after it started');
+  });
+});
+
 describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
   const dir = path.join(tmp, 'fail');
   let srv, call;

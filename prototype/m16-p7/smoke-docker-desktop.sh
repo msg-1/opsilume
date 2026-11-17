@@ -30,7 +30,7 @@ P() { dc exec -T harness node p7.mjs "$@"; }
 expect_exit() { local want="$1"; shift; local got=0; "$@" || got=$?; [ "$got" -eq "$want" ] || { echo "SMOKE FAILED: expected exit $want, got $got: $*"; exit 1; }; }
 ev="$work/evidence/$run"
 assert_json() { node -e 'const [f,x]=process.argv.slice(1); const r=JSON.parse(require("fs").readFileSync(f,"utf8")); if(!eval(x)){console.error(`SMOKE FAILED: ${x}`, JSON.stringify({verdict:r.verdict,fails:r.fails,inconclusive:r.inconclusive,relation:r.relation,counts:r.counts,silent:r.silentWorkerStops}).slice(0,600)); process.exit(1)} console.log(`ok: ${x.slice(0,110)}`)' "$1" "$2"; }
-result() { echo "$ev/cycle-$(printf %04d "$1")/result.json"; }
+result() { ls "$ev"/cycle-$(printf %04d "$1")*/result.json | tail -1; }
 cut_now() { R cut --cycle "$1" --min-seconds "$2" --max-seconds "$3" --command-json "[\"docker\",\"compose\",\"-p\",\"$proj\",\"-f\",\"$here/compose.yml\",\"kill\"]"; R confirm-cut --cycle "$1" --power-was-cut yes --evidence "smoke: container kill, not a power cut"; }
 start_proc() { (P run --cycle "$1" --proc "$2" --workers 2 --pool 50000 >"$work/run-$run-$1$2.log" 2>&1 || true) & pids+=($!); }
 # A kill can land between a claim append and its commit: then recover stops with exit 4 for the operator's digest.
@@ -56,10 +56,13 @@ P netcheck | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{co
 P init
 
 echo "== cycle 1: --proc a and --proc b concurrently (2 workers each); the recorder is restarted before recovery"
-pids=(); start_proc 1 a; start_proc 1 b; sleep 7
+pids=(); start_proc 1 a; sleep 3; start_proc 1 b; sleep 6   # b starts while a is already claiming
 cut_now 1 5 8; wait "${pids[@]}" || true
 dc up -d --wait
-expect_exit 3 P check --run "$run" --cycle 1
+mkdir "$ev/cycle-0001"                                   # as if an earlier check died right after creating its directory
+expect_exit 1 P check --run "$run" --cycle 1 --smoke-fail-before-result-post   # and another died before sending its result
+expect_exit 3 P check --run "$run" --cycle 1             # the retry re-sends the saved result unchanged
+[ -z "$(ls "$ev/cycle-0001")" ] && [ "$(ls -d "$ev"/cycle-0001-attempt-* | wc -l | tr -d ' ')" = 1 ] && echo "ok: check retried without overwriting evidence (one attempt directory, result re-sent)" || { echo "SMOKE FAILED: check retry"; exit 1; }
 assert_json "$(result 1)" "r.fails.length===0 && r.counts.claimAcks>0"
 node -e 'const fs=require("fs");const a=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse);const procs=[...new Set(a.map(x=>x.proc))].sort().join();const seqs=a.filter(x=>x.kind==="claim").map(x=>x.seq);if(procs!=="a,b"||new Set(seqs).size!==seqs.length){console.error("SMOKE FAILED: two-process acknowledgements",procs);process.exit(1)}console.log(`ok: ${seqs.length} claim acknowledgements from processes ${procs}, sequence numbers unique`)' "$work/recorder/runs/$run/acks/cycle-0001.jsonl"
 [ "$(db_unique)" = t ] && echo "ok: committed claims have unique sequence numbers and unique action ids" || { echo "SMOKE FAILED: duplicate committed claims"; exit 1; }
