@@ -8,7 +8,7 @@
 #   - the project is exactly opspilot-m16-p7-smoke (fixed here; no argument can name another project);
 #   - the project's volumes are exactly opspilot-m16-p7-smoke_pgdata and opspilot-m16-p7-smoke_state;
 #   - each carries the Compose labels of that project and volume, and the label opspilot.p7.data=disposable-harness-smoke
-#     (set only by smoke-docker-desktop.sh; a qualifying run's volumes are labelled evidence-keep);
+#     (set only by compose.smoke.yml, which only smoke-docker-desktop.sh uses; a qualifying run's volumes have no such label);
 #   - the marker in the journal volume, if init wrote one, says the volumes were initialised by a HARNESS-SMOKE run;
 #   - only containers of that project use the volumes.
 # The recorder directory and the evidence directory are host directories outside Docker: this script never touches them.

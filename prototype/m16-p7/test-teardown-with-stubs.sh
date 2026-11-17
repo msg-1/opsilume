@@ -54,7 +54,7 @@ good; echo "${P}_pgdata ${P}_state ${P}_extra" >"$t/volumes"; refused "an extra 
 good; echo "${P}_pgdata" >"$t/volumes"; refused "a volume is missing"
 good; echo "opspilot_pgdata ${P}_state" >"$t/volumes"; refused "a volume of the default opspilot project appears in the listing"
 good; sed -i.bak "/${P}_state opspilot.p7.data/d" "$t/labels"; refused "the disposable-smoke label is missing on one volume"
-good; sed -i.bak "s/disposable-harness-smoke/evidence-keep/" "$t/labels"; refused "the volumes are labelled evidence-keep (a qualifying run's volumes)"
+good; sed -i.bak "s/disposable-harness-smoke/evidence-keep/" "$t/labels"; refused "the label has another value"
 good; sed -i.bak "s/${P}_pgdata com.docker.compose.project $P/${P}_pgdata com.docker.compose.project opspilot/" "$t/labels"; refused "a volume's Compose project label names another project"
 good; sed -i.bak "s/${P}_state com.docker.compose.volume state/${P}_state com.docker.compose.volume pgdata/" "$t/labels"; refused "a volume's Compose volume label does not match its name"
 good; sed -i.bak "s/HARNESS-SMOKE/POWER-CUT/" "$t/marker"; refused "the journal volume marker says POWER-CUT"

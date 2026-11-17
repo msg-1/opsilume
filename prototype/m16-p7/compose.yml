@@ -63,8 +63,9 @@ networks:
   p7db: { internal: true, driver_opts: { com.docker.network.bridge.name: p7db0 } }
   p7gw: { internal: true, driver_opts: { com.docker.network.bridge.name: p7gw0 } }
   egress: { driver_opts: { com.docker.network.bridge.name: p7eg0 } }
-# Volumes are evidence unless labelled otherwise. Only smoke-docker-desktop.sh sets P7_VOLUME_CLASS, and only
-# smoke-teardown.sh removes volumes, by exact name, after checking this label (and more). Nothing else removes volumes.
+# Volumes are evidence. Their definition here is fixed on purpose (no labels, nothing from the environment): Compose
+# offers to RECREATE a volume whose definition changed, which would delete it. Never answer yes to that, never pass -y.
+# Smoke volumes get their "disposable" label from compose.smoke.yml, which only smoke-docker-desktop.sh adds.
 volumes:
-  pgdata: { labels: { opspilot.p7.data: "${P7_VOLUME_CLASS:-evidence-keep}" } }
-  state: { labels: { opspilot.p7.data: "${P7_VOLUME_CLASS:-evidence-keep}" } }
+  pgdata:
+  state:

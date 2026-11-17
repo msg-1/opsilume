@@ -1,0 +1,6 @@
+# HARNESS-SMOKE ONLY. Added by smoke-docker-desktop.sh (-f compose.yml -f compose.smoke.yml) and by nothing else.
+# It marks the smoke project's volumes as disposable; smoke-teardown.sh refuses any volume without this label.
+# Never use this file with the qualifying project (opspilot-m16-p7).
+volumes:
+  pgdata: { labels: { opspilot.p7.data: disposable-harness-smoke } }
+  state: { labels: { opspilot.p7.data: disposable-harness-smoke } }

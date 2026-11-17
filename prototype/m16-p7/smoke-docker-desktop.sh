@@ -32,8 +32,8 @@ sleep 1
 keyfile() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).keyFile))'; }
 keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"
 run="$runA"
-export P7_VOLUME_CLASS=disposable-harness-smoke P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
-dc() { docker compose -p "$proj" -f "$here/compose.yml" "$@"; }
+export P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
+dc() { docker compose -p "$proj" -f "$here/compose.yml" -f "$here/compose.smoke.yml" "$@"; }   # the override only labels the volumes disposable
 R() { local c="$1"; shift; node "$here/recorder.mjs" "$c" --dir "$work/recorder" --run "$run" "$@"; }
 P() { dc exec -T harness node p7.mjs "$@"; }
 now() { node -e 'console.log(new Date().toISOString())'; }
