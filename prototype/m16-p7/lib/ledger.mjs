@@ -15,20 +15,30 @@ export function fsyncFile(file) {
 /** One JSON line, one write, byte count checked, fsync. Throws on a short write. */
 export function appendDurable(file, obj) {
   const line = `${JSON.stringify(obj)}\n`;
-  const fd = fs.openSync(file, 'a', 0o644);
+  const isNew = !fs.existsSync(file);
+  const fd = fs.openSync(file, 'a+', 0o644);
   try {
+    // A ledger that ends in a fragment (a writer died mid-line) is never appended to: the new record would fuse with
+    // the fragment into one unreadable line, and every later read of the ledger would fail. It is left as it is.
+    const size = fs.fstatSync(fd).size;
+    if (size > 0) {
+      const last = Buffer.alloc(1);
+      fs.readSync(fd, last, 0, 1, size - 1);
+      if (last[0] !== 0x0a) throw Object.assign(new Error(`${path.basename(file)} ends in an incomplete line: nothing was appended. Stop and report; do not edit the ledger`), { code: 'LEDGER_TORN' });
+    }
     const n = fs.writeSync(fd, line);
     if (n !== Buffer.byteLength(line)) throw new Error(`short write: ${n} of ${Buffer.byteLength(line)} bytes`);
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
   }
+  if (isNew) fsyncDir(path.dirname(file)); // a new ledger's directory entry is made durable too
 }
 
 /** Creates a file that must not exist yet (evidence is never overwritten), fsyncs it and its directory. */
-export function writeOnce(file, data) {
+export function writeOnce(file, data, mode = 0o644) {
   const text = typeof data === 'string' ? data : `${JSON.stringify(data, null, 2)}\n`;
-  const fd = fs.openSync(file, 'wx', 0o644);
+  const fd = fs.openSync(file, 'wx', mode);
   try {
     if (fs.writeSync(fd, text) !== Buffer.byteLength(text)) throw new Error(`short write to ${file}`);
     fs.fsyncSync(fd);

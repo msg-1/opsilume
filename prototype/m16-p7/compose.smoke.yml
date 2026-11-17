@@ -1,6 +1,15 @@
-# HARNESS-SMOKE ONLY. Added by smoke-docker-desktop.sh (-f compose.yml -f compose.smoke.yml) and by nothing else.
-# It marks the smoke project's volumes as disposable; smoke-teardown.sh refuses any volume without this label.
-# Never use this file with the qualifying project (opspilot-m16-p7).
+# HARNESS-SMOKE ONLY. Added to every Compose command of the smoke project (-p opspilot-m16-p7-smoke -f compose.yml
+# -f compose.smoke.yml) and to nothing else. Never use this file with the qualifying project (opspilot-m16-p7).
+# It does two things for the smoke project's volumes:
+#   - it marks them as disposable (the teardown scripts refuse any volume without this label);
+#   - it names them per GENERATION, so a new smoke environment always gets volumes of its own and can never attach the
+#     volumes an earlier smoke left behind. P7_SMOKE_GENERATION must be set (lower-case letters and digits) for every
+#     smoke command; Compose refuses without it. Nothing here removes or recreates a volume: an earlier generation's
+#     volumes simply stay, under their own names.
 volumes:
-  pgdata: { labels: { opspilot.p7.data: disposable-harness-smoke } }
-  state: { labels: { opspilot.p7.data: disposable-harness-smoke } }
+  pgdata:
+    name: "opspilot-m16-p7-smoke_pgdata_${P7_SMOKE_GENERATION:?set P7_SMOKE_GENERATION to the generation of this smoke environment}"
+    labels: { opspilot.p7.data: disposable-harness-smoke, opspilot.p7.smoke-generation: "${P7_SMOKE_GENERATION}" }
+  state:
+    name: "opspilot-m16-p7-smoke_state_${P7_SMOKE_GENERATION:?set P7_SMOKE_GENERATION to the generation of this smoke environment}"
+    labels: { opspilot.p7.data: disposable-harness-smoke, opspilot.p7.smoke-generation: "${P7_SMOKE_GENERATION}" }

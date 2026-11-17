@@ -2,6 +2,8 @@
 // P7 harness, test-machine side. Runs inside the `harness` container of compose.yml (Node 22 + Prisma runtime).
 // Commands: boot-probe (container entrypoint), netcheck, init, run, check, recover.
 // - Reuses the Phase 0.5 prototype library unchanged (claim, appendLocked, inspect, clear, the journal and verifier).
+//   The journal object it hands them is lib/failclosed.mjs: the same journal, which also remembers a failed write or
+//   sync and then refuses every later append (a failed journal fsync fails closed).
 // - Connects to PostgreSQL directly (no fault proxy). Never sends a request to a remediation destination: a dispatch is
 //   only a synthetic `dispatch` intent record. The only outbound connection is the recorder, through the gateway.
 // - Every recorder call is authenticated both ways (lib/protocol.mjs); the run key is read from P7_KEY_FILE and never
@@ -13,11 +15,16 @@ import os from 'node:os';
 import dns from 'node:dns/promises';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect, journalAt } from '../m16-phase05/lib/proto.mjs';
+import { fileURLToPath } from 'node:url';
+import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect } from '../m16-phase05/lib/proto.mjs';
 import { trustProblem } from '../m16-phase05/lib/journal.mjs';
 import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
+import { FailClosedJournal, WRITE_FAILED_FILE } from './lib/failclosed.mjs';
 import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
 import { measuredRate, sizePool, sizePlan } from './lib/sizing.mjs';
+import { createPacer } from './lib/pacer.mjs';
+import { runWorker, whileBusy } from './lib/worker.mjs';
+import { runtimeFingerprint, sourceDigest } from './lib/source.mjs';
 import { preflightVerdict } from './lib/preflight.mjs';
 import { runNetcheck } from './lib/netcheck.mjs';
 import { CLEARANCE_ENVELOPE, testBinding } from './lib/readiness.mjs';
@@ -26,7 +33,17 @@ import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File }
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
 const EVIDENCE = process.env.P7_EVIDENCE_DIR ?? '/evidence';
+/** Every journal object of the harness: the Phase 0.5 journal, failing closed after a failed write (lib/failclosed.mjs). */
+const journalAt = (dir = process.env.PROTO_STATE_DIR ?? '/state') => new FailClosedJournal(dir);
 const pad = (n) => String(n).padStart(4, '0');
+const flag = (v) => (v === undefined ? null : Number(v));
+/** The burst pattern from the flags (all null when none is given): lib/sizing.mjs. */
+const burstOf = (a) => ({ burstPeriodSeconds: flag(a['burst-period']), burstSeconds: flag(a['burst-seconds']), quietRate: flag(a['quiet-rate']) });
+/** What runs here: the harness source by content, and the runtime of the image this container was started from. */
+// The fingerprint covers the Node binary and the installed dependencies of the image: what this container can say
+// about its own image. It is not the image id, which nothing inside a container can read.
+const RUNTIME_FILES = [process.execPath, '/app/node_modules/.package-lock.json', '/app/apps/api/package.json'];
+const identityNow = () => ({ source: sourceDigest(fileURLToPath(new URL('..', import.meta.url))), runtime: { arch: process.arch, node: process.version, fingerprint: runtimeFingerprint(RUNTIME_FILES) } });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lastLine = (e) => String(e?.message ?? e).split('\n').filter(Boolean).at(-1)?.slice(0, 200);
 const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
@@ -193,7 +210,8 @@ async function cmdNetcheck(a, { quiet = false } = {}) {
 /**
  * Read-only. Gathers the facts for a qualifying run and prints READY_FOR_OPERATOR_REVIEW or BLOCKED with the exact
  * reasons. It changes nothing on the test machine, seeds nothing, and never starts a workload or a cut. On the recorder
- * the only trace is its log of the two unauthenticated probes this command sends on purpose (rejections.jsonl).
+ * it leaves the log of the unauthenticated probes it sends on purpose (rejections.jsonl) and, only when every check
+ * passes, the run's readiness record: once, never replaced.
  */
 async function cmdPreflight(a) {
   const f = { run: {}, volume: {}, recorder: { authenticated: false, unsignedRejected: false } };
@@ -227,23 +245,24 @@ async function cmdPreflight(a) {
   const n = await netcheck(a.run, { strict: true }).catch((e) => ({ ok: false, strict: true, probes: [{ ok: false, name: `netcheck error: ${lastLine(e)}`, outcome: '' }] }));
   f.netcheck = { ok: n.ok, strict: n.strict, hostAnswersOnBridge: n.hostAnswersOnBridge ?? null, failed: n.probes.filter((x) => !x.ok).map((x) => `${x.name} -> ${x.outcome}`) };
   const rate = a['target-rate'] ? Number(a['target-rate']) : a.rate ? Number(a.rate) : NaN;
-  f.sizing = sizePlan({ workers: Number(a.workers ?? 1), procs: Number(a.procs ?? 1), envelope: CLEARANCE_ENVELOPE, ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
+  f.sizing = sizePlan({ workers: Number(a.workers ?? 1), procs: Number(a.procs ?? 1), envelope: CLEARANCE_ENVELOPE, ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool), ...burstOf(a) });
   const verdict = preflightVerdict(f);
   // The readiness record. Nothing is written on the test machine; when (and only when) everything above is in place,
   // the configuration is sent to the recorder, which checks its own half and stores the record in this run's ledger.
   // Every qualifying cycle start is then refused unless the configuration is still exactly this one.
-  const test = testBinding({ pgSystemId: f.volume.pgSystemId, journal: { markerSha256: f.volume.markerSha256, installationId: f.volume.installationId }, settings: f.settings, netcheck: n,
-    workload: { procs: f.sizing.procs, workers: f.sizing.workers, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), ratePerWorker: rate, targetRate: a['target-rate'] ? Number(a['target-rate']) : null, poolPerWorker: f.sizing.pool } });
+  const test = testBinding({ pgSystemId: f.volume.pgSystemId, journal: { markerSha256: f.volume.markerSha256, installationId: f.volume.installationId }, settings: f.settings, netcheck: n, ...identityNow(),
+    workload: { procs: f.sizing.procs, workers: f.sizing.workers, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), ratePerWorker: rate, targetRate: a['target-rate'] ? Number(a['target-rate']) : null, poolPerWorker: f.sizing.pool, ...burstOf(a) } });
   let readiness = { recorded: false, why: 'not sent: the checks above are not all in place' };
   if (verdict.status === 'READY_FOR_OPERATOR_REVIEW') {
     try {
       const r = await rec('POST', `/runs/${a.run}/readiness`, { test });
-      readiness = { recorded: true, digest: r.digest };
+      // `unchanged`: this run already had exactly this record; nothing was written. A different one is refused below.
+      readiness = { recorded: true, digest: r.digest, alreadyRecorded: r.unchanged === true };
     } catch (e) {
       const why = e.data?.error ?? lastLine(e);
       readiness = { recorded: false, why };
       verdict.status = 'BLOCKED';
-      verdict.reasons.push(`readiness record: the recorder did not record it (${why})${/not_initialised|not_adopted/.test(why) ? `: run "${f.run.continues ? 'adopt' : 'init'}", then preflight again` : ''}`);
+      verdict.reasons.push(`readiness record: the recorder did not record it (${why})${/not_initialised|not_adopted/.test(why) ? `: run "${f.run.continues ? 'adopt' : 'init'}", then preflight again` : ''}${/readiness_already_recorded/.test(why) ? ': this run already has its readiness record, and it is never replaced. The configuration here differs from it in the fields named' : ''}`);
     }
   }
   console.log(JSON.stringify({ ...verdict, readiness, binding: { test }, facts: f, at: new Date().toISOString() }, null, 1));
@@ -330,7 +349,8 @@ async function cmdRun(a) {
   if (st.run.failureModel === 'POWER-CUT') {
     const w = st.readiness?.workload;
     if (!w) throw new Error('refused: this run has no readiness record. Run "preflight" first (after init or adopt, with the operator attestations recorded)');
-    const recorded = { workers: w.workers, 'max-seconds': w.maxSeconds, headroom: w.headroom, pool: w.poolPerWorker, rate: w.targetRate === null ? w.ratePerWorker : undefined, 'target-rate': w.targetRate ?? undefined };
+    const recorded = { workers: w.workers, 'max-seconds': w.maxSeconds, headroom: w.headroom, pool: w.poolPerWorker, rate: w.targetRate === null ? w.ratePerWorker : undefined, 'target-rate': w.targetRate ?? undefined,
+      'burst-period': w.burstPeriodSeconds ?? undefined, 'burst-seconds': w.burstSeconds ?? undefined, 'quiet-rate': w.quietRate ?? undefined };
     for (const [k, v] of Object.entries(recorded)) {
       if (a[k] !== undefined && Number(a[k]) !== v) throw new Error(`refused: --${k} ${a[k]} differs from the readiness record (${v ?? 'not used there'}). A qualifying cycle runs the recorded workload`);
       if (v === undefined) delete a[k]; else a[k] = String(v);
@@ -361,10 +381,12 @@ async function cmdRun(a) {
     if (m?.totalPerSecond) { rate = m.totalPerSecond; rateSource = `measured in cycle ${cycle - 1} (all workers together, an upper bound for one)`; }
   }
   if (!rate) throw new Error('refused: no claim rate to size the action pool. Give --rate <claims per second per worker> (from a rehearsal) or --target-rate');
-  const size = sizePool({ ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
+  const burst = burstOf(a);
+  if (targetRate && burst.burstPeriodSeconds !== null) throw new Error('refused: a burst pattern cannot be combined with --target-rate (the quiet rate is the throttle)');
+  const size = sizePool({ ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool), ...burst });
   if (!size.ok) throw new Error(`refused: ${size.reason}${a['max-seconds'] === undefined ? ' (--max-seconds is the longest planned time to the cut)' : ''}`);
   const pool = size.pool;
-  const sizing = { ratePerWorker: rate, rateSource, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), requiredPerWorker: size.required, poolPerWorker: pool, workers, targetRate };
+  const sizing = { ratePerWorker: rate, rateSource, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), requiredPerWorker: size.required, poolPerWorker: pool, workers, targetRate, ...burst };
   const cur = await rec('GET', `/runs/${a.run}/cycles/${cycle}`);
   if (cur.result || cur.cutRequestedAt) throw new Error(`refused: cycle ${cycle} was already cut or checked`);
   if (cur.starts.some((x) => x.proc === proc)) throw new Error(`refused: process ${proc} already started in cycle ${cycle}`);
@@ -387,8 +409,8 @@ async function cmdRun(a) {
   // The recorder vets the start (adoption, volumes, attestations, cycle order) BEFORE anything is seeded.
   // The configuration this start runs on, for the recorder to compare with the readiness record (enforced for a
   // POWER-CUT run; only noted for the others, so a rehearsal shows whether it stays the same across reboots).
-  const readiness = testBinding({ pgSystemId, journal: { markerSha256: markerSha(j0), installationId: row.installation_id }, settings: s, netcheck: net,
-    workload: { procs: st.readiness?.workload.procs ?? null, workers, maxSeconds: sizing.maxSeconds, headroom: sizing.headroom, ratePerWorker: rate, targetRate, poolPerWorker: pool } });
+  const readiness = testBinding({ pgSystemId, journal: { markerSha256: markerSha(j0), installationId: row.installation_id }, settings: s, netcheck: net, ...identityNow(),
+    workload: { procs: st.readiness?.workload.procs ?? null, workers, maxSeconds: sizing.maxSeconds, headroom: sizing.headroom, ratePerWorker: rate, targetRate, poolPerWorker: pool, ...burst } });
   const startBody = { pgSystemId, proc, dbHead: row.journal_seq, journalHead: js.head, workers, settings: s, sizing, readiness, bootId: bootId() };
   await rec('POST', `/runs/${a.run}/cycles/${cycle}/start`, { ...startBody, vet: true });
   // Clearance (inspect -> clear) was validated up to 1,000,000 affected actions (Phase 0.5). Every APPROVED action is
@@ -401,7 +423,9 @@ async function cmdRun(a) {
     await p.$executeRawUnsafe(`INSERT INTO action (id, org_id, status) SELECT '${prefix}w${w}-' || g, 'org-p7', 'APPROVED' FROM generate_series(1, ${pool}) g`);
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
-  const started = await call('POST', `/runs/${a.run}/cycles/${cycle}/start`, startBody);
+  // The actions are seeded now. If an operator command holds the recorder's lock at this moment the recorder answers
+  // "busy" without having done anything: only that answer is repeated (lib/worker.mjs, whileBusy).
+  const started = await whileBusy(() => call('POST', `/runs/${a.run}/cycles/${cycle}/start`, startBody));
   const cycleId = started.data.cycleId;
   await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` });
   console.log(`cycle ${cycle} (${proc}): ${workers} worker(s) claiming from head ${row.journal_seq}; waiting for the cut`);
@@ -409,28 +433,26 @@ async function cmdRun(a) {
     console.log(`worker ${proc}/${worker} stopped: ${kind} ${detail ?? ''}`);
     await rec('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'worker_stopped', proc, worker, detail: `${kind}${detail ? `: ${detail}` : ''}` }).catch(() => {});
   };
-  await Promise.all(Array.from({ length: workers }, async (_, i) => {
+  // The burst pattern is counted from here, the same way in every cycle, on the monotonic clock: a wall-clock step
+  // (time synchronisation after a boot) must not move the pattern or let a claim start early.
+  const monotonic = () => performance.now();
+  const claimingSince = monotonic();
+  // The claim loop itself is lib/worker.mjs, paced by lib/pacer.mjs: both are pure and unit-tested. With a burst
+  // pattern the burst part is limited to ratePerWorker and the quiet part to quietRate; with --target-rate, to that.
+  const pace = { ratePerWorker: rate, targetRate, ...burst };
+  await Promise.all(Array.from({ length: workers }, (_, i) => {
     const w = i + 1;
     const j = journalAt();
     let msg = 0;
-    const ack = (kind, seq, actionId) => rec('POST', `/runs/${a.run}/ack`, { cycle, cycleId, proc, worker: w, n: ++msg, kind, seq, actionId });
-    const minGapMs = targetRate ? 1000 / targetRate : 0;
-    for (let k = 1; k <= pool; k++) {
-      const t0 = Date.now();
-      const actionId = `${prefix}w${w}-${k}`;
-      let c;
-      try {
-        c = await claim(p, j, actionId, smokeCrash && w === 1 && k === 3 ? { crashAt: 'after_claim_append' } : {});
-      } catch (e) {
-        return stop(w, 'claim_error', lastLine(e));
-      }
-      if (!c.claimed) return stop(w, `claim_${c.reason}`, c.problem ?? c.error); // includes 'uncertain': never retried
-      try { await ack('claim', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
-      try { await appendLocked(p, j, { type: 'dispatch', seq: c.seq, synthetic: true, at: new Date().toISOString() }); } catch (e) { return stop(w, 'dispatch_intent_failed', lastLine(e)); }
-      try { await ack('dispatch', c.seq, actionId); } catch (e) { return stop(w, 'ack_failed', lastLine(e)); }
-      if (minGapMs) { const left = minGapMs - (Date.now() - t0); if (left > 0) await sleep(left); }
-    }
-    return stop(w, 'pool_exhausted', `after ${pool} actions; sized for ${rate}/s x ${sizing.maxSeconds} s x ${sizing.headroom}`);
+    return runWorker({
+      pool,
+      actionIdOf: (k) => `${prefix}w${w}-${k}`,
+      claim: (actionId, k) => claim(p, j, actionId, smokeCrash && w === 1 && k === 3 ? { crashAt: 'after_claim_append' } : {}),
+      ack: (kind, seq, actionId) => rec('POST', `/runs/${a.run}/ack`, { cycle, cycleId, proc, worker: w, n: ++msg, kind, seq, actionId }),
+      appendDispatch: (seq) => appendLocked(p, j, { type: 'dispatch', seq, synthetic: true, at: new Date().toISOString() }),
+      pacer: createPacer(pace, { since: claimingSince, now: monotonic }),
+      stop: (kind, detail) => stop(w, kind, kind === 'pool_exhausted' ? `${detail}; sized for ${rate}/s x ${sizing.maxSeconds} s x ${sizing.headroom}` : detail),
+    });
   }));
   await p.$disconnect();
 }
@@ -464,7 +486,8 @@ async function cmdCheck(a) {
   const j = journalAt();
   // 1. Preserve the journal exactly as found, on disk, before anything else reads or repairs it.
   const files = {};
-  for (const [src, name] of [[j.file, 'journal-as-found.jsonl'], [j.idFile, 'installation-as-found.json']]) {
+  // The marker of a failed journal write (lib/failclosed.mjs), if there is one, is preserved with them.
+  for (const [src, name] of [[j.file, 'journal-as-found.jsonl'], [j.idFile, 'installation-as-found.json'], [path.join(j.dir, WRITE_FAILED_FILE), 'journal-write-failed-as-found.json']]) {
     if (!fs.existsSync(src)) { files[name] = null; continue; }
     fs.copyFileSync(src, path.join(dir, name), fs.constants.COPYFILE_EXCL);
     fsyncFile(path.join(dir, name));
@@ -509,6 +532,7 @@ async function cmdCheck(a) {
     run: a.run, cycle, cycleId: v.cycleId, failureModel: st.run.failureModel, ...verdict,
     findings: comparison.findings, relation: comparison.relation, uncommitted: comparison.uncommitted, counts: comparison.counts,
     lastJournalSeq: journal.head ?? null, lastDatabaseSeq: dbs.head, lastDurableAck: v.lastDurableAck,
+    journalWriteFailure: j.writeFailure(), // null unless a journal write or sync failed earlier: recovery then refuses
     journal: { status: journal.status, head: journal.head, headHash: journal.headHash ?? null, tornBytes: journal.tornBytes ?? 0, fileBytes: journal.fileBytes, records: journal.records, fingerprint: journal.fingerprint ?? null, corruptIsFinalLine: journal.corruptIsFinalLine ?? null },
     database: { head: dbs.head, headHash: dbs.headHash, committedClaims: dbs.count, fingerprint: dbs.fingerprint },
     reboot: { observedAfterCut: rebootObservedAfterCut, bootIdAtStart: startBootIds, bootIdNow: nowBoot.bootId, bootProbe: probe },
@@ -557,6 +581,10 @@ async function cmdRecover(a) {
     writeOnce(path.join(dir, `recovery-stopped-${Date.now()}.json`), { why, steps });
     throw new Error(`recovery stopped the run: ${why}`);
   };
+  // A journal write or sync that failed earlier (lib/failclosed.mjs) ends the run here, before anything is probed,
+  // repaired or cleared: what is on the disk under that write is unknown, and nothing is written on top of it.
+  const wf = j.writeFailure();
+  if (wf) await fail(`a journal write failed earlier (${wf.what}, ${wf.code}); nothing is repaired or cleared after it`);
   let quarantine = { required: !!r.quarantineRequired, observed: v.events.some((e) => e.kind === 'quarantine_observed') };
   if (r.quarantineRequired && !quarantine.observed) {
     // The probe goes through the real claim path: the trust check refuses before any write (no such action exists either).
@@ -572,14 +600,9 @@ async function cmdRecover(a) {
       const before = j.state({ forceFull: true });
       if (before.status === 'ok' && before.head === r.journal.head && repairAppliedAt(j.file, r.journal.fileBytes, r.journal.tornBytes)) return { ok: true, after: before, head: before.head, alreadyApplied: true };
       if (before.status !== 'torn_tail' || before.tornBytes !== r.journal.tornBytes) return { ok: false, before };
-      const bytes = repairBytes(before.tornBytes, before.lastHash);
-      const fd = fs.openSync(j.file, 'a');
-      try {
-        if (fs.writeSync(fd, bytes) !== Buffer.byteLength(bytes)) return { ok: false, short: true };
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
+      // One write, byte count checked, fsync. A sync that fails is remembered (lib/failclosed.mjs): a rerun must not
+      // find the unconfirmed repair "already applied" and carry on.
+      try { j.appendBytes(repairBytes(before.tornBytes, before.lastHash), 'repair'); } catch (e) { return { ok: false, writeFailed: lastLine(e) }; }
       return { ok: true, after: j.state({ forceFull: true }), head: before.head };
     }, { timeout: 120_000 });
     if (!done.ok || done.after.status !== 'ok' || done.after.head !== done.head) await fail(`torn-tail repair did not verify (${JSON.stringify(done).slice(0, 200)})`);
@@ -645,12 +668,12 @@ async function cmdRecover(a) {
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
-const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, procs: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' }, 'smoke-fail-in-retirement': { type: 'boolean' } } });
+const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, procs: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'burst-period': { type: 'string' }, 'burst-seconds': { type: 'string' }, 'quiet-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' }, 'smoke-fail-in-retirement': { type: 'boolean' } } });
 values.run ??= process.env.P7_RUN;
 if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
 const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, preflight: cmdPreflight, init: cmdInit, adopt: cmdAdopt, run: cmdRun, check: cmdCheck, recover: cmdRecover };
 if (!commands[cmd] || !/^[A-Za-z0-9_-]{1,64}$/.test(values.run ?? '') || (['run', 'check', 'recover'].includes(cmd) && !(Number(values.cycle) >= 1))) {
-  console.error('usage: p7.mjs boot-probe|netcheck|preflight|init|adopt|run|check|recover [--run <id>] [--cycle <n>] [--proc a] [--workers k] --max-seconds s [--rate r | --target-rate r] [--pool n] [--headroom h] [--clear-digest d]');
+  console.error('usage: p7.mjs boot-probe|netcheck|preflight|init|adopt|run|check|recover [--run <id>] [--cycle <n>] [--proc a] [--workers k] --max-seconds s [--rate r | --target-rate r] [--burst-period s --burst-seconds s --quiet-rate r] [--pool n] [--headroom h] [--clear-digest d]');
   process.exit(1);
 }
 try {

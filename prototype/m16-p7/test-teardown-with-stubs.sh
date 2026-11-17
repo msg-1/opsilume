@@ -38,18 +38,25 @@ run() {
   [ "$code" = "$want" ] || fail "exit $code, expected $want: $out"
   echo "$out" | grep -q "$pat" || fail "output lacks '$pat': $out"
 }
-refused() { local why="$1"; run 1 "refused: .*Nothing was removed" --confirm "$P"; [ "$(destructive)" = 0 ] || fail "$why: a removing call was made"; echo "ok: refused, nothing removed: $why"; }
+AUTH=--volume-removal-authorised-by-product-owner
+refused() { local why="$1"; run 1 "refused: .*Nothing was removed" --confirm "$P" "$AUTH"; [ "$(destructive)" = 0 ] || fail "$why: a removing call was made"; echo "ok: refused, nothing removed: $why"; }
 
 good; run 0 "DRY RUN: nothing was removed"; [ "$(destructive)" = 0 ] || fail "the dry run removed something"
 grep -q "Volumes: ${P}_pgdata ${P}_state" <<<"$("$here/smoke-teardown.sh")" && echo "ok: dry run names the project and the exact volumes, and removes nothing"
 
 for bad in opspilot opspilot-m16-p7 opspilot-isolated "${P}-2" "" ; do
-  good; run 2 "must be exactly $P" --confirm "$bad"; [ ! -s "$t/calls" ] || fail "--confirm '$bad' reached docker"
+  good; run 2 "must be exactly $P" --confirm "$bad" "$AUTH"; [ ! -s "$t/calls" ] || fail "--confirm '$bad' reached docker"
 done
 good; run 2 "usage" -p opspilot; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
 echo "ok: any other project name (opspilot, opspilot-m16-p7, opspilot-isolated, a suffix, empty) is refused before docker is called at all"
 
-good; : >"$t/volumes"; run 0 "nothing to remove" --confirm "$P"; [ "$(destructive)" = 0 ] || fail "removed with no volumes"
+# Disabled by default: the project name alone no longer removes anything, and docker is not even called.
+for extra in "" --yes --volume-removal-authorised "$AUTH extra"; do
+  good; run 2 "needs the product owner's separate authorisation" --confirm "$P" $extra; [ ! -s "$t/calls" ] || fail "an unauthorised --confirm reached docker"
+done
+echo "ok: --confirm without the separate volume-removal authorisation is refused before docker is called at all"
+
+good; : >"$t/volumes"; run 0 "nothing to remove" --confirm "$P" "$AUTH"; [ "$(destructive)" = 0 ] || fail "removed with no volumes"
 good; echo "${P}_pgdata ${P}_state ${P}_extra" >"$t/volumes"; refused "an extra volume in the project"
 good; echo "${P}_pgdata" >"$t/volumes"; refused "a volume is missing"
 good; echo "opspilot_pgdata ${P}_state" >"$t/volumes"; refused "a volume of the default opspilot project appears in the listing"
@@ -64,7 +71,7 @@ good; : >"$t/marker"; refused "the marker could not be read"
 good; echo opspilot >"$t/container-project"; refused "a container of another project uses a volume"
 
 good; echo EMPTY >"$t/marker"; run 0 "init never ran"; [ "$(destructive)" = 0 ] || fail "dry run removed"
-good; run 0 "removed the disposable smoke state" --confirm "$P"
+good; run 0 "removed the disposable smoke state" --confirm "$P" "$AUTH"
 [ "$(grep -E "^(compose|volume rm)" "$t/calls")" = "compose -p $P down
 volume rm ${P}_pgdata ${P}_state" ] || fail "the confirmed removal made other calls than the two expected"
 grep -E "^(compose|volume|system) " "$t/calls" | grep -qE "(^| )(-v|--volumes|prune)( |$)" && fail "a -v, --volumes or prune call was made"

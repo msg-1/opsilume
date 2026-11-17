@@ -23,7 +23,7 @@
 **Assumptions to check on the machine:**
 - Docker Engine uses iptables (the default), so the `DOCKER-USER` chain exists. On a distribution with the nftables backend, `iptables` is `iptables-nft` and works the same way.
 - The recorder is given as an IPv4 address, in both `RECORDER_IP` and `P7_RECORDER_TARGET`.
-- The bridge names are fixed, so only one P7 Compose project can exist on the machine at a time (remove any `HARNESS-SMOKE` project before creating another).
+- The bridge names are fixed, so only one P7 Compose project can exist on the machine at a time (stop a `HARNESS-SMOKE` project and remove its containers and networks with `../smoke-containers-down.sh` before starting the qualifying one; `stop` alone keeps the bridge names. That script cannot remove a volume: the smoke volumes stay).
 - No other firewall manager (ufw, firewalld) rewrites `INPUT` or `DOCKER-USER` afterwards. If one is active, record it and re-check after every reboot.
 
 ## Applying it safely
@@ -44,17 +44,19 @@ RECORDER_IP=<recorder> RECORDER_PORT=8787 ./p7-firewall.sh unit | sudo tee /etc/
 sudo systemctl daemon-reload && sudo systemctl enable p7-firewall.service
 ```
 
-To undo everything: `sudo ./p7-firewall.sh remove` (and `sudo systemctl disable p7-firewall.service`).
+To undo everything: `sudo ./p7-firewall.sh remove` (and `sudo systemctl disable p7-firewall.service`). Disabling is what removes Docker's dependency on the unit; the unit file left in `/etc/systemd/system` then does nothing.
+
+**If Docker doesn't start after a boot,** this unit failed: Docker requires it. It runs the script from the path it had when the unit was written, so don't move the harness directory. `systemctl status p7-firewall.service` shows why.
 
 ## Verification, with expected results
 
-Run these on the test machine after step 3, and again after a reboot.
+Run these on the test machine after step 3, and again after a reboot. Check 3 is strict only in a `POWER-CUT` run, so the full set is run under the qualifying project, after its stack is up and before `init` and the firewall attestation; during the smoke rehearsal, `p7.mjs preflight` shows the strict result (`facts.netcheck`). Order and expected output: `../HOST-PREPARATION-CHECKLIST.md`, steps 8 and 9.
 
 | # | Command | Expected |
 |---|---|---|
 | 1 | `sudo ./p7-firewall.sh status` | The tagged rules are listed under `INPUT`, `DOCKER-USER`, `P7-HOST` and `P7-EGRESS` |
 | 2 | `ssh <test machine>` from the operator's machine, in a new session | Connects as before |
-| 3 | `docker compose exec -T harness node p7.mjs netcheck` (in a `POWER-CUT` run, so it is strict) | Exit 0. "recorder through the gateway, authenticated" is reachable; every "host or bridge" probe reports `timeout`, never `refused` or `connected`; internet and DNS probes fail |
+| 3 | `docker compose exec -T harness node p7.mjs netcheck` (in a `POWER-CUT` run, so it is strict) | **Exit 0 decides.** "recorder through the gateway, authenticated" is reachable; every probe of a bridge address reports `timeout` or an unreachable error, never `refused` or `connected`; the `host.docker.internal` probes report a name-resolution error (the name doesn't exist on native Linux; strict mode accepts that); two bridge addresses were found; every "gateway to ..." probe is blocked; "gateway listeners bound to the internal address only" passes; internet and DNS probes fail |
 | 4 | `docker compose exec -T gateway node -e "require('net').connect({host:'1.1.1.1',port:443}).setTimeout(4000,()=>{console.log('timeout');process.exit(0)}).on('connect',()=>{console.log('CONNECTED');process.exit(1)}).on('error',e=>{console.log(e.code);process.exit(0)})"` | `timeout`. The gateway itself can't reach the internet |
 | 5 | The same command with the recorder's address and port | `CONNECTED` (exit 1 here means reachable, which is wanted) |
 | 6 | The same command with the recorder's address and another port, for example 22 | `timeout` |

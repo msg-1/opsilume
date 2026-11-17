@@ -9,6 +9,7 @@ set -u
 run="${1:?run id}"; label="${2:?label}"; probe="${3:-}"
 [[ "$run" =~ ^[A-Za-z0-9_-]{1,64}$ && "$label" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "bad run or label"; exit 1; }
 project="${P7_PROJECT:-opspilot-m16-p7}"
+[[ "$project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || { echo "bad P7_PROJECT"; exit 1; }
 out="${P7_EVIDENCE_HOST:-$(dirname "$0")/evidence}/$run/host/$label"
 mkdir -p "$(dirname "$out")" && mkdir "$out" || { echo "refused: $out exists"; exit 1; }
 cap() { local name="$1"; shift; if command -v "$1" >/dev/null 2>&1; then "$@" >"$out/$name.txt" 2>&1; echo "exit $?" >>"$out/$name.txt"; else echo "missing: $1" >"$out/$name.txt"; fi; }
@@ -20,8 +21,13 @@ cap uptime uptime
 cap docker-version docker version
 cap docker-root docker info -f '{{.DockerRootDir}} {{.Driver}}'
 cap lsblk lsblk -o NAME,MODEL,SERIAL,ROTA,TRAN,SIZE,FSTYPE,MOUNTPOINTS
+# Smoke volumes are named per generation (compose.smoke.yml): pass P7_SMOKE_GENERATION with the smoke project.
+# Only the smoke project has generations: with any other project the variable is ignored, so it can't misname a
+# qualifying volume if it is still set in the operator's shell.
+gen=""; [ "$project" != opspilot-m16-p7-smoke ] || gen="${P7_SMOKE_GENERATION:-}"
+[[ "$gen" =~ ^[a-z0-9]{0,24}$ ]] || { echo "bad P7_SMOKE_GENERATION"; exit 1; }
 for v in pgdata state; do
-  mp="$(docker volume inspect -f '{{.Mountpoint}}' "${project}_${v}" 2>/dev/null)"
+  mp="$(docker volume inspect -f '{{.Mountpoint}}' "${project}_${v}${gen:+_$gen}" 2>/dev/null)"
   echo "$mp" >"$out/volume-$v-mountpoint.txt"
   [ -n "$mp" ] && cap "findmnt-$v" findmnt -T "$mp" -o TARGET,SOURCE,FSTYPE,OPTIONS
 done
@@ -56,8 +62,14 @@ if [ "$probe" = "--flush-probe" ]; then
 fi
 cap kernel-log journalctl -k -b --no-pager
 cap boots journalctl --list-boots --no-pager
-cap db-log docker compose -p "$project" logs --no-color --timestamps db
-cap containers docker compose -p "$project" ps -a
+# Plain docker, by label: `docker compose` here would read compose.yml and refuse without the run's variables, which
+# sudo drops. The database log lives with its container, so capture it before that project is taken down.
+cap db-log sh -c "docker logs --timestamps \"\$(docker ps -aq --filter label=com.docker.compose.project=$project --filter label=com.docker.compose.service=db | head -1)\""
+cap containers docker ps -a --filter "label=com.docker.compose.project=$project"
+# Which image each container of the project was created from (the image id), and the two images as they are now.
+# Compare with the image id declared at create-run: nothing inside a container can observe it.
+cap container-images sh -c "docker inspect -f '{{.Name}} {{.Image}} {{.Config.Image}}' \$(docker ps -aq --filter label=com.docker.compose.project=$project)"
+cap images docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}} {{.RepoTags}}' opspilot-isolated-api:latest postgres:16-alpine
 (cd "$out" && sha256sum ./*.txt >SHA256SUMS) 2>/dev/null || (cd "$out" && shasum -a 256 ./*.txt >SHA256SUMS)
 sync
 echo "host evidence written to $out"

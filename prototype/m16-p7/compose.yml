@@ -3,12 +3,14 @@
 #   p7db  internal  db + harness            PostgreSQL is reachable only from the harness
 #   p7gw  internal  harness + gateway       the harness's ONLY way out is the gateway
 #   egress          gateway only            the gateway forwards to one fixed address: the recorder on the other host.
-#                                           Its port 8788 (reachable on p7gw only) reports whether the gateway can reach a
+#                                           It listens on its p7gw address only (gateway.mjs binds there, not to every
+#                                           address). Its port 8788 reports whether the gateway can reach a
 #                                           fixed list of destinations it must not reach (lib/netcheck.mjs).
 # The harness has no outbound route (no internet, no webhook destination, no other host); nothing is published.
 # Restart policy: after a power cut the Docker daemon brings the stack back by itself, so PostgreSQL crash recovery
 # starts at boot and the harness's boot probe records when the database became reachable (decision 5).
-# The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime (build it with `npm run isolated:up`).
+# The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime. On a development machine it comes from
+# `npm run isolated:up`; on the test machine it is built natively from the source package (README, decision B3).
 name: opspilot-m16-p7
 
 x-recorder: &recorder

@@ -2,7 +2,11 @@
 # Removes the DISPOSABLE HARNESS-SMOKE Docker state, and nothing else: the containers, networks and the two volumes of
 # the Compose project "opspilot-m16-p7-smoke". It is the only place in the P7 harness that removes a volume.
 #   ./smoke-teardown.sh                                   dry run: checks everything, prints what would be removed
-#   ./smoke-teardown.sh --confirm opspilot-m16-p7-smoke   removes exactly what the dry run printed
+#   ./smoke-teardown.sh --confirm opspilot-m16-p7-smoke --volume-removal-authorised-by-product-owner
+#                                                         removes exactly what the dry run printed, VOLUMES INCLUDED
+# DISABLED BY DEFAULT: --confirm alone is refused. Deleting the smoke volumes needs the product owner's separate, explicit
+# authorisation, stated with the second flag. To remove only the containers and networks, and keep the volumes, use
+# ./smoke-containers-down.sh instead.
 # It never uses `down -v`, `volume prune` or `system prune`: volumes are removed by exact name, after every check.
 # It refuses unless ALL of this holds:
 #   - the project is exactly opspilot-m16-p7-smoke (fixed here; no argument can name another project);
@@ -11,6 +15,8 @@
 #     (set only by compose.smoke.yml, which only smoke-docker-desktop.sh uses; a qualifying run's volumes have no such label);
 #   - the marker in the journal volume, if init wrote one, says the volumes were initialised by a HARNESS-SMOKE run;
 #   - only containers of that project use the volumes.
+# It knows only the two volumes without a generation suffix (smokes before generations existed). If the project also
+# has generation-named volumes it refuses: nothing in the harness removes those.
 # The recorder directory and the evidence directory are host directories outside Docker: this script never touches them.
 set -euo pipefail
 PROJ=opspilot-m16-p7-smoke
@@ -19,8 +25,9 @@ VOLS=("${PROJ}_pgdata" "${PROJ}_state")
 confirm=""
 case "${1:-}" in
   "") ;;
-  --confirm) confirm="${2:-}"; [ "$confirm" = "$PROJ" ] || { echo "refused: --confirm must be exactly $PROJ"; exit 2; } ;;
-  *) echo "usage: $0 [--confirm $PROJ]"; exit 2 ;;
+  --confirm) confirm="${2:-}"; [ "$confirm" = "$PROJ" ] || { echo "refused: --confirm must be exactly $PROJ"; exit 2; }
+    [ "$#" -eq 3 ] && [ "$3" = "--volume-removal-authorised-by-product-owner" ] || { echo "refused: this would delete the smoke volumes, which needs the product owner's separate authorisation (--volume-removal-authorised-by-product-owner). Nothing was removed. To remove only containers and networks: ./smoke-containers-down.sh"; exit 2; } ;;
+  *) echo "usage: $0 [--confirm $PROJ --volume-removal-authorised-by-product-owner]"; exit 2 ;;
 esac
 refuse() { echo "refused: $*. Nothing was removed."; exit 1; }
 label() { docker volume inspect -f "{{ index .Labels \"$2\" }}" "$1"; }
@@ -48,7 +55,7 @@ esac
 echo "Compose project: $PROJ"
 echo "Containers and networks: those of project $PROJ only (docker compose -p $PROJ down, without -v)"
 echo "Volumes: ${VOLS[*]}"
-if [ -z "$confirm" ]; then echo "DRY RUN: nothing was removed. To remove exactly the above: $0 --confirm $PROJ"; exit 0; fi
+if [ -z "$confirm" ]; then echo "DRY RUN: nothing was removed. Removing the above, volumes included, needs the product owner's separate authorisation."; exit 0; fi
 docker compose -p "$PROJ" down
 docker volume rm "${VOLS[0]}" "${VOLS[1]}"
 echo "removed the disposable smoke state of $PROJ. Recorder and evidence directories were not touched."

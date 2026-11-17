@@ -6,9 +6,10 @@
 # Run B (continues A: same database and journal, new run id and key, count from zero): adopt; a manual-cut rehearsal
 #   with a killed worker process; the journal one claim ahead with a torn line (quarantine, clearance by digest); an
 #   invalid complete final line (FAIL, never repaired).
-# It removes nothing: it ends by stopping its containers, and leaves them and the two volumes (labelled
-# opspilot.p7.data=disposable-harness-smoke) in place. Only ./smoke-teardown.sh removes them, after its checks.
-#   ./smoke-docker-desktop.sh <work dir outside the repository>
+# It removes nothing: it ends by stopping its containers, and leaves them and its two volumes (labelled
+# opspilot.p7.data=disposable-harness-smoke) in place. It needs volumes of its own: P7_SMOKE_GENERATION names them, and
+# a generation that was used before is refused. Volumes of earlier smokes are never attached, started or removed.
+#   P7_SMOKE_GENERATION=<new generation> ./smoke-docker-desktop.sh <work dir outside the repository>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="${1:?work directory (outside the repository)}"
@@ -17,7 +18,19 @@ proj=opspilot-m16-p7-smoke
 stamp="$(date +%Y%m%dT%H%M%S)"
 runA="harness-smoke-$stamp-a"; runB="harness-smoke-$stamp-b"
 mkdir -p "$work/recorder" "$work/evidence"
-docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists. Inspect it; its disposable smoke state is removed only by ./smoke-teardown.sh (dry run first)"; exit 1; }
+docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists (containers or networks of an earlier smoke). ./smoke-containers-down.sh removes those and keeps every volume (dry run first); this script removes nothing"; exit 1; }
+# The project check above passes once its containers are gone (./smoke-containers-down.sh keeps the volumes). A smoke
+# run must never start on smoke volumes that already exist: `up` would start PostgreSQL on the kept database.
+# A new smoke environment gets volumes of its own, named by generation (compose.smoke.yml). The generation is stated
+# explicitly and must be new: volumes of an earlier smoke are never attached, started or removed here.
+gen="${P7_SMOKE_GENERATION:-}"
+[[ "$gen" =~ ^[a-z0-9]{1,24}$ ]] || { echo "refused: set P7_SMOKE_GENERATION to a new generation for this smoke environment (lower-case letters and digits, for example s$(date +%Y%m%d%H%M)). Its volumes will be ${proj}_pgdata_<generation> and ${proj}_state_<generation>"; exit 1; }
+export P7_SMOKE_GENERATION="$gen"
+vol() { echo "${proj}_$1_${gen}"; }
+for v in pgdata state; do
+  # An exact-name lookup (a name filter may match substrings): if the volume can be inspected, it exists.
+  if docker volume inspect "$(vol $v)" >/dev/null 2>&1; then echo "refused: volume $(vol $v) already exists. Generation '$gen' was used before; choose a new one. Nothing was started or removed"; exit 1; fi
+done
 # The volume registry is append-only by design (one line per run), so it is checked separately, as a prefix.
 hashes() { (cd "$work" && find "$@" -type f ! -path "*/keys/*" ! -name volumes.jsonl -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 2>/dev/null) || true; }
 
@@ -34,7 +47,7 @@ keyfile() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>cons
 keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" $newdir --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"
 run="$runA"
 export P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
-dc() { docker compose -p "$proj" -f "$here/compose.yml" -f "$here/compose.smoke.yml" "$@"; }   # the override only labels the volumes disposable
+dc() { docker compose -p "$proj" -f "$here/compose.yml" -f "$here/compose.smoke.yml" "$@"; }   # always with the override: it labels the volumes disposable and names them by generation
 R() { local c="$1"; shift; node "$here/recorder.mjs" "$c" --dir "$work/recorder" --run "$run" "$@"; }
 P() { dc exec -T harness node p7.mjs "$@"; }
 now() { node -e 'console.log(new Date().toISOString())'; }
@@ -42,8 +55,8 @@ expect_exit() { local want="$1"; shift; local got=0; "$@" || got=$?; [ "$got" -e
 expect_refusal() { local pat="$1"; shift; local out; out="$("$@" 2>&1)" && { echo "SMOKE FAILED: should have been refused: $*"; exit 1; }; echo "$out" | grep -q "$pat" && echo "ok: refused ($pat)" || { echo "SMOKE FAILED: refusal did not mention '$pat': $out"; exit 1; }; }
 assert_json() { node -e 'const [f,x]=process.argv.slice(1); const r=JSON.parse(require("fs").readFileSync(f,"utf8")); if(!eval(x)){console.error(`SMOKE FAILED: ${x}`, JSON.stringify({verdict:r.verdict,fails:r.fails,inconclusive:r.inconclusive,relation:r.relation,counts:r.counts,silent:r.silentWorkerStops,cut:r.cut,sizing:r.sizing,rate:r.measuredRate}).slice(0,900)); process.exit(1)} console.log(`ok: ${x.slice(0,120)}`)' "$1" "$2"; }
 result() { ls "$work/evidence/$run"/cycle-$(printf %04d "$1")*/result.json | tail -1; }
-kill_stack() { docker compose -p "$proj" -f "$here/compose.yml" kill; }
-cut_command() { R cut --cycle "$1" --min-seconds "$2" --max-seconds "$3" --command-json "[\"docker\",\"compose\",\"-p\",\"$proj\",\"-f\",\"$here/compose.yml\",\"kill\"]"; R confirm-cut --cycle "$1" --power-was-cut yes --evidence "smoke: container kill, not a power cut"; }
+kill_stack() { dc kill; }
+cut_command() { R cut --cycle "$1" --min-seconds "$2" --max-seconds "$3" --command-json "[\"docker\",\"compose\",\"-p\",\"$proj\",\"-f\",\"$here/compose.yml\",\"-f\",\"$here/compose.smoke.yml\",\"kill\"]"; R confirm-cut --cycle "$1" --power-was-cut yes --evidence "smoke: container kill, not a power cut"; }
 # The manual procedure, rehearsed without any power cut: the recorder prompts, the "operator" (this script) acts at the
 # prompt, notes when, and attests it afterwards.
 cut_manual() {
@@ -87,7 +100,9 @@ db_unique() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) = co
 db_head() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT journal_seq FROM installation_state"; }
 
 dc up -d --wait
-for v in pgdata state; do [ "$(docker volume inspect -f '{{ index .Labels "opspilot.p7.data" }}' "${proj}_$v")" = disposable-harness-smoke ] || { echo "SMOKE FAILED: volume ${proj}_$v is not labelled disposable smoke data"; exit 1; }; done
+for v in pgdata state; do [ "$(docker volume inspect -f '{{ index .Labels "opspilot.p7.data" }} {{ index .Labels "opspilot.p7.smoke-generation" }}' "$(vol $v)")" = "disposable-harness-smoke $gen" ] || { echo "SMOKE FAILED: volume $(vol $v) is not labelled disposable smoke data of generation $gen"; exit 1; }; done
+# The containers must be on this generation's volumes and on no other.
+[ "$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$(dc ps -q db)" "$(dc ps -q harness)" | tr -d '\n')" = "$(vol pgdata) $(vol state) " ] || { echo "SMOKE FAILED: the containers are not on the volumes of generation $gen"; exit 1; }
 echo "ok: both volumes are labelled opspilot.p7.data=disposable-harness-smoke"
 
 echo "== isolation: topology"
@@ -214,7 +229,7 @@ for r in "$runA" "$runB"; do run="$r"; R status | node -e 'let s="";process.stdi
 if [ -s "$prior" ]; then (cd "$work" && shasum -a 256 -c --quiet "$prior") && echo "ok: evidence from earlier smoke runs is unchanged" || { echo "SMOKE FAILED: earlier evidence changed"; exit 1; }; fi
 registry_now="$(cat "$work/recorder/volumes.jsonl")"
 [ "${registry_now:0:${#registry_before}}" = "$registry_before" ] && [ "$(grep -c "$runA" "$work/recorder/volumes.jsonl")" = 1 ] && echo "ok: the volume registry only grew (earlier entries intact; this run's volumes registered once, to run A)" || { echo "SMOKE FAILED: volume registry"; exit 1; }
-for k in "$keyA" "$keyB"; do grep -rqF "$(cat "$k")" "$work/evidence" "$work/recorder/runs" "$work"/*.log && { echo "SMOKE FAILED: a run key appears in evidence or logs"; exit 1; }; done; echo "ok: no run key appears in any evidence or log file"
+for k in "$keyA" "$keyB"; do grep -rqF -f "$k" "$work/evidence" "$work/recorder/runs" "$work"/*.log && { echo "SMOKE FAILED: a run key appears in evidence or logs"; exit 1; }; done; echo "ok: no run key appears in any evidence or log file"
 dc stop   # nothing is removed here: containers and volumes stay until ./smoke-teardown.sh
-echo "The smoke containers are stopped and the volumes ${proj}_pgdata and ${proj}_state are kept. Remove them only with ./smoke-teardown.sh"
+echo "The smoke containers are stopped and the volumes $(vol pgdata) and $(vol state) are kept. ./smoke-containers-down.sh removes the containers and networks and keeps every volume; a later smoke needs a new P7_SMOKE_GENERATION."
 echo "SMOKE PASSED (HARNESS-SMOKE: harness flow only, not a durability result). Evidence: $work/evidence/$runA and $runB"

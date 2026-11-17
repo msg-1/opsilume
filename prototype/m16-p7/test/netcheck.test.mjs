@@ -5,7 +5,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { HARNESS_BRIDGES, STRICT_BLOCKED, bridgeHosts, egressTargets, gatewayEgress, runNetcheck } from '../lib/netcheck.mjs';
-import { createForwarder, createSelfCheck } from '../lib/gateway.mjs';
+import { createForwarder, createSelfCheck, internalAddress } from '../lib/gateway.mjs';
 
 const TARGET = '192.168.1.20:8787';
 const nic = (address, netmask = '255.255.0.0') => [{ family: 'IPv4', internal: false, address, netmask }];
@@ -16,7 +16,8 @@ const GW = { lo: LO, eth0: nic('172.23.0.3'), eth1: nic('172.24.0.2') };  // the
  * A fake stack. `host(ip, port)` says what the test machine does with a packet to its own bridge address:
  * a working firewall drops it ('timeout'); without one the host answers ('refused', or 'connected' where it listens).
  */
-function world({ interfaces = TWO, host = () => 'timeout', gateway = () => 'timeout', egress, auth = null, unsigned = 401 } = {}) {
+const LISTEN = [{ port: 8787, address: '172.23.0.3' }, { port: 8788, address: '172.23.0.3' }]; // the gateway's p7gw address
+function world({ interfaces = TWO, host = () => 'timeout', gateway = () => 'timeout', egress, auth = null, unsigned = 401, listeners = LISTEN, gatewayAt = 'resolved:172.23.0.3' } = {}) {
   const seen = [];
   const tcp = async (h, port) => {
     seen.push(`${h}:${port}`);
@@ -27,8 +28,8 @@ function world({ interfaces = TWO, host = () => 'timeout', gateway = () => 'time
     return 'error:ENETUNREACH'; // the harness networks are internal: no route to anything else
   };
   const gwTcp = async (h, port) => gateway(h, port);
-  return { seen, deps: { tcp, interfaces, target: TARGET, resolves: async () => 'error:EAI_AGAIN', authenticated: async () => auth, unsigned: async () => unsigned,
-    egress: egress ?? (() => gatewayEgress({ tcp: gwTcp, interfaces: GW, target: TARGET })) } };
+  return { seen, deps: { tcp, interfaces, target: TARGET, resolves: async (name) => (name === 'gateway' ? gatewayAt : 'error:EAI_AGAIN'), authenticated: async () => auth, unsigned: async () => unsigned,
+    egress: egress ?? (() => gatewayEgress({ tcp: gwTcp, interfaces: GW, target: TARGET }).then((r) => ({ ...r, listeners }))) } };
 }
 const strict = (o) => runNetcheck({ strict: true, ...world(o).deps });
 const failed = (r) => r.probes.filter((p) => !p.ok).map((p) => `${p.name} -> ${p.outcome}`);
@@ -129,6 +130,52 @@ describe('strict network check: fails closed', () => {
     assert.equal(r.ok, true);
     assert.deepEqual([r.strict, r.hostAnswersOnBridge, r.gatewayEgressOpen], [false, true, true]);
     assert.ok(!r.probes.some((p) => p.name === 'bridge addresses discovered'));
+  });
+});
+
+describe('gateway listeners: bound to the internal address only', () => {
+  const ROUTES = (defaults) => ['Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT',
+    ...defaults.map((i) => `${i}\t00000000\t010018AC\t0003\t0\t0\t0\t00000000\t0\t0\t0`), 'eth0\t000017AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0', 'eth1\t000018AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0', ''].join('\n');
+  test('the bind address is the interface without the default route; anything ambiguous means the gateway does not start', () => {
+    assert.equal(internalAddress(GW, ROUTES(['eth1'])), '172.23.0.3', 'eth1 carries the default route (egress), so eth0 is the internal one');
+    assert.equal(internalAddress(GW, ROUTES(['eth0'])), '172.24.0.2');
+    for (const [name, ifs, routes] of [
+      ['no default route at all', GW, ROUTES([])], ['both interfaces have a default route', GW, ROUTES(['eth0', 'eth1'])], ['one interface only', { lo: LO, eth0: nic('172.23.0.3') }, ROUTES(['eth0'])],
+      ['a third interface', { ...GW, eth2: nic('172.30.0.2') }, ROUTES(['eth1'])], ['no interfaces', {}, ROUTES(['eth1'])], ['no route table', GW, ''], ['an unreadable route table', GW, undefined],
+    ]) assert.equal(internalAddress(ifs, routes), null, name);
+  });
+  test('strict: both ports must be reported on exactly the address the harness reaches the gateway at', async () => {
+    const line = (r) => failed(r).filter((x) => x.startsWith('gateway listeners'));
+    assert.deepEqual(line(await strict()), []);
+    const cases = {
+      'every address (the old behaviour)': [{ port: 8787, address: '0.0.0.0' }, { port: 8788, address: '0.0.0.0' }],
+      'the egress address': [{ port: 8787, address: '172.24.0.2' }, { port: 8788, address: '172.24.0.2' }],
+      'one port on every address': [{ port: 8787, address: '172.23.0.3' }, { port: 8788, address: '::' }],
+      'a port missing': [{ port: 8787, address: '172.23.0.3' }],
+      'a third listener': [...LISTEN, { port: 9000, address: '172.23.0.3' }],
+      'nothing reported': [], 'not a list': 'internal only', 'nothing': null,
+    };
+    for (const [name, listeners] of Object.entries(cases)) {
+      const r = await strict({ listeners });
+      assert.equal(r.ok, false, name);
+      assert.equal(line(r).length, 1, name);
+    }
+    assert.equal(line(await strict({ gatewayAt: 'error:EAI_AGAIN' })).length, 1, 'the gateway address could not be resolved: not a pass');
+    assert.equal(line(await strict({ gatewayAt: 'resolved:172.23.0.9' })).length, 1, 'bound to another address than the one the harness uses');
+    const smoke = await runNetcheck({ strict: false, ...world({ listeners: [{ port: 8787, address: '0.0.0.0' }] }).deps });
+    assert.equal(smoke.ok, true, 'a smoke run only reports it');
+  });
+  test('the self-check reports what its own sockets are bound to (loopback here), not what was configured', async () => {
+    const fwd = createForwarder({ host: '127.0.0.1', port: 9 });
+    const check = createSelfCheck({ target: TARGET, interfaces: () => GW, tcp: async () => 'timeout', listeners: () => [fwd, check].map((s) => ({ port: s.address()?.port ?? null, address: s.address()?.address ?? null })) });
+    await new Promise((r) => fwd.listen(0, '127.0.0.1', r));
+    await new Promise((r) => check.listen(0, '127.0.0.1', r));
+    const r = await (await fetch(`http://127.0.0.1:${check.address().port}/`)).json();
+    assert.deepEqual(r.listeners, [{ port: fwd.address().port, address: '127.0.0.1' }, { port: check.address().port, address: '127.0.0.1' }]);
+    // Bound to one address means refused on another address of the same machine.
+    const other = Object.values((await import('node:os')).networkInterfaces()).flat().find((i) => i.family === 'IPv4' && !i.internal)?.address;
+    if (other) await assert.rejects(fetch(`http://${other}:${check.address().port}/`), 'not reachable on a non-loopback address');
+    await Promise.all([fwd, check].map((s) => new Promise((r2) => s.close(r2))));
   });
 });
 

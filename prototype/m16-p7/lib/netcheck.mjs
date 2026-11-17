@@ -97,5 +97,12 @@ export async function runNetcheck({ strict = false, tcp, resolves, authenticated
   if (strict) add('gateway egress self-check', 'every fixed destination and at least one bridge address probed', egErr ?? `${got.size} probes; missing: ${missing.length}; bridge probes: ${bridgeProbes}`,
     !egErr && got.size > 0 && missing.length === 0 && bridgeProbes > 0, 'an empty or incomplete probe set is not a pass');
   else if (egErr) add('gateway egress self-check', 'reported only', egErr, true);
+  // Where the gateway really listens, as its own sockets report it: on the address the harness reaches it at (the
+  // internal network), on both ports, and nowhere else. A wildcard address would also listen on the egress network.
+  const gwAddr = /^resolved:(.+)$/.exec(String(await resolves('gateway')))?.[1] ?? null;
+  const ls = Array.isArray(eg?.listeners) ? eg.listeners : [];
+  const bound = [8787, 8788].every((port) => ls.filter((l) => l?.port === port).length === 1) && ls.length === 2 && !!gwAddr && ls.every((l) => l.address === gwAddr);
+  add('gateway listeners bound to the internal address only', strict ? 'ports 8787 and 8788 on the address the harness reaches the gateway at' : 'reported only',
+    egErr ?? `${ls.map((l) => `${l?.address}:${l?.port}`).join(', ') || 'none reported'} (the harness reaches the gateway at ${gwAddr ?? 'an unresolved address'})`, strict ? bound : true);
   return { ok: probes.length > 0 && probes.every((p) => p.ok), strict, hostAnswersOnBridge: hostAnswers, gatewayEgressOpen: egErr ? null : egressOpen, bridges: hosts, probes };
 }
