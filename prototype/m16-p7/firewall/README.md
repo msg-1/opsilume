@@ -1,6 +1,6 @@
 # P7 host firewall (for the dedicated Linux test machine)
 
-**Prepared, not applied.** No Linux test machine exists yet, and these rules have never run on one. Nothing here was applied to the Mac or any other machine. Treat the first application as a test in itself, and follow the verification below before any qualifying cycle.
+**Prepared, not applied.** No Linux test machine exists yet, and these rules have never run on one. The script's logic (apply, automatic rollback, confirm, remove, the boot path) was exercised only against stub `iptables` commands in a throwaway container (`test-with-stubs.sh`), which says nothing about real packet filtering. Nothing here was applied to the Mac or any other machine. Treat the first application as a test in itself, and follow the verification below before any qualifying cycle.
 
 ## Why Docker alone is not enough
 
@@ -23,6 +23,7 @@
 **Assumptions to check on the machine:**
 - Docker Engine uses iptables (the default), so the `DOCKER-USER` chain exists. On a distribution with the nftables backend, `iptables` is `iptables-nft` and works the same way.
 - The recorder is given as an IPv4 address, in both `RECORDER_IP` and `P7_RECORDER_TARGET`.
+- The bridge names are fixed, so only one P7 Compose project can exist on the machine at a time (remove any `HARNESS-SMOKE` project before creating another).
 - No other firewall manager (ufw, firewalld) rewrites `INPUT` or `DOCKER-USER` afterwards. If one is active, record it and re-check after every reboot.
 
 ## Applying it safely
@@ -37,7 +38,8 @@ sudo RECORDER_IP=<recorder> RECORDER_PORT=8787 ./p7-firewall.sh apply
 # 3. From your own machine, open a NEW ssh session to the test machine. If it works:
 sudo ./p7-firewall.sh confirm
 
-# 4. Make it survive power cuts: the rules must exist BEFORE Docker restarts the stack at boot.
+# 4. Make it survive power cuts: the rules must exist BEFORE Docker restarts the stack at boot. The unit applies them
+#    without the rollback timer, and Docker does not start if it fails.
 RECORDER_IP=<recorder> RECORDER_PORT=8787 ./p7-firewall.sh unit | sudo tee /etc/systemd/system/p7-firewall.service
 sudo systemctl daemon-reload && sudo systemctl enable p7-firewall.service
 ```

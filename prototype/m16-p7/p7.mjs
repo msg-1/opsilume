@@ -22,6 +22,7 @@ import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File }
 import { classifyCycle, compareCycle, durableSettings } from './lib/verdict.mjs';
 
 const EVIDENCE = process.env.P7_EVIDENCE_DIR ?? '/evidence';
+const CLEARANCE_ENVELOPE = 1_000_000;
 const pad = (n) => String(n).padStart(4, '0');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const lastLine = (e) => String(e?.message ?? e).split('\n').filter(Boolean).at(-1)?.slice(0, 200);
@@ -200,7 +201,7 @@ async function cmdAdopt(a) {
     return { row: r0, js: j.state({ forceFull: true }) };
   }, { timeout: 120_000, maxWait: 60_000 });
   const problem = trustProblem(row, js);
-  if (problem || js.status !== 'ok') throw new Error(`adopt refused: the state is not trusted (${problem ?? js.status}). Nothing was changed`);
+  if (problem || !['ok', 'empty'].includes(js.status)) throw new Error(`adopt refused: the state is not trusted (${problem ?? js.status}). Nothing was changed`);
   const state = { installationId: row.installation_id, head: row.journal_seq, headHash: row.head_hash };
   const f = c.finalState;
   if (state.installationId !== f.installationId || state.head !== f.head || state.headHash !== f.headHash) {
@@ -265,6 +266,10 @@ async function cmdRun(a) {
   const problem = trustProblem(row, js);
   if (problem || !['ok', 'empty'].includes(js.status)) throw new Error(`refused: history is not trusted (${problem ?? js.status}); run "recover" for the previous cycle first`);
   const prefix = `${runTag(a.run)}c${pad(cycle)}${proc}`;
+  // Clearance (inspect -> clear) was validated up to 1,000,000 affected actions (Phase 0.5). Every APPROVED action is
+  // affected, so the actions waiting at any moment must stay inside that envelope.
+  const [{ waiting }] = await p.$queryRaw`SELECT count(*)::int AS waiting FROM action WHERE status = 'APPROVED'`;
+  if (waiting + workers * pool > CLEARANCE_ENVELOPE) throw new Error(`refused: ${waiting} approved actions already wait and this process would add ${workers * pool}; clearance was validated up to ${CLEARANCE_ENVELOPE}. Use --target-rate to bound the rate, fewer workers, or a shorter --max-seconds`);
   const [{ n }] = await p.$queryRaw`SELECT count(*)::int AS n FROM action WHERE id LIKE ${`${prefix}w%`}`;
   if (n) throw new Error(`refused: actions with prefix ${prefix} already exist`);
   for (let w = 1; w <= workers; w++) {
@@ -481,11 +486,16 @@ async function cmdRecover(a) {
     const again = trustProblem(await stateRow(p), j.state({ forceFull: true }));
     if (again) await fail(`not trusted after clearance: ${again}`);
   }
+  // Retire this cycle's unclaimed synthetic actions (APPROVED -> PROPOSED, the prototype's "not approved" status), so
+  // they don't pile up across cycles and push a later clearance beyond the size it was validated at. Claimed actions,
+  // the journal and the audit rows are not touched.
+  const retired = await p.$executeRaw`UPDATE action SET status = 'PROPOSED', note = 'p7: unclaimed, retired after its cycle' WHERE status = 'APPROVED' AND id LIKE ${`${runTag(a.run)}c${pad(cycle)}%`}`;
+  steps.push({ step: 'retire-unclaimed-actions', retired });
   // The state every later cycle (or a continuing run) starts from: verified trusted, in full, once more.
   const fin = await stateRow(p);
   const finJs = j.state({ forceFull: true });
   const finProblem = trustProblem(fin, finJs);
-  if (finProblem || finJs.status !== 'ok') await fail(`not trusted at the end of recovery: ${finProblem ?? finJs.status}`);
+  if (finProblem || !['ok', 'empty'].includes(finJs.status)) await fail(`not trusted at the end of recovery: ${finProblem ?? finJs.status}`);
   const finalState = { installationId: fin.installation_id, head: fin.journal_seq, headHash: fin.head_hash };
   const completedAt = Date.now();
   const summary = {

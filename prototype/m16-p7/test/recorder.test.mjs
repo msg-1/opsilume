@@ -9,12 +9,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
-import { createRecorder, createRun, cycleView, runStore } from '../recorder.mjs';
+import { createRecorder, createRun, cutRefusal, cycleView, runStore } from '../recorder.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-recorder-test-'));
 after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 const STORAGE = { writeCache: 'write back', flushHonoured: 'yes', fua: 'yes', plp: 'unknown', storageEvidence: 'host/baseline/queue-nvme0n1.txt, datasheet' };
 const FS = { installationId: 'inst-1', head: 9, headHash: 'ab'.repeat(32) };
+/** A run whose volumes were initialised (what `p7.mjs init` reports after creating the schema on an empty database). */
+const mk = (dir, o) => { const r = createRun(dir, o); runStore(dir, o.run).event({ cycle: null, kind: 'initialised', detail: 'test' }); return r; };
 const T = (run, rest) => `${runTag(run)}${rest}`; // action ids carry the run's tag
 const sha = (f) => (fs.existsSync(f) ? createHash('sha256').update(fs.readFileSync(f)).digest('hex') : null);
 const listFiles = (d) => fs.readdirSync(d, { recursive: true }).filter((f) => fs.statSync(path.join(d, f)).isFile()).sort();
@@ -105,7 +107,7 @@ describe('recorder protocol and state machine', () => {
   const ack = (body) => call('POST', '/runs/p/ack', { cycle: 1, cycleId, ...body });
   const act = (proc, w, k) => T('p', `c0001${proc}w${w}-${k}`);
   before(async () => {
-    createRun(dir, { run: 'p', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'p', failureModel: 'POWER-CUT', ...STORAGE });
     createRun(dir, { run: 'other', failureModel: 'POWER-CUT', ...STORAGE });
     srv = await serve(dir);
     call = callerFor(srv.base, dir, 'p');
@@ -218,7 +220,7 @@ describe('recorder protocol and state machine', () => {
 describe('recorder: replay from a previous cycle, and refusals before a cycle starts', () => {
   const dir = path.join(tmp, 'replay');
   let srv, call;
-  before(async () => { createRun(dir, { run: 'rp', failureModel: 'HARNESS-SMOKE' }); srv = await serve(dir); call = callerFor(srv.base, dir, 'rp'); });
+  before(async () => { mk(dir, { run: 'rp', failureModel: 'HARNESS-SMOKE' }); srv = await serve(dir); call = callerFor(srv.base, dir, 'rp'); });
   after(() => srv.close());
   test('cycle-1 acknowledgements cannot be replayed into cycle 2, by body or byte for byte', async () => {
     const id1 = (await call('POST', '/runs/rp/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
@@ -246,9 +248,9 @@ describe('recorder: FAIL, evidence retention, damage and boot evidence', () => {
   const dir = path.join(tmp, 'fail');
   let srv, call;
   before(async () => {
-    createRun(dir, { run: 'f', failureModel: 'POWER-CUT', ...STORAGE });
-    createRun(dir, { run: 'smoke', failureModel: 'HARNESS-SMOKE' });
-    createRun(dir, { run: 'torn', failureModel: 'HARNESS-SMOKE' });
+    mk(dir, { run: 'f', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'smoke', failureModel: 'HARNESS-SMOKE' });
+    mk(dir, { run: 'torn', failureModel: 'HARNESS-SMOKE' });
     srv = await serve(dir, { silentStopMs: 1000 });
     call = callerFor(srv.base, dir, 'f');
   });
@@ -347,9 +349,9 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
   after(() => srv.close());
 
   test('only a recovered, non-failed run can be continued, and only once', async () => {
-    createRun(dir, { run: 'a1', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'a1', failureModel: 'POWER-CUT', ...STORAGE });
     const call = callerFor(srv.base, dir, 'a1');
-    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /never ran a cycle/);
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /not stopped/, 'before any cycle');
     // cycle 1: PASS with the journal one claim ahead -> quarantine, clearance: one claim accepted as never committed
     const id1 = (await call('POST', '/runs/a1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     const unc = { seq: 31, actionId: T('a1', 'c0001aw1-31') };
@@ -358,7 +360,7 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
     assert.equal((await call('POST', '/runs/a1/cycles/1/recovered', { cycleId: id1, cleared: true, uncommitted: unc, digest: 'd', finalState: { ...S1, head: 31 } })).data.final, 'PASS');
     // cycle 2: INCONCLUSIVE -> the run stops
     const id2 = (await call('POST', '/runs/a1/cycles/2/start', { proc: 'a', workers: 1, dbHead: 31 })).data.cycleId;
-    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /has not been checked/);
+    assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /not stopped/, 'while a cycle is open');
     assert.equal((await call('POST', '/runs/a1/cycles/2/result', { cycleId: id2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
     assert.throws(() => createRun(dir, { run: 'a2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'a1' }), /has not been recovered/, 'recovery is never skipped');
     assert.equal((await call('POST', '/runs/a1/cycles/2/recovered', { cycleId: id2, finalState: S1 })).status, 200);
@@ -394,18 +396,67 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
   });
 
   test('a failed run, or one not recovered, can never be continued', async () => {
-    createRun(dir, { run: 'f1', failureModel: 'POWER-CUT', ...STORAGE });
+    mk(dir, { run: 'f1', failureModel: 'POWER-CUT', ...STORAGE });
     let call = callerFor(srv.base, dir, 'f1');
     let id = (await call('POST', '/runs/f1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/f1/cycles/1/result', { cycleId: id, verdict: 'FAIL', fails: ['JOURNAL_CORRUPT'] });
     assert.equal((await call('POST', '/runs/f1/cycles/1/recovered', { cycleId: id, finalState: S1 })).status, 409);
     assert.throws(() => createRun(dir, { run: 'f2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'f1' }), /failed/);
-    createRun(dir, { run: 'g1', failureModel: 'HARNESS-SMOKE' });
+    mk(dir, { run: 'g1', failureModel: 'HARNESS-SMOKE' });
     call = callerFor(srv.base, dir, 'g1');
     id = (await call('POST', '/runs/g1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     await call('POST', '/runs/g1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: ['repair-torn-tail'] });
     await call('POST', '/runs/g1/stop', { cycle: 1, reason: 'recovery: torn-tail repair did not verify' });
     assert.equal(runStore(dir, 'g1').stopped().kind, 'recovery-failed');
     assert.throws(() => createRun(dir, { run: 'g2', failureModel: 'HARNESS-SMOKE', continues: 'g1' }), /recovery failed/);
+  });
+});
+
+describe('run lifecycle: safeguards that cannot be bypassed', () => {
+  const dir = path.join(tmp, 'guard');
+  let srv;
+  const S = { installationId: 'inst-3', head: 5, headHash: '12'.repeat(32) };
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+
+  test('a run cannot start on volumes it neither initialised nor adopted', async () => {
+    createRun(dir, { run: 'z1', failureModel: 'POWER-CUT', ...STORAGE }); // a fresh run id pointed at existing volumes
+    const call = callerFor(srv.base, dir, 'z1');
+    assert.equal((await call('POST', '/runs/z1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 500 })).data.error, 'not_initialised');
+    assert.equal((await call('POST', '/runs/z1/event', { kind: 'adopted', finalState: S })).data.error, 'not_a_continuing_run');
+    assert.equal((await call('POST', '/runs/z1/event', { kind: 'initialised' })).status, 200);
+    assert.equal((await call('POST', '/runs/z1/event', { kind: 'initialised' })).data.error, 'already_initialised');
+  });
+
+  test('a run that is not stopped cannot be continued (it could resume beside its successor)', async () => {
+    mk(dir, { run: 'n1', failureModel: 'HARNESS-SMOKE' });
+    const call = callerFor(srv.base, dir, 'n1');
+    const id = (await call('POST', '/runs/n1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    await call('POST', '/runs/n1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: [] });
+    assert.equal((await call('POST', '/runs/n1/cycles/1/recovered', { cycleId: id, finalState: S })).status, 200);
+    assert.equal(runStore(dir, 'n1').stopped(), null);
+    assert.throws(() => createRun(dir, { run: 'n2', failureModel: 'HARNESS-SMOKE', continues: 'n1' }), /not stopped/);
+  });
+
+  test('a failed recovery in an INCONCLUSIVE-stopped run is recorded, and ends recovery and continuation for good', async () => {
+    mk(dir, { run: 'h1', failureModel: 'POWER-CUT', ...STORAGE });
+    const call = callerFor(srv.base, dir, 'h1');
+    const id = (await call('POST', '/runs/h1/cycles/1/start', { proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    await call('POST', '/runs/h1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', needsRecovery: ['repair-torn-tail'] });
+    assert.equal(runStore(dir, 'h1').stopped().kind, 'inconclusive');
+    assert.equal((await call('POST', '/runs/h1/stop', { cycle: 1, reason: 'recovery: torn-tail repair did not verify' })).status, 200);
+    assert.equal(runStore(dir, 'h1').stopped().kind, 'inconclusive', 'the marker is write-once');
+    assert.ok(runStore(dir, 'h1').events().some((e) => e.kind === 'recovery_failed'), 'but the failure is on record');
+    assert.equal((await call('POST', '/runs/h1/cycles/1/recovered', { cycleId: id, finalState: S })).data.error, 'recovery_failed_earlier');
+    assert.throws(() => createRun(dir, { run: 'h2', failureModel: 'POWER-CUT', ...STORAGE, continues: 'h1' }), /recovery failed/);
+  });
+
+  test('the cut must fall within the time every process sized its pool for', () => {
+    const t0 = 1_000_000;
+    const starts = [{ atMs: t0, sizing: { maxSeconds: 660 } }, { atMs: t0 + 5000, sizing: { maxSeconds: 660 } }];
+    assert.equal(cutRefusal({ starts }, 600_000, t0 + 30_000), null);            // 30 s in, up to 600 s more: 630 <= 660
+    assert.match(cutRefusal({ starts }, 600_000, t0 + 90_000), /sized for 660 s/); // 690 > 660
+    assert.match(cutRefusal({ starts: [starts[0], { atMs: t0, sizing: { maxSeconds: 60 } }] }, 100_000, t0 + 1000), /sized for 60 s/);
+    assert.match(cutRefusal({ starts: [{ atMs: t0 }] }, 1000, t0), /did not report/);
   });
 });

@@ -82,7 +82,9 @@ export function createRun(dir, o) {
     if (!old.exists()) throw new Error('refused: unknown earlier run');
     const st = old.stopped();
     const events = old.events();
-    if (old.results().some((r) => r.verdict === 'FAIL') || (st && st.kind !== 'inconclusive')) throw new Error('refused: the earlier run failed, or its recovery failed. Its state must not be continued');
+    if (old.results().some((r) => r.verdict === 'FAIL') || (st && st.kind !== 'inconclusive') || events.some((e) => e.kind === 'recovery_failed')) throw new Error('refused: the earlier run failed, or its recovery failed. Its state must not be continued');
+    // Only a run that can never resume: otherwise two runs could advance the same database, each with its own count.
+    if (!st) throw new Error('refused: the earlier run is not stopped. Only a run stopped by an INCONCLUSIVE cycle can be continued');
     const { last, open } = openCycle(old, events);
     if (!last) throw new Error('refused: the earlier run never ran a cycle');
     if (open) throw new Error(`refused: cycle ${open} of the earlier run has not been checked`);
@@ -262,6 +264,8 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (s.stopped()) return refuse(409, 'run_stopped');
           if (QUALIFYING_MODELS.includes(run0.failureModel) && !storageQualifies(run0.storage)) return refuse(409, 'storage_not_qualifying');
           if (run0.continues && !events.some((e) => e.kind === 'adopted')) return refuse(409, 'not_adopted');
+          // A run never starts on volumes it neither created (init, which refuses a non-empty database) nor adopted.
+          if (!run0.continues && !events.some((e) => e.kind === 'initialised')) return refuse(409, 'not_initialised');
           if (run0.continues && body.dbHead < run0.continues.finalState.head) return refuse(409, 'head_below_predecessor');
           if (!/^[a-z]$/.test(body.proc ?? '') || !Number.isInteger(body.workers) || body.workers < 1 || body.workers > 12 || !Number.isInteger(body.dbHead) || body.dbHead < 0) return refuse(400, 'invalid_start');
           if (open && open !== n) return refuse(409, `cycle_${open}_is_open`);
@@ -303,6 +307,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             if (!isCycle(n) || body.cycleId !== startsOf(events, n)[0]?.cycleId) return refuse(409, 'wrong_cycle_id');
           }
           if (body.kind === 'initialised' && run0.continues) return refuse(409, 'continuing_run_uses_adopt');
+          if (body.kind === 'initialised' && events.some((e) => e.kind === 'initialised')) return refuse(409, 'already_initialised');
           if (body.kind === 'adopted') {
             if (!run0.continues) return refuse(409, 'not_a_continuing_run');
             if (events.some((e) => e.kind === 'adopted')) return refuse(409, 'already_adopted');
@@ -340,6 +345,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           // A run stopped by an INCONCLUSIVE cycle may still recover that cycle (so its state can be continued); nothing else.
           const stp = s.stopped();
           if (stp && !(stp.kind === 'inconclusive' && stp.cycle === n)) return refuse(409, 'run_stopped');
+          if (events.some((e) => e.kind === 'recovery_failed')) return refuse(409, 'recovery_failed_earlier');
           if (!validState(body.finalState)) return refuse(400, 'final_state_missing');
           const r = s.result(n);
           if (!r || r.verdict === 'FAIL') return refuse(409, 'nothing_to_recover');
@@ -355,6 +361,8 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
         }
 
         if (rest === 'stop') {
+          // The stop marker is write-once (the run may already be stopped as inconclusive), so the failure is also an event.
+          s.event({ cycle: Number.isInteger(body.cycle) ? body.cycle : null, kind: 'recovery_failed', detail: String(body.reason ?? '').slice(0, 300), ...stamp });
           s.stop({ kind: 'recovery-failed', cycle: Number.isInteger(body.cycle) ? body.cycle : null, reason: String(body.reason ?? 'stopped').slice(0, 300), ...stamp });
           return reply(200, { ok: true });
         }
@@ -364,6 +372,15 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
       }
     });
   });
+}
+
+/** The cut must come within the time every process sized its action pool for (run --max-seconds). */
+export function cutRefusal(view, maxDelayMs, nowMs) {
+  const sized = view.starts.filter((x) => Number.isFinite(x.sizing?.maxSeconds));
+  if (sized.length !== view.starts.length) return 'refused: a process in this cycle did not report its workload sizing';
+  const latest = Math.max(...view.starts.map((x) => (nowMs - x.atMs + maxDelayMs) / 1000));
+  const sizedFor = Math.min(...sized.map((x) => x.sizing.maxSeconds));
+  return latest > sizedFor ? `refused: the cut could come ${Math.ceil(latest)} s after a process started, but its action pool was sized for ${sizedFor} s (run --max-seconds). Use a shorter --max-seconds here, or check and restart the cycle with a larger one` : null;
 }
 
 // ───────────────────────────── operator commands (run on the recorder host) ─────────────────────────────
@@ -403,6 +420,8 @@ async function main() {
     if (v.cutRequestedAt) throw new Error(`cycle ${n} was already cut`);
     const lo = Math.round(Number(a['min-seconds']) * 1000), hi = Math.round(Number(a['max-seconds']) * 1000);
     if (!(lo >= 0 && hi >= lo)) throw new Error('--min-seconds and --max-seconds are required');
+    const why = cutRefusal(v, hi, Date.now());
+    if (why) throw new Error(why);
     const delayMs = randomInt(lo, hi + 1);
     s.event({ cycle: n, kind: 'cut_scheduled', delayMs });
     console.log(`cycle ${n}: cut in ${(delayMs / 1000).toFixed(1)} s`);

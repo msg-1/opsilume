@@ -43,7 +43,8 @@ remove() {
     command -v "$bin" >/dev/null || continue
     # Delete tagged rules from the built-in chains, then flush and delete our own chains.
     for chain in INPUT DOCKER-USER; do
-      "$bin" -w -S "$chain" 2>/dev/null | grep -- "--comment $TAG" | sed 's/^-A /-D /' | while read -r r; do eval "$bin -w $r"; done
+      # `|| true`: no such chain, or no tagged rule, is the normal case on a clean machine.
+      { "$bin" -w -S "$chain" 2>/dev/null || true; } | { grep -- "--comment $TAG" || true; } | sed 's/^-A /-D /' | while read -r r; do eval "$bin -w $r"; done
     done
     for chain in P7-HOST P7-EGRESS; do "$bin" -w -F "$chain" 2>/dev/null || true; "$bin" -w -X "$chain" 2>/dev/null || true; done
   done
@@ -58,12 +59,14 @@ case "$cmd" in
     rules | while read -r bin rest; do
       case "$rest" in "-N "*) "$bin" -w $rest 2>/dev/null || true ;; *) "$bin" -w $rest ;; esac
     done
+    # At boot (the systemd unit) there is nobody to confirm and the rules were confirmed when first applied: no rollback.
+    if [ "${P7_NO_ROLLBACK:-}" = 1 ]; then touch "$CONFIRMED"; echo "applied (no rollback)"; exit 0; fi
     secs="${P7_ROLLBACK_SECONDS:-180}"
     ( sleep "$secs"; [ -f "$CONFIRMED" ] || "$0" remove ) </dev/null >/dev/null 2>&1 &
     disown
     echo "applied. Open a NEW ssh session to this machine now; if it works, run: sudo $0 confirm"
     echo "without confirm, the rules are removed in $secs seconds." ;;
-  confirm) linux_root; touch "$CONFIRMED"; echo "kept" ;;
+  confirm) linux_root; iptables -w -S P7-HOST >/dev/null 2>&1 || { echo "nothing to confirm: the rules are not applied (already rolled back?)"; exit 1; }; touch "$CONFIRMED"; echo "kept" ;;
   remove) linux_root; remove; echo "removed" ;;
   status) linux_root; for c in INPUT DOCKER-USER P7-HOST P7-EGRESS; do echo "== $c"; iptables -w -S "$c" 2>/dev/null | grep -E "$TAG|^-N" || echo "(none)"; done ;;
   unit)
@@ -79,12 +82,14 @@ After=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-Environment=RECORDER_IP=$RECORDER_IP RECORDER_PORT=$RECORDER_PORT P7_ROLLBACK_SECONDS=1
-ExecStart=/bin/sh -c 'touch $CONFIRMED; exec $(cd "$(dirname "$0")" && pwd)/p7-firewall.sh apply'
+Environment=RECORDER_IP=$RECORDER_IP RECORDER_PORT=$RECORDER_PORT P7_NO_ROLLBACK=1
+ExecStart=$(cd "$(dirname "$0")" && pwd)/p7-firewall.sh apply
 ExecStop=$(cd "$(dirname "$0")" && pwd)/p7-firewall.sh remove
 
 [Install]
-WantedBy=multi-user.target docker.service
+WantedBy=multi-user.target
+# Docker must not start the stack without these rules: if this unit fails, docker.service does not start.
+RequiredBy=docker.service
 UNIT
     ;;
   *) echo "usage: p7-firewall.sh print|apply|confirm|remove|status|unit"; exit 1 ;;

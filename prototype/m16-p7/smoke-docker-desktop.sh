@@ -80,6 +80,7 @@ expect_refusal "max-seconds" P run --cycle 1 --proc a --workers 1 --rate 250
 
 echo "== A cycle 1: --proc a and --proc b concurrently (2 workers each); check retried; recorder restarted; INCONCLUSIVE stops the run"
 pids=(); start_proc 1 a; sleep 3; start_proc 1 b; sleep 6   # b starts while a is already claiming
+expect_refusal "sized for 40 s" R cut --cycle 1 --min-seconds 100 --max-seconds 100   # a cut later than the pools were sized for is refused
 cut_command 1 5 8; wait "${pids[@]}" || true
 dc up -d --wait
 mkdir "$work/evidence/$run/cycle-0001"                    # as if an earlier check died right after creating its directory
@@ -96,6 +97,7 @@ R status | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{cons
 expect_refusal "run is stopped" P run --cycle 2 --proc a --workers 1 $SIZE
 expect_refusal "has not been recovered" node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runB" --failure-model HARNESS-SMOKE --continues "$runA"
 recover 1                                                  # allowed: the stopped cycle itself; quarantine and clearance are not skipped
+[ "$(dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) FROM action WHERE status = 'APPROVED'")" = 0 ] && echo "ok: the cycle's unclaimed actions were retired (none left APPROVED)" || { echo "SMOKE FAILED: unclaimed actions not retired"; exit 1; }
 headA="$(db_head)"
 snapA="$(hashes "recorder/runs/$runA" "evidence/$runA")"
 
