@@ -6,6 +6,8 @@
 # Run B (continues A: same database and journal, new run id and key, count from zero): adopt; a manual-cut rehearsal
 #   with a killed worker process; the journal one claim ahead with a torn line (quarantine, clearance by digest); an
 #   invalid complete final line (FAIL, never repaired).
+# It removes nothing: it ends by stopping its containers, and leaves them and the two volumes (labelled
+# opspilot.p7.data=disposable-harness-smoke) in place. Only ./smoke-teardown.sh removes them, after its checks.
 #   ./smoke-docker-desktop.sh <work dir outside the repository>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -15,7 +17,7 @@ proj=opspilot-m16-p7-smoke
 stamp="$(date +%Y%m%dT%H%M%S)"
 runA="harness-smoke-$stamp-a"; runB="harness-smoke-$stamp-b"
 mkdir -p "$work/recorder" "$work/evidence"
-docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists (inspect it, then: docker compose -p $proj down -v)"; exit 1; }
+docker compose ls -a --format json | grep -q "\"$proj\"" && { echo "refused: the $proj project exists. Inspect it; its disposable smoke state is removed only by ./smoke-teardown.sh (dry run first)"; exit 1; }
 # The volume registry is append-only by design (one line per run), so it is checked separately, as a prefix.
 hashes() { (cd "$work" && find "$@" -type f ! -path "*/keys/*" ! -name volumes.jsonl -print0 2>/dev/null | sort -z | xargs -0 shasum -a 256 2>/dev/null) || true; }
 
@@ -30,7 +32,7 @@ sleep 1
 keyfile() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).keyFile))'; }
 keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"
 run="$runA"
-export P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
+export P7_VOLUME_CLASS=disposable-harness-smoke P7_RUN="$runA" P7_RECORDER_TARGET="host.docker.internal:$port" P7_KEY_FILE_HOST="$keyA" P7_EVIDENCE_HOST="$work/evidence"
 dc() { docker compose -p "$proj" -f "$here/compose.yml" "$@"; }
 R() { local c="$1"; shift; node "$here/recorder.mjs" "$c" --dir "$work/recorder" --run "$run" "$@"; }
 P() { dc exec -T harness node p7.mjs "$@"; }
@@ -84,6 +86,8 @@ db_unique() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) = co
 db_head() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT journal_seq FROM installation_state"; }
 
 dc up -d --wait
+for v in pgdata state; do [ "$(docker volume inspect -f '{{ index .Labels "opspilot.p7.data" }}' "${proj}_$v")" = disposable-harness-smoke ] || { echo "SMOKE FAILED: volume ${proj}_$v is not labelled disposable smoke data"; exit 1; }; done
+echo "ok: both volumes are labelled opspilot.p7.data=disposable-harness-smoke"
 
 echo "== isolation: topology"
 nets() { docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(dc ps -q "$1")"; }
@@ -210,5 +214,6 @@ if [ -s "$prior" ]; then (cd "$work" && shasum -a 256 -c --quiet "$prior") && ec
 registry_now="$(cat "$work/recorder/volumes.jsonl")"
 [ "${registry_now:0:${#registry_before}}" = "$registry_before" ] && [ "$(grep -c "$runA" "$work/recorder/volumes.jsonl")" = 1 ] && echo "ok: the volume registry only grew (earlier entries intact; this run's volumes registered once, to run A)" || { echo "SMOKE FAILED: volume registry"; exit 1; }
 for k in "$keyA" "$keyB"; do grep -rqF "$(cat "$k")" "$work/evidence" "$work/recorder/runs" "$work"/*.log && { echo "SMOKE FAILED: a run key appears in evidence or logs"; exit 1; }; done; echo "ok: no run key appears in any evidence or log file"
-dc down -v
+dc stop   # nothing is removed here: containers and volumes stay until ./smoke-teardown.sh
+echo "The smoke containers are stopped and the volumes ${proj}_pgdata and ${proj}_state are kept. Remove them only with ./smoke-teardown.sh"
 echo "SMOKE PASSED (HARNESS-SMOKE: harness flow only, not a durability result). Evidence: $work/evidence/$runA and $runB"

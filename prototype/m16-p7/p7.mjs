@@ -17,7 +17,7 @@ import { GUARD, SCHEMA, appendLocked, claim, clear, db, init, inspect, journalAt
 import { trustProblem } from '../m16-phase05/lib/journal.mjs';
 import { fsyncDir, fsyncFile, writeOnce } from './lib/ledger.mjs';
 import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
-import { measuredRate, sizePool } from './lib/sizing.mjs';
+import { measuredRate, sizePool, sizePlan } from './lib/sizing.mjs';
 import { preflightVerdict } from './lib/preflight.mjs';
 import { storageProblems } from './lib/verdict.mjs';
 import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, sha256File } from './lib/scan.mjs';
@@ -197,6 +197,7 @@ export async function netcheck(run, { strict = false } = {}) {
     if (o === 'refused') hostAnswers = true;
     add(`host or bridge ${h}:${port}`, strict ? 'dropped by the host firewall' : 'no service', o, o !== 'connected' && !(strict && o === 'refused'), /EAI_AGAIN|ENOTFOUND/.test(o) ? NAME : o === 'refused' ? 'the host answered: reachable, no listener on this port' : undefined);
   }
+  if (strict && hosts.size === 0) add('host or bridge addresses', 'at least one probed', 'none found', false, 'no bridge address was probed, so the host firewall was not observed');
   return { ok: probes.every((p) => p.ok), strict, hostAnswersOnBridge: hostAnswers, probes, at: new Date().toISOString(), bootId: bootId() };
 }
 async function cmdNetcheck(a, { quiet = false } = {}) {
@@ -246,10 +247,8 @@ async function cmdPreflight(a) {
   await p.$disconnect().catch(() => {});
   const n = await netcheck(a.run, { strict: true }).catch((e) => ({ ok: false, strict: true, probes: [{ ok: false, name: `netcheck error: ${lastLine(e)}`, outcome: '' }] }));
   f.netcheck = { ok: n.ok, strict: n.strict, hostAnswersOnBridge: n.hostAnswersOnBridge ?? null, failed: n.probes.filter((x) => !x.ok).map((x) => `${x.name} -> ${x.outcome}`) };
-  const workers = Number(a.workers ?? 1);
   const rate = a['target-rate'] ? Number(a['target-rate']) : a.rate ? Number(a.rate) : NaN;
-  const size = sizePool({ ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
-  f.sizing = !size.ok ? size : workers * size.pool > CLEARANCE_ENVELOPE ? { ok: false, reason: `${workers} workers x ${size.pool} actions exceeds the ${CLEARANCE_ENVELOPE} actions clearance was validated at` } : { ...size, workers };
+  f.sizing = sizePlan({ workers: Number(a.workers ?? 1), procs: Number(a.procs ?? 1), envelope: CLEARANCE_ENVELOPE, ratePerWorker: rate, maxSeconds: Number(a['max-seconds']), headroom: Number(a.headroom ?? 2), pool: a.pool === undefined ? undefined : Number(a.pool) });
   const verdict = preflightVerdict(f);
   console.log(JSON.stringify({ ...verdict, facts: f, at: new Date().toISOString() }, null, 1));
   process.exitCode = verdict.status === 'READY_FOR_OPERATOR_REVIEW' ? 0 : 6;
@@ -634,7 +633,7 @@ async function cmdRecover(a) {
 }
 
 const [cmd, ...argv] = process.argv.slice(2);
-const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' }, 'smoke-fail-in-retirement': { type: 'boolean' } } });
+const { values } = parseArgs({ args: argv, options: { run: { type: 'string' }, cycle: { type: 'string' }, workers: { type: 'string' }, procs: { type: 'string' }, pool: { type: 'string' }, proc: { type: 'string' }, rate: { type: 'string' }, 'target-rate': { type: 'string' }, 'max-seconds': { type: 'string' }, headroom: { type: 'string' }, 'clear-digest': { type: 'string' }, 'smoke-crash-after-claim-append': { type: 'boolean' }, 'smoke-fail-before-result-post': { type: 'boolean' }, 'smoke-fail-in-retirement': { type: 'boolean' } } });
 values.run ??= process.env.P7_RUN;
 if (process.env.P7_RUN && values.run !== process.env.P7_RUN) { console.error('--run differs from P7_RUN'); process.exit(1); }
 const commands = { 'boot-probe': cmdBootProbe, netcheck: cmdNetcheck, preflight: cmdPreflight, init: cmdInit, adopt: cmdAdopt, run: cmdRun, check: cmdCheck, recover: cmdRecover };

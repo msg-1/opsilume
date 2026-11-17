@@ -29,8 +29,37 @@ const EVENT_KINDS = ['worker_stopped', 'volume_claimed', 'initialised', 'adopted
 // Volume registry: every database cluster a run was ever initialised on, by PostgreSQL's system identifier (unique per
 // initdb). A cluster belongs to the run that claimed it and to the runs that continue it; nothing else may use it.
 const registryFile = (dir) => path.join(dir, 'volumes.jsonl');
-export const volumeOwner = (dir, pgSystemId) => readLedger(registryFile(dir)).entries.find((v) => v.pgSystemId === String(pgSystemId)) ?? null;
-export const volumeOf = (dir, run) => readLedger(registryFile(dir)).entries.find((v) => v.run === run) ?? null;
+/**
+ * The registry is append-only and is never rebuilt. Every run that claimed volumes must still be in it,
+ * with the cluster its own ledger recorded: a registry that was deleted, truncated, replaced or edited is refused
+ * everywhere it is consulted (claim, start, adopt, volume-check, create-run) instead of being read as "no history".
+ * The registry line is written before the run's event, so a crash between the two never trips this.
+ */
+export function registryProblem(dir) {
+  let entries;
+  try { entries = readLedger(registryFile(dir)).entries; } catch (e) { return String(e.message); }
+  const ids = entries.map((v) => v.pgSystemId);
+  if (new Set(ids).size !== ids.length) return 'a database cluster is registered more than once';
+  const runsDir = path.join(dir, 'runs');
+  for (const run of fs.existsSync(runsDir) ? fs.readdirSync(runsDir).sort() : []) {
+    let events;
+    try { events = readLedger(path.join(runsDir, run, 'events.jsonl')).entries; } catch (e) { return `run ${run}: ${e.message}`; }
+    const claim = events.find((e) => e.kind === 'volume_claimed'); // recorded by every run since the registry exists
+    if (!claim) continue;
+    const mine = entries.filter((v) => v.run === run);
+    if (mine.length !== 1) return `run ${run} claimed volumes but has ${mine.length} registry entries`;
+    const recorded = claim.pgSystemId;
+    if (recorded && recorded !== mine[0].pgSystemId) return `run ${run} claimed cluster ${recorded}, but the registry says ${mine[0].pgSystemId}`;
+  }
+  return null;
+}
+function registry(dir) {
+  const problem = registryProblem(dir);
+  if (problem) throw Object.assign(new Error(`volume_registry_inconsistent: ${problem}. The registry (volumes.jsonl) was reset, replaced or edited; nothing proceeds until it is restored`), { status: 409 });
+  return readLedger(registryFile(dir)).entries;
+}
+export const volumeOwner = (dir, pgSystemId) => registry(dir).find((v) => v.pgSystemId === String(pgSystemId)) ?? null;
+export const volumeOf = (dir, run) => registry(dir).find((v) => v.run === run) ?? null;
 export function registerVolume(dir, entry) { fs.mkdirSync(dir, { recursive: true }); appendDurable(registryFile(dir), { ...entry, at: new Date().toISOString() }); }
 const validState = (f) => !!f && typeof f.installationId === 'string' && f.installationId.length > 0 && Number.isInteger(f.head) && f.head >= 0 && /^[0-9a-f]{64}$/.test(f.headHash ?? '');
 const sameState = (f, g) => validState(f) && validState(g) && f.installationId === g.installationId && f.head === g.head && f.headHash === g.headHash;
@@ -68,6 +97,7 @@ export function createRun(dir, o) {
   if (!FAILURE_MODELS.includes(o.failureModel)) throw new Error(`failure model must be one of ${FAILURE_MODELS.join(', ')}`);
   const s = runStore(dir, o.run);
   if (s.exists() || fs.existsSync(s.keyFile)) throw new Error('run already exists');
+  registry(dir); // no new run beside a registry that lost history
   // The three run types never share state: a run continues only a run of its own type (decision: a POWER-CUT series
   // starts on fresh volumes and never adopts HARNESS-SMOKE or VM-CRASH state).
   if (o.continues) {
@@ -351,7 +381,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             const r = s.result(n);
             if (!r?.quarantineRequired || recoveryOf(events, n)) return refuse(409, 'no_quarantine_expected');
           }
-          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...(body.kind === 'initialised' ? { installationId: String(body.installationId ?? '').slice(0, 64) } : {}), ...stamp });
+          s.event({ cycle: body.cycle ?? null, cycleId: body.cycleId ?? null, kind: body.kind, detail: String(body.detail ?? '').slice(0, 500), proc: String(body.proc ?? ''), worker: body.worker ?? null, ...(body.kind === 'adopted' ? { finalState: body.finalState } : {}), ...(body.kind === 'volume_claimed' ? { pgSystemId: String(body.volume.pgSystemId) } : {}), ...(body.kind === 'initialised' ? { installationId: String(body.installationId ?? '').slice(0, 64) } : {}), ...stamp });
           return reply(200, { ok: true });
         }
 

@@ -3,6 +3,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { FRESH_WAL_LIMIT_BYTES, REQUIRED_ATTESTATIONS, freshVolumeProblems, preflightVerdict } from '../lib/preflight.mjs';
 import { storageProblems } from '../lib/verdict.mjs';
+import { sizePlan } from '../lib/sizing.mjs';
 
 const STORAGE = { driveModel: 'Example SSD 1TB', firmware: '1B2QEXM7', controller: 'NVMe (PCIe)', dbDevice: 'nvme0n1p2', journalDevice: 'nvme0n1p2', filesystem: 'ext4 rw,relatime', vendorDoc: 'vendor datasheet rev 3, section 4.2', evidenceFiles: 'host/baseline/*', writeCache: 'write back', fua: 'yes', flushSupported: 'yes', flushesObserved: 'yes', vendorFlushSemantics: 'yes', plp: 'unknown' };
 const ready = () => ({
@@ -88,5 +89,39 @@ describe('preflight verdict', () => {
     assert.match(preflightVerdict(f).reasons.join(), /not in the state recorded/);
     f.volume.matchesPredecessor = true; f.volume.registeredTo = 'someone-else';
     assert.match(preflightVerdict(f).reasons.join(), /not the ones the series started on/);
+  });
+  // Verdict logic only, on constructed facts. This is not a readiness result for any machine: the facts themselves
+  // (the strict network check, the settings, the volumes) can only be gathered on the actual Linux host.
+  test('never READY with any one of the seven named conditions unmet, everything else in place', () => {
+    const only = (mutate, pattern) => {
+      const f = ready(); mutate(f); const v = preflightVerdict(f);
+      assert.equal(v.status, 'BLOCKED');
+      assert.equal(v.checks.filter((c) => !c.ok).length, 1, `exactly one check blocks: ${v.reasons.join(' | ')}`);
+      assert.match(v.reasons.join(' | '), pattern);
+    };
+    // 1. The firewall was only tested with stubs: the host still answers on a bridge address, whatever was attested...
+    only((f) => { f.netcheck = { ok: false, strict: true, failed: ['host or bridge 172.22.0.1:22 -> refused'] }; }, /host firewall \(strict\): host or bridge 172\.22\.0\.1:22 -> refused/);
+    only((f) => { f.netcheck = { ok: false, strict: true, failed: ['host or bridge addresses -> none found'] }; }, /none found/);
+    only((f) => { delete f.netcheck; }, /did not run in strict mode/);
+    // ...and a passing network check without the operator having verified the firewall on the host is not enough either.
+    only((f) => { f.run.attestations = f.run.attestations.filter((x) => x !== 'firewall-verified-on-host'); }, /missing operator attestation: firewall-verified-on-host$/);
+    // 2. Storage flush/FUA evidence missing.
+    for (const k of ['fua', 'flushSupported', 'flushesObserved', 'vendorFlushSemantics', 'vendorDoc', 'writeCache']) only((f) => { f.storageProblems = storageProblems({ ...STORAGE, [k]: 'unknown' }); }, /^storage evidence: /);
+    only((f) => { delete f.storageProblems; }, /storage evidence: not checked/);
+    // 3. PostgreSQL durability settings wrong (or unreadable).
+    only((f) => { f.settingsDurable = false; }, /fsync, full_page_writes and synchronous_commit are not all on/);
+    only((f) => { delete f.settingsDurable; }, /PostgreSQL durability settings/);
+    // 4. Volumes not fresh.
+    for (const m of [(f) => { f.volume.publicRelations = 1; }, (f) => { f.volume.stateEntries = 1; }, (f) => { f.volume.walLsnBytes = FRESH_WAL_LIMIT_BYTES; }, (f) => { f.volume.registeredTo = 'harness-smoke-1'; }, (f) => { f.volume = {}; }]) only(m, /fresh, dedicated volumes: /);
+    // 5. Recorder authentication fails.
+    only((f) => { f.recorder = { authenticated: false, unsignedRejected: true }; }, /did not answer an authenticated request/);
+    only((f) => { f.recorder = { authenticated: true, unsignedRejected: false }; }, /did not reject an unauthenticated request/);
+    // 6. Workload sizing insufficient, as the preflight command computes it.
+    const plan = { envelope: 1_000_000, ratePerWorker: 250, maxSeconds: 600 };
+    for (const bad of [{ workers: 1, pool: 1000 }, { workers: NaN }, { workers: 0 }, { workers: 2, procs: 2 }, { workers: 1, ratePerWorker: NaN }, { workers: 1, maxSeconds: NaN }]) only((f) => { f.sizing = sizePlan({ ...plan, ...bad }); }, /^workload sizing: /);
+    only((f) => { delete f.sizing; }, /workload sizing: not sized/);
+    // 7. Required operator attestations missing.
+    for (const item of REQUIRED_ATTESTATIONS) only((f) => { f.run.attestations = REQUIRED_ATTESTATIONS.filter((x) => x !== item); }, new RegExp(`missing operator attestation: ${item}$`));
+    only((f) => { f.run.attestations = ['firewall-tested-with-stubs', 'something-else', 'made-up']; }, /missing operator attestation/);
   });
 });

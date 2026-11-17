@@ -25,7 +25,8 @@
 | `host-evidence.sh` | The machine under test, on the host, as root | OS, kernel, virtualisation, mounts, devices, write cache, FUA, SMART, kernel log, PostgreSQL log. Read-only. **Not yet exercised on a real Linux machine** (required before qualifying cycles) |
 | `lib/` | — | `protocol.mjs` (authentication, acknowledgement streams), `ledger.mjs`, `scan.mjs`, `verdict.mjs`, `sizing.mjs` |
 | `test/` | Anywhere with Node 22+ | `node --test prototype/m16-p7/test/*.test.mjs`. **Harness tests**, not durability results |
-| `smoke-docker-desktop.sh` | A development machine | End-to-end flow with container kills, labelled `HARNESS-SMOKE`, which **can never count** |
+| `smoke-docker-desktop.sh` | A development machine | End-to-end flow with container kills, labelled `HARNESS-SMOKE`, which **can never count**. Removes nothing: it stops its containers and keeps its volumes |
+| `smoke-teardown.sh` | Where a smoke ran | The **only** thing in the harness that removes a volume. Dry run by default; see "Removing smoke state" |
 
 ## Recorder protocol (test-only)
 
@@ -96,9 +97,22 @@ How "fresh and dedicated" is enforced:
 - **Every cycle start, and `adopt`, must name the cluster the series started on.** A marker in the journal volume ties it to that cluster, so the two volumes can't be mixed.
 - **`create-run --continues` refuses a different run type,** so a qualifying run never adopts smoke or supplementary state.
 - **Evidence:** `evidence/<run>/init/initial-empty-state-*.json` on the test machine, and `volumes.jsonl` on the recorder. Smoke evidence stays in its own run directories.
-- **Order on the real host:** smoke rehearsal first, then `docker compose down -v`, then the qualifying run on new volumes.
-- **Limits:** the registry knows only runs recorded in the same recorder directory; beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
+- **Order on the real host:** smoke rehearsal first, under its own project and labelled disposable (`P7_VOLUME_CLASS=disposable-harness-smoke docker compose -p opspilot-m16-p7-smoke ...` for every Compose command of the rehearsal); then stop it (`docker compose -p opspilot-m16-p7-smoke down`, **without `-v`**, which frees the bridge names and keeps its volumes); then the qualifying run under the project `opspilot-m16-p7`, whose volumes are different ones and new. No volume has to be removed for the qualifying run to start on fresh volumes.
+- **Never run `docker compose down -v`, `docker volume rm`, `docker volume prune` or `docker system prune` on the test machine.** In the directory of `compose.yml`, a bare `down -v` removes the volumes of `opspilot-m16-p7`: the qualifying run's database and journal.
+- **The recorder never reads a damaged registry as "no history".** Every run that claimed volumes must still be in `volumes.jsonl` with the cluster its own ledger recorded. If the file was deleted, truncated, replaced or edited, every claim, start, adopt, volume check and `create-run` is refused (`volume_registry_inconsistent`) until the original file is restored; the recorder never rebuilds it.
+- **Limits:** the registry knows only runs recorded in the same recorder directory (a recorder started on a new, empty directory has no history: use one recorder directory for everything on a test machine); removing a run's own record together with its registry line isn't detected; beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
 - **A start is vetted before anything is seeded,** so a refused start leaves the database untouched and can be retried.
+
+## Removing smoke state
+
+Nothing in the harness removes a volume except `smoke-teardown.sh`, and it removes only disposable smoke data.
+
+- `./smoke-teardown.sh` is a dry run: it runs every check and prints the project and the exact volumes.
+- `./smoke-teardown.sh --confirm opspilot-m16-p7-smoke` removes the containers and networks of that project (`down`, never `-v`) and then the two volumes by exact name.
+- **It refuses** unless: the project is exactly `opspilot-m16-p7-smoke` (fixed in the script); its volumes are exactly `opspilot-m16-p7-smoke_pgdata` and `opspilot-m16-p7-smoke_state`; each carries that project's Compose labels and `opspilot.p7.data=disposable-harness-smoke`; the marker in the journal volume, if there is one, says `HARNESS-SMOKE`; and only that project's containers use the volumes.
+- **Qualifying volumes can't pass it.** `compose.yml` labels volumes `evidence-keep` unless the smoke script says otherwise, and the qualifying project has another name.
+- **It never touches** the recorder directory, the registry or the evidence directory: those are host directories, not Docker volumes.
+- **Tested with a stub `docker` only** (`./test-teardown-with-stubs.sh`). The real teardown has never been run.
 
 ## Storage evidence checklist
 
@@ -137,7 +151,7 @@ FUA not advertised is accepted only with observed flushes **and** the vendor doc
 
 ## Preflight (read-only)
 
-`docker compose exec -T harness node p7.mjs preflight --max-seconds <s> --rate <r> [--workers n]`
+`docker compose exec -T harness node p7.mjs preflight --max-seconds <s> --rate <r> [--workers n] [--procs n]`
 
 It prints `READY_FOR_OPERATOR_REVIEW` or `BLOCKED` with the exact reasons, and exits 0 or 6. It changes nothing on the test machine, seeds nothing, and **never starts a workload or a cut**. On the recorder its only trace is the log of the two unauthenticated probes it sends on purpose. `READY_FOR_OPERATOR_REVIEW` is not approval, and it has never been produced end to end: that needs the real host.
 

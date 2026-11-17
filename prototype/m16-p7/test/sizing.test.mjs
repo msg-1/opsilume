@@ -1,7 +1,7 @@
 // Workload sizing tests (pure). HARNESS tests only.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { measuredRate, sizePool } from '../lib/sizing.mjs';
+import { measuredRate, sizePlan, sizePool } from '../lib/sizing.mjs';
 
 describe('workload sizing', () => {
   test('required pool = rate x longest planned wait x headroom (at least 2)', () => {
@@ -28,5 +28,14 @@ describe('workload sizing', () => {
     assert.deepEqual(measuredRate(acks), { streams: 2, totalPerSecond: 150, maxPerWorker: 100, minPerWorker: 50 });
     assert.equal(measuredRate(acks.slice(0, 10)), null, 'too few acknowledgements to measure');
     assert.equal(measuredRate([]), null);
+  });
+  test('the planned cycle: workers and processes must be whole numbers, and all of them count against the envelope', () => {
+    const base = { envelope: 1_000_000, ratePerWorker: 250, maxSeconds: 600 };
+    assert.deepEqual(sizePlan({ ...base, workers: 2 }), { ok: true, required: 300000, pool: 300000, workers: 2, procs: 1, total: 600000 });
+    for (const workers of [NaN, 0, -1, 1.5, 13, undefined]) assert.match(sizePlan({ ...base, workers }).reason, /--workers must be a whole number/, String(workers));
+    for (const procs of [NaN, 0, 1.5, 27]) assert.match(sizePlan({ ...base, workers: 1, procs }).reason, /--procs must be a whole number/, String(procs));
+    assert.match(sizePlan({ ...base, workers: 2, procs: 2 }).reason, /2 process\(es\) x 2 worker\(s\) x 300000 actions = 1200000 exceeds the 1000000/);
+    assert.match(sizePlan({ ...base, workers: 1, ratePerWorker: NaN }).reason, /ratePerWorker must be a positive number/, 'no rate given');
+    assert.match(sizePlan({ ...base, workers: 1, pool: 1000 }).reason, /too small/);
   });
 });

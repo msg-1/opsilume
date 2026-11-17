@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { keyFromHex, makeClient, nextStream, runTag, signRequest, verifyRequest, WINDOW_MS } from '../lib/protocol.mjs';
 import { finalStatus, physicalStreak } from '../lib/verdict.mjs';
-import { createRecorder, createRun, cutRefusal, cycleView, registerVolume, runStore, volumeOwner } from '../recorder.mjs';
+import { createRecorder, createRun, cutRefusal, cycleView, registerVolume, registryProblem, runStore, volumeOf, volumeOwner } from '../recorder.mjs';
 import { REQUIRED_ATTESTATIONS } from '../lib/preflight.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-recorder-test-'));
@@ -598,5 +598,97 @@ describe('start vetting and operator commands', () => {
     assert.equal(cycleView(runStore(dir, 'pc'), 1).starts.length, 0);
     assert.match((await call('POST', '/runs/pc/cycles/1/start', body)).data.cycleId, /^[0-9a-f]{32}$/);
     assert.equal(cycleView(runStore(dir, 'pc'), 1).authenticatedRejections, 0, 'the earlier refusal does not count against the cycle');
+  });
+});
+
+describe('volume registry: preserved across runs, never reset, replaced or rebuilt', () => {
+  const dir = path.join(tmp, 'registry');
+  const reg = path.join(dir, 'volumes.jsonl');
+  let srv;
+  const [X1, X2, X3] = ['7111111111111111111', '7222222222222222222', '7333333333333333333'];
+  const S = { installationId: 'inst-7', head: 5, headHash: 'ef'.repeat(32) };
+  const EMPTY = (id) => ({ pgSystemId: id, publicRelations: 0, stateEntries: 0, walLsnBytes: 25 * 1024 * 1024, serverVersion: '16.14' });
+  const frozen = (run) => { const root = runStore(dir, run).root; return Object.fromEntries(listFiles(root).map((f) => [f, sha(path.join(root, f))])); };
+  const claim = (run, id) => callerFor(srv.base, dir, run)('POST', `/runs/${run}/event`, { kind: 'volume_claimed', volume: EMPTY(id) });
+  before(async () => { srv = await serve(dir); });
+  after(() => srv.close());
+
+  test('it only grows: a smoke run, a new qualifying run and a recorder restart leave earlier entries byte-identical', async () => {
+    createRun(dir, { run: 's1', failureModel: 'HARNESS-SMOKE' });
+    assert.equal((await claim('s1', X1)).status, 200);
+    assert.equal((await callerFor(srv.base, dir, 's1')('POST', '/runs/s1/event', { kind: 'initialised', installationId: 'inst-s1' })).status, 200);
+    const afterSmoke = fs.readFileSync(reg, 'utf8');
+    createRun(dir, { run: 'pc1', failureModel: 'POWER-CUT', storage: STORAGE });
+    assert.equal(fs.readFileSync(reg, 'utf8'), afterSmoke, 'creating a qualifying run does not touch the registry');
+    assert.equal((await claim('pc1', X1)).data.error, 'volume_already_used_by_s1');
+    assert.equal((await claim('pc1', X2)).status, 200);
+    const afterPc = fs.readFileSync(reg, 'utf8');
+    assert.ok(afterPc.startsWith(afterSmoke) && afterPc.trim().split('\n').length === 2, 'one line appended; the smoke entry is untouched');
+    assert.equal(runStore(dir, 'pc1').events().find((e) => e.kind === 'volume_claimed').pgSystemId, X2, 'the run\'s own ledger records the cluster too');
+    await srv.close(); srv = await serve(dir); // a restarted recorder reads the same history
+    assert.equal(fs.readFileSync(reg, 'utf8'), afterPc);
+    createRun(dir, { run: 'pc2', failureModel: 'POWER-CUT', storage: STORAGE });
+    for (const used of [X1, X2]) assert.match((await claim('pc2', used)).data.error, /^volume_already_used_by_/, 'a new run cannot bypass the history');
+    assert.equal(fs.readFileSync(reg, 'utf8'), afterPc, 'refused claims add nothing');
+    assert.equal(registryProblem(dir), null);
+  });
+
+  test('a deleted, truncated, emptied, replaced or edited registry is refused everywhere and never rebuilt', async () => {
+    // pc1: one cycle with an acknowledgement, INCONCLUSIVE, recovered; pc1b continues it but has not adopted yet.
+    const call = callerFor(srv.base, dir, 'pc1');
+    assert.equal((await call('POST', '/runs/pc1/event', { kind: 'initialised', installationId: 'inst-7' })).status, 200);
+    const st = runStore(dir, 'pc1');
+    for (const item of REQUIRED_ATTESTATIONS) st.event({ cycle: null, kind: 'attestation', item, evidence: 'test', attestation: 'operator' });
+    const id = (await call('POST', '/runs/pc1/cycles/1/start', { pgSystemId: X2, proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
+    assert.equal((await call('POST', '/runs/pc1/ack', { cycle: 1, cycleId: id, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('pc1', 'c0001aw1-1') })).status, 200);
+    await call('POST', '/runs/pc1/cycles/1/result', { cycleId: id, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] });
+    assert.equal((await call('POST', '/runs/pc1/cycles/1/recovered', { cycleId: id, finalState: S })).status, 200);
+    createRun(dir, { run: 'pc1b', failureModel: 'POWER-CUT', storage: STORAGE, continues: 'pc1' });
+    createRun(dir, { run: 'pc3', failureModel: 'POWER-CUT', storage: STORAGE });
+    const original = fs.readFileSync(reg, 'utf8');
+    const history = { s1: frozen('s1'), pc1: frozen('pc1') };
+    const lines = original.trim().split('\n');
+    const tampers = {
+      deleted: () => fs.rmSync(reg),
+      emptied: () => fs.writeFileSync(reg, ''),
+      'truncated to its first entry': () => fs.writeFileSync(reg, `${lines[0]}\n`),
+      'replaced by another registry': () => fs.writeFileSync(reg, `${JSON.stringify({ pgSystemId: X3, run: 'other', failureModel: 'HARNESS-SMOKE' })}\n`),
+      'edited (a cluster id changed)': () => fs.writeFileSync(reg, `${original.replace(X2, X3)}`),
+      'edited (an entry duplicated)': () => fs.writeFileSync(reg, `${original}${lines[0]}\n`),
+      'damaged (a line is not a record)': () => fs.writeFileSync(reg, `${lines[0]}\nnot json\n`),
+    };
+    const refused = /^volume_registry_inconsistent/;
+    for (const [how, tamper] of Object.entries(tampers)) {
+      tamper();
+      const tampered = fs.existsSync(reg) ? fs.readFileSync(reg, 'utf8') : null;
+      assert.match((await claim('pc3', X2)).data.error, refused, `claim, registry ${how}`);
+      assert.match((await claim('pc3', '7444444444444444444')).data.error, refused, `claim of an unseen cluster, registry ${how}`);
+      assert.match((await callerFor(srv.base, dir, 'pc3')('POST', '/runs/pc3/volume-check', { pgSystemId: X2 })).data.error, refused, `volume-check, registry ${how}`);
+      assert.match((await callerFor(srv.base, dir, 'pc1b')('POST', '/runs/pc1b/event', { kind: 'adopted', finalState: S, pgSystemId: X2 })).data.error, refused, `adopt, registry ${how}`);
+      assert.match((await callerFor(srv.base, dir, 's1')('POST', '/runs/s1/cycles/1/start', { pgSystemId: X1, proc: 'a', workers: 1, dbHead: 0 })).data.error, refused, `start, registry ${how}`);
+      assert.throws(() => createRun(dir, { run: 'pc9', failureModel: 'POWER-CUT', storage: STORAGE }), /volume_registry_inconsistent/, `create-run, registry ${how}`);
+      assert.throws(() => volumeOwner(dir, X2), /volume_registry_inconsistent/);
+      assert.equal(fs.existsSync(reg) ? fs.readFileSync(reg, 'utf8') : null, tampered, `never rebuilt or repaired (${how})`);
+      assert.ok(!fs.existsSync(runStore(dir, 'pc9').root) && !fs.existsSync(runStore(dir, 'pc9').keyFile), 'the refused run left nothing');
+      fs.writeFileSync(reg, original); // the operator restores the original file
+    }
+    assert.equal(registryProblem(dir), null);
+    assert.deepEqual({ s1: frozen('s1'), pc1: frozen('pc1') }, history, 'historical run records and acknowledgements are untouched');
+  });
+
+  test('an INCONCLUSIVE continuation keeps the series on its original volumes; nothing is re-registered or rewritten', async () => {
+    const original = fs.readFileSync(reg, 'utf8');
+    const history = frozen('pc1');
+    const c = callerFor(srv.base, dir, 'pc1b');
+    assert.equal((await c('POST', '/runs/pc1b/event', { kind: 'volume_claimed', volume: EMPTY(X3) })).data.error, 'continuing_run_uses_adopt');
+    assert.equal((await c('POST', '/runs/pc1b/event', { kind: 'adopted', finalState: S, pgSystemId: X1 })).data.error, 'volume_differs_from_series', 'not the smoke volumes');
+    assert.equal((await c('POST', '/runs/pc1b/event', { kind: 'adopted', finalState: { ...S, head: 4 }, pgSystemId: X2 })).data.error, 'state_differs_from_predecessor');
+    assert.equal((await c('POST', '/runs/pc1b/event', { kind: 'adopted', finalState: S, pgSystemId: X2 })).status, 200);
+    assert.equal((await c('POST', '/runs/pc1b/cycles/1/start', { pgSystemId: X3, proc: 'a', workers: 1, dbHead: 5 })).data.error, 'volume_differs_from_series');
+    assert.equal((await c('POST', '/runs/pc1b/cycles/1/start', { pgSystemId: X2, proc: 'a', workers: 1, dbHead: 5 })).data.error, 'attestations_missing', 'right volumes; the new run still needs its own attestations');
+    assert.equal(fs.readFileSync(reg, 'utf8'), original, 'the continuation registers nothing');
+    assert.deepEqual([volumeOf(dir, 'pc1').pgSystemId, volumeOf(dir, 'pc1b')], [X2, null]);
+    assert.deepEqual(frozen('pc1'), history, 'the original run\'s events, acknowledgements and results are unchanged');
+    assert.equal(runStore(dir, 'pc1').acks(1).length, 1);
   });
 });

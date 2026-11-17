@@ -16,6 +16,19 @@ export function sizePool({ ratePerWorker, maxSeconds, headroom = MIN_HEADROOM, p
   return pool >= required ? { ok: true, required, pool } : { ok: false, required, pool, reason: `pool ${pool} per worker is too small: ${ratePerWorker}/s x ${maxSeconds} s x ${headroom} headroom needs ${required}` };
 }
 
+/**
+ * The whole planned cycle (preflight): every process's workers count against the number of waiting actions clearance
+ * was validated at. `run` enforces the same bound per start, on what is actually waiting.
+ */
+export function sizePlan({ workers, procs = 1, envelope, ...size }) {
+  if (!(Number.isInteger(workers) && workers >= 1 && workers <= 12)) return { ok: false, reason: '--workers must be a whole number from 1 to 12' };
+  if (!(Number.isInteger(procs) && procs >= 1 && procs <= 26)) return { ok: false, reason: '--procs must be a whole number from 1 to 26' };
+  const s = sizePool(size);
+  if (!s.ok) return s;
+  const total = procs * workers * s.pool;
+  return total > envelope ? { ok: false, reason: `${procs} process(es) x ${workers} worker(s) x ${s.pool} actions = ${total} exceeds the ${envelope} actions clearance was validated at` } : { ...s, workers, procs, total };
+}
+
 /** Claims per second per stream, from the recorder's acknowledgements of one cycle (its own clock). */
 export function measuredRate(acks) {
   const by = new Map();
