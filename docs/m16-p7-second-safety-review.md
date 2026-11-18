@@ -190,3 +190,300 @@ Run: `git` read commands, `node --check`, `bash -n`, a YAML parse of the Compose
 - Protected state (smoke evidence and recorder directory, bundles, evaluation files, refs, tags, the main checkout and its plan) was verified unchanged by hash after the last change.
 
 **P7 remains NOT TESTED and NOT PASSED.**
+
+## 11. After the checkpoint commit: the recorder-side gate for D1 (added 18 November 2026)
+
+Sections 1 to 10 describe the state committed as `4516256eb20e1b43cdc201fe88c07a974ed6535e`. This change came afterwards, by the product owner's approval, and is uncommitted.
+
+- **The gate:** the recorder stores no PASS for a cycle in which it refused an authenticated request after the cycle began (`pass_for_a_cycle_with_authenticated_rejections`). ~~It reads the refusals from the ledgers, so a restarted recorder refuses as well.~~ **Corrected, see section 12:** that sentence was true only for a refusal that is on record. One that could be recorded nowhere was forgotten by a restart, and the PASS was then stored. INCONCLUSIVE is accepted and closes the cycle. This closes D1 on the recorder as well as in `check`, and replaces item 1 of section 8.
+- **What it does not count:** a refusal that names another cycle, one made before the cycle began, and refusals after the cycle's result is stored (during its recovery).
+- **The existing tests that stored such a PASS.** One chain of committed tests did: on the qualifying run `p`, cycle 1 is refused three starts on purpose (a second start of the process, a second process, more workers), and the tests of decisions 1 and 2 then stored a PASS for that same cycle. Their intent is the quarantine and clearance rule and the broken series, not the refusals. They now run on a second qualifying run whose first cycle has no refusal on record. Compared line by line with the committed version, their assertions differ only in the run's name. A new test in the same chain asserts that the PASS for cycle 1 of `p` is refused and that INCONCLUSIVE is accepted and ends the series.
+- **The safety model is unchanged:** an authenticated refusal in a cycle already made it INCONCLUSIVE whenever `check` computed the verdict. The gate makes the recorder hold to the same rule for a result it is sent.
+- **Tests:** `test/final-review.test.mjs` (the gate, a restart, and what is not counted; two failed before the gate was added), `test/recorder.test.mjs`. Whole unit suite: 340 tests, 340 pass.
+
+## 12. Remediation of the D1 gate after its independent review (18 November 2026, later; uncommitted)
+
+The review of section 11 found that the gate could be bypassed (findings G1 to G3) and that three texts claimed more than the code kept. A second adversarial review of the remediation found two further paths to a stored PASS (H1, H2) and smaller items. All were reproduced as failing tests before their fix (`test/d1-gate.test.mjs`), except where noted in the progress register.
+
+| ID | Finding | State |
+|---|---|---|
+| G1 | A refusal recorded nowhere was forgotten by a recorder restart; the PASS was then stored | FIXED: a server that takes over an open cycle records `recorder_restarted` (or holds it in memory if it cannot) and stores no PASS for that cycle |
+| G2 | The count depended on the recorder's clock | FIXED: each refusal is stamped with the open cycle; no time comparison for new records |
+| G3 | The body's cycle decided before the path; a request naming no cycle was counted nowhere | FIXED: path first; a contradiction, an unusable or missing cycle counts against the open cycle |
+| G4 | The ledgers are not protected against removal of lines or files | NOT FIXED, documented: no hash chain, no second copy |
+| G5 | A complete non-record line left the run unusable without saying why | PARTLY: named by `verify-dir`, the view and the start refusal; after a restart the run is still unusable (pinned by a committed test) |
+| G6 | Replay as a way to force INCONCLUSIVE | By design, documented |
+| G7 | Misnamed test; false restart claim in three places | FIXED |
+| H1 | Refusal while the event ledger was unreadable and the rejection log unwritable: forgotten by the same process | FIXED: held in memory against the run (`lost`) |
+| H2 | An authenticated request that failed outside a refusal left no trace; PASS stored | FIXED: same memory flag, set by the handler's error path and for a run that cannot be found |
+| H3 | An `unknown` refusal dropped out of a closed cycle's count | FIXED: it counts against every cycle of the run, permanently |
+| H6 | The exemption for "names another cycle" is controlled by the sender | NARROWED: an unusable path cycle and a refused journal-write-failure or worker-stop report now count; other requests naming another cycle still do not (pinned by committed tests): OWNER DECISION |
+
+**What the guarantee is, exactly.** No recorder process stores a PASS for a cycle if (a) a counted authenticated refusal for it is on record, or (b) that process knows of a request it could record nowhere, or (c) that process, or an earlier one whose event is on record, took the cycle over while it was open. What is NOT guaranteed: protection against someone editing the recorder's files; correctness if the recorder's clock is set back between a worker's last acknowledgement and the cut (silent-stop detection).
+
+**Behaviour changes that need the product owner's attention:**
+- A recorder restart while a cycle is open makes that cycle INCONCLUSIVE; in a POWER-CUT run that ends the series.
+- A request refused while a cycle is open that names no usable cycle counts against it. This includes a boot report from a test machine whose clock is more than five minutes off after power returns.
+- Two assertions committed in `test/final-review.test.mjs` at `4516256` were inverted on purpose (a restarted recorder's view is now damaged; a PASS in a cycle with a refusal is refused). The decision 1 and 2 tests moved to a second run with only names changed.
+
+**Validation:** unit suite 379 tests, 379 pass, three consecutive runs. Both removal stub suites and the firewall stub suite pass. An isolated HARNESS-SMOKE run on a scratch Compose project passed before the H fixes were made; it has not been repeated since. It is not a durability result.
+
+## 13. Final verification mission (18 November 2026, uncommitted)
+
+Three further independent reviews were started against the tree after section 12. The first did not complete (the reviewing agent stopped on a usage limit and delivered nothing). The second and third completed; their scripts are in the session scratchpad (`review-h/`, `review-i/`). Every fix below was reproduced as a failing test first (`test/final-verification.test.mjs`).
+
+| ID | Finding | State |
+|---|---|---|
+| J1 | A saved PASS was resent after the operator withdrew the cut confirmation | FIXED (`savedResultProblem`), and K2 |
+| J2 | The gate ignored the recorder's own record of the cut and the workers | FIXED: no PASS without a recorded cut whose last confirmation is `yes`, or with a stop or silence before the cut |
+| J3 | A stop or journal-failure report answered "busy" was counted nowhere | FIXED: held in memory against the open cycle |
+| J4 | A refusal caused by an inconsistent volume registry was counted nowhere | FIXED: held in memory (nothing is written to the run in that state; a committed test pins that) |
+| K1 | An acknowledgement after the cut request erased a silence before it | FIXED |
+| K2 | `confirm-cut no` after a stored PASS left the PASS standing | FIXED: refused once the cycle has a result |
+| K3 | `startCycle` could adopt a start it did not send | FIXED: per-invocation `startId` |
+| Clock | Silent-stop detection compared wall clocks across two files | FIXED: monotonic stamp, both clocks must agree |
+| Clock | A test machine more than five minutes off was refused, which counted against the cycle | FIXED: recorder-time signing through `/time` |
+| F16 | A request answered 500/503 could be replayed after a restart | FIXED: `signed_before_this_server_started` |
+| F8 | A lost answer to the cycle start left a cycle that could not start | FIXED (`startCycle`); executed in a smoke only on the path where no answer is lost |
+| Log | Replays could grow the rejection log without limit | FIXED past the 16 MiB cap |
+| Smoke | Two processes of one cycle wrote the same evidence file name | FIXED (found by smoke 2) |
+
+**Open, and why:**
+- **A worker stop reported after the cut request is not counted (review 3, High by its rubric).** Pinned as intended by `test/journal-failure-verdict.test.mjs`. The cut request is not the power loss, so such a report shows the worker stopped while the machine still had power. OWNER RULING. Changing it means changing that committed assertion.
+- **The gate does not check contact after the cut or the durability settings**; only `check` does. Adding the first would need the two POWER-CUT fixtures to record a boot report.
+- **"Busy" for a request that is not a stop or failure report** leaves no record (the sender repeats it six times).
+- **A late acknowledgement** between `check` reading the view and its PASS being stored is not bound to the result.
+- **F16** can refuse an honest client that spans a restart, for as long as the old server's clock lagged (counted).
+- **A result file that cannot be parsed**, or a non-record line in `events.jsonl`, leaves the run unusable (no PASS possible).
+- **Ledger integrity** (no hash chain), **requests that consistently name another cycle** (not counted), **a paused recorder host** (both clocks stand still), **C6**, **F20** (needs Linux), **F12** (never run against real Docker).
+
+**Committed test fixtures changed, assertions unchanged.** Six committed tests stored a PASS with no cut on record. Under J2 that is refused, so each now records the cut first (`test/helpers/cut.mjs`), and two also record one acknowledgement.
+
+**No Critical or High finding is open in the tested scope except the first item above, which is a recorded design choice awaiting a ruling.** Review 3's fixes (K1 to K3) have not themselves been reviewed again.
+
+## 14. Product-owner rulings A, B and C (18 November 2026, uncommitted)
+
+**Rulings accepted as requirements:** A, a worker stop reported after the cut request makes the cycle INCONCLUSIVE. B, the PASS gate verifies all mandatory evidence itself. C, no evidence may change between `check` and the stored PASS.
+
+**Implementation.** `passEvidenceProblem`, `evidenceMarkOf`, `contradictionsAfterResult` and `finalOf` in `recorder.mjs`; `classifyCycle` (`WORKER_STOPPED_AFTER_CUT_REQUEST`); `savedResultProblem`; `p7.mjs check` sends `identity` and `evidenceMark`; the cycle start records `pgSystemId`. The README section "A damaged cycle is INCONCLUSIVE" lists every rule.
+
+**The evidence boundary.** The gate reads the view, checks it and stores the result in one synchronous step of the server process, under the directory lock. The other writers are acknowledgements of the same process, which cannot interleave a synchronous step, and operator commands, which take the same lock. Anything added after `check` read its view changes the mark, and the PASS is refused. Anything that arrives after the store and shows the workload still ran contradicts the PASS: the final status becomes INCONCLUSIVE.
+
+**Tests.** `test/gate-closure.test.mjs`: 43 tests, of which 35 failed before their fix and 8 were controls. They cover worker stops before, after and concurrent with the cut request; missing and invalid contact after the cut; missing and inconsistent settings; identity, registry and binding changes; evidence changing after the check; late acknowledgements before and after the store; saved PASS revalidation; a restart between check and PASS; a concurrent PASS and acknowledgement (8 trials); and contradictory evidence and stale run identity.
+
+**Reviews.** Three independent reviews ran after the implementation.
+
+| Review | Finding | State |
+|---|---|---|
+| 1 | R1, High: a late acknowledgement or report escaped when its cycle was not a number, was missing, was contradicted by its cycle id, or its body was not JSON | FIXED |
+| 1 | R2, High: a boot reported before the cut counted as the reboot after it | FIXED |
+| 1 | R3, High (needs a start without a boot id) | FIXED |
+| 1 | R4, Low: 64-character truncation | FIXED |
+| 1 | R5, Medium: an unsigned request made a PASS stale, and the stale PASS counted against the cycle for good | FIXED |
+| 2 | S1, High: a worker-stop or journal-failure report about a decided cycle answered "busy" was lost | FIXED: refused on record |
+| 2 | S2, Low: a report naming no usable cycle while the next cycle is open | FIXED: attributed to the last decided cycle as well |
+| 3 | No Critical or High. Two comments overstated "busy" | FIXED (comments) |
+| 3 | A stall of up to 250 ms when a busy report's rejection cannot be written | Accepted, documented |
+
+**Committed tests changed.** Assertions were kept and fixtures added; Git history is untouched.
+- `test/journal-failure-verdict.test.mjs`: the comment that pinned "a stop after the cut does not count" was rewritten for ruling A. Its assertion is kept (still true), and one assertion was added.
+- `test/final-review.test.mjs` d1b: the expected refusal count rose from 1 to 2. The acknowledgement the recorder could not store is now refused on record, which is stricter.
+- Every test that stores a PASS now sends what `check` sends, through `test/helpers/cut.mjs`. The qualifying starts in `recorder.test.mjs` report settings and a boot id.
+
+**Validation.**
+- Unit suite: 446 of 446, three consecutive runs.
+- Stub suites: removal and firewall both passed.
+- Compose: both configurations render.
+- Isolated smokes on new projects: 5, 6 and 7, all passed. Smoke 7 ran against the final code; only comments changed afterwards.
+
+**Still open.**
+- Ledger integrity: there is no hash chain.
+- A paused recorder host stops both clocks.
+- F20 needs Linux, and F12 has never run against real Docker.
+- An unparseable result file, or a non-record line in the event ledger, leaves the run unusable (no PASS is possible).
+- A contradiction after the result that reaches no ledger is lost.
+- Requests that consistently name another cycle are not counted.
+- "Busy" for ordinary requests leaves no record.
+- VM-CRASH journal identity is not checked.
+
+**No Critical or High finding is open in the tested scope.**
+
+### 14.1 A contradiction after a stored PASS that no ledger can take (18 November 2026, later)
+
+**Owner decisions recorded.** A recorder restart during an open cycle makes it INCONCLUSIVE and ends a POWER-CUT series (approved). The seven scratch Docker projects are preserved. No commit yet.
+
+**Reproduction on the code before the fix** (scratch script `contradiction/repro.test.mjs`, outputs `before-fix.txt` and `after-fix.txt`). Steps:
+1. A qualifying cycle with its PASS stored.
+2. The rejection log and the event ledger made unwritable.
+3. A fresh acknowledgement, or a `worker_stopped` report, for the cycle.
+4. Storage restored, then a recorder restart.
+5. `recovered` sent.
+
+Results on the code before the fix:
+
+| Point | Result |
+|---|---|
+| Answer to the contradiction | `500 refusal_not_recorded, fallback none` |
+| The running server's view | `PENDING_RECOVERY` (nothing held) |
+| After the restart, `recovered` | `final PASS` |
+| Streak | **1** |
+
+**An unsafe PASS after a restart was possible**, for both variants.
+
+**The correction.**
+- A third durable place: write-once marker files under `contradictions/<run>/`, with the file and its parent directories synced. A name collision with another record writes a second file.
+- When nothing can be written, a hold in memory. It refuses recovery, cycle starts and PASS, shows the cycle as INCONCLUSIVE, is written again at every request, and keeps the server from stopping on ordinary signals.
+- Attribution checks the named cycle through its result file alone. When the ledgers cannot be read it uses `'*'`, which counts against every decided cycle.
+- A rejection log that cannot be read makes a stored PASS non-final, in both the cycle view and the run status. `recovered` is refused while that log cannot be read, and, for a PASS, while the server holds an unrecorded refusal.
+
+**Tests.** `test/post-result-contradiction.test.mjs`, 20 tests. They cover:
+- the exact sequence, for an acknowledgement and for a worker report;
+- each ledger failing alone, and both ending in a fragment;
+- a restart before the contradiction;
+- duplicates and replays (a replay does not contradict, by design);
+- the hold in memory, its later flush, and the refusal of recovery and start while held;
+- concurrent PASS and contradiction (6 trials);
+- unreadable ledgers, with and without a restart;
+- the marker's fsyncs and name collisions;
+- the run status during a one-off read fault;
+- `serve` ignoring SIGTERM while holding, in a real process;
+- THE STATED LIMIT, pinned.
+
+Status of these tests before their fixes:
+- Failed before their fix: 6 of the first 12, the 5 found by review 1, and the 2 found by review 2.
+- Pass by design, as controls: two ledger-failure cases, the replay case, the restart before the contradiction, the stated limit and the concurrency trials.
+- The `serve` signal test was written with its change.
+
+**Reviews.**
+
+| Review | Finding | State |
+|---|---|---|
+| 1 | High: a contradiction received while the event ledger could not be read was recorded without attribution; final PASS, also without a restart | FIXED (`'*'`, the named cycle through its result file) |
+| 1 | High: the view showed final PASS while the rejection log could not be read | FIXED |
+| 1 | Medium: the marker's parent directories were not synced, and a leftover file was not synced again | FIXED |
+| 2 | High (narrow): a one-off read failure let the run status count a contradicted PASS | FIXED |
+| 2 | Medium: `'*'` invalidates earlier recovered PASSes after a transient fault | ACCEPTED as fail-closed, documented |
+| 2 | Medium: the README limits were out of date | FIXED |
+| 2 | Low: SIGHUP/SIGQUIT | FIXED |
+| 2 | Low: marker name collision | FIXED |
+
+The fixes for review 2's findings were not reviewed again.
+
+**The guarantee, exactly.** A contradiction the recorder receives is kept in the rejection log, the event ledger or a marker file. If none can be written, it is held, and the server refuses to progress or stop on ordinary signals until it is written.
+
+**What is not guaranteed.** If no file can be written and the process is killed before any write succeeds, the contradiction is lost and a restarted recorder can record the PASS as final. **Post-result contradiction handling is therefore NOT restart-safe when the recorder host's storage is entirely unwritable.** The recorder-side guarantee ends there; closing it would need a second, independent storage device or host.
+
+**Validation.** Unit suite 466 of 466, three consecutive runs. Removal stub suites pass. `git diff --check` is clean. No Docker smoke was run: only the recorder's failure paths and the `serve` signal handling changed, and those are exercised by the unit tests, including a real `serve` process.
+
+### 14.2 Final independent review before the commit decision (18 November 2026)
+
+**Owner ruling.** The total recorder-storage-failure limitation is ACCEPTED for the prototype as an explicit boundary. Restart safety is not claimed under total storage failure. The server must fail closed while a contradiction is held, and must never discard a held contradiction silently on normal shutdown or recovery.
+
+**Review rounds after section 14.1.** Four independent reviews ran, each against the fixes of the one before. Every finding was reproduced as a failing test before its fix (`test/post-result-contradiction.test.mjs`, now 31 tests).
+
+| Round | Finding | State |
+|---|---|---|
+| 1 | High: the first request after a server start with a ledger unreadable never reached attribution; the PASS ended final | FIXED (`rescueReport`, `'*'`) |
+| 1 | High: a run directory that could not be read set only `lost`; SIGTERM and a restart discarded it | FIXED (marker or hold) |
+| 1 | Medium: other signals ended a holding server | FIXED |
+| 1 | Medium: `status` could not see a hold | FIXED (warns), documented |
+| 2 | High: a replaced recorder disk took a marker on the empty mount point as kept | FIXED (held as well; the recorder directory is never created) |
+| 2 | High (Linux socket path not reproduced): handling SIGPIPE turned a broken connection into a clean exit | FIXED (SIGPIPE, SIGPROF and SIGTRAP not taken over; stderr errors ignored) |
+| 2 | Low: an unloaded run whose directory is missing; the time request skipping the retry; README wording | FIXED or documented |
+| 3 | High: after a restart, with the disk replaced, the keys were gone with it, so nothing was authenticated and nothing held | FIXED (keys kept in memory) |
+| 3 | Medium: a hold whose marker was safe blocked shutdown while the run directory stayed away | FIXED (released once on the recorder's own disk) |
+| 4 | High (narrow race): the disk mounted back between the marker write and the identity check released the hold while the marker was hidden | FIXED (the marker must still be found on the identity file's device) |
+| 4 | Low: a server started on an empty directory with `--new-directory`; a cloned directory; key memory; `globalReject` on an empty mount point | DOCUMENTED (stated limits) or no effect |
+
+The fix for round 4 was not reviewed again.
+
+**The storage-failure matrix.** Each line is covered by tests; the signal and `status` cases run in a real `serve` process.
+
+| Case | Result |
+|---|---|
+| Both ledgers unavailable | Marker written, final INCONCLUSIVE after restart |
+| Marker location alone unavailable | The rejection log takes it |
+| All three unavailable | Held. INCONCLUSIVE in the server's views; recovery, start and PASS refused; catchable signals refused |
+| Storage returns | Written at the next request; then the server stops normally |
+| Killed while holding, then restarted | **The accepted loss:** final PASS (pinned as THE STATED LIMIT) |
+
+**Validation.** Unit suite 477 of 477, three consecutive runs. Removal stub suites pass. `git diff --check` is clean.
+
+A new Docker smoke (project `opspilot-m16-p7-scratch8`) could not run. Docker refused to create its third network, because all predefined address pools are taken by the preserved scratch projects. It left two empty networks, `opspilot-m16-p7-scratch8_p7db` and `opspilot-m16-p7-scratch8_p7gw`; nothing was removed. The last smoke that ran (7) predates the changes of sections 14.1 and 14.2. Those changes are in the recorder, and the time request now takes an earlier path. They are covered by the unit tests, including real `serve` processes, but not by a container smoke.
+
+**Remaining limits:**
+- the accepted total-storage-failure loss;
+- a server started on an empty directory with `--new-directory`;
+- a cloned recorder directory;
+- `'*'` ending a run's series after a storage fault;
+- no ledger integrity protection;
+- a paused recorder host stops both clocks;
+- VM-CRASH journal identity is not checked;
+- F20 (Linux) and F12 (real Docker) have never run.
+
+### 14.3 Final bounded review and smoke validation (18 November 2026)
+
+**Owner rulings.**
+- **A:** replacing or remounting the recorder disk underneath a running recorder is outside the supported failure envelope. The recorder assumes its designated storage identity is stable while it runs. No protection against physical storage substitution is claimed. The fail-closed behaviour where an identity inconsistency is detected is kept (README, "Supported storage failure envelope").
+- **B:** exactly one final review of the round-4 fix, plus a review of any correction it requires.
+- **C:** removal of the two empty networks left by smoke 8 only, after inspection.
+
+**The final review, within the envelope (stable disk).**
+
+| Finding | State |
+|---|---|
+| High: after a restart, a run key file that cannot be read dropped a fresh contradiction, and the PASS became final | FIXED: the key held in memory authenticates it (test Z1) |
+| Low: one signed request kept as many markers as it was sent | FIXED: kept once (Z2) |
+| Low: an `rs.held` record is released after a marker write without the identity check | ACCEPTED: on a stable disk a loaded run directory is enough; checking identity there could hold forever where `recorder-id.json` is missing |
+| Low: `'*'` invalidates earlier PASSes after a storage fault | Documented |
+
+**The review of that correction.** No Critical or High.
+
+| Finding | State |
+|---|---|
+| Medium: the rescued-request set was keyed by nonce alone, so a request of another run with the same nonce was dropped | FIXED: keyed by run and nonce (Z3) |
+| Low: the set was never pruned | FIXED: entries older than the time window are dropped |
+| Low: a stale in-memory key after a run id is reused | Conservative only (false contradictions); documented |
+| Low: a run created after the server started, whose key was never read and is unreadable now | Documented; nothing can authenticate it |
+
+**Docker resources (ruling C).** Inspected first; the record is saved in the session scratchpad (`scratch-smoke8/networks-before-removal.json`). Then removed by id:
+- `opspilot-m16-p7-scratch8_p7db` (`f8b5dee2…`, subnet 192.168.224.0/20)
+- `opspilot-m16-p7-scratch8_p7gw` (`4622ee45…`, subnet 192.168.240.0/20)
+
+Both carried the Compose labels of project `opspilot-m16-p7-scratch8` and its bridge names `p7zdb0`/`p7zgw0`. Neither had a container attached. The project had no containers and no volumes. The network lists before and after differ by exactly those two. Containers (24) and volumes (16) are unchanged.
+
+**The final smoke: BLOCKED by the environment.**
+- **Run:** project `opspilot-m16-p7-scratch9`, generation `m1118i`, port 8815, against tree hash `039bb35cdd315770` (unchanged afterwards).
+- **What happened:** Docker created one network (`opspilot-m16-p7-scratch9_p7db`, 192.168.240.0/20) and then refused the second with "all predefined address pools have been fully subnetted". Exit 1, before any container started.
+- **Why:** the two other blocks that looked free (192.168.64.0/20 and 192.168.224.0/20) were not allocatable; Docker Desktop presumably reserves them.
+- **Not done, per the ruling:** no global configuration was changed and nothing unrelated was removed.
+- **Left behind:** one empty network, `opspilot-m16-p7-scratch9_p7db`. It was not removed, because its removal is not authorised.
+- **Consequence:** the last container smoke that ran (smoke 7) predates sections 14.1 to 14.3. The recorder changes since then, including the signed time request taking an earlier path, are covered by unit tests, including real `serve` processes, but by no container smoke.
+- **To unblock:** the owner's approval to remove the networks of some stopped scratch projects, or explicit subnets in the scratch Compose override (a project-level setting, not global).
+
+**Validation.**
+- Unit suite: 480 of 480, three consecutive runs. This includes the recorder process tests, the signal tests in a real `serve`, and the storage-failure tests.
+- Stub suites: removal and firewall both pass.
+- Compose: both configurations render.
+- Syntax checks of every `.mjs` and `.sh` file pass, and `git diff --check` is clean.
+
+**Remaining limitations.**
+- Accepted: total recorder-storage failure followed by a kill loses a held contradiction.
+- Unsupported: disk replacement or remounting under a running recorder; a server started on an empty directory with `--new-directory`; a cloned recorder directory.
+- `'*'` ends a run's series after a storage fault.
+- No ledger integrity protection.
+- A paused recorder host stops both clocks.
+- VM-CRASH journal identity is not checked.
+- The SIGPIPE change is not verified on Linux.
+- F20 (Linux firewall) and F12 (real Docker teardown) have never run.
+- The final source tree has had no container smoke.
+
+**Native Linux requirements (unchanged).**
+- A native Linux test machine and a separate recorder host.
+- Storage flush behaviour verified.
+- The firewall applied and verified.
+- A rehearsal to measure the workload.
+- The cut procedure.
+- The physical 20-cycle series, with independent review of its evidence.
+
+**P7 remains NOT TESTED and NOT PASSED.**

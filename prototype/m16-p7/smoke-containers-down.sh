@@ -69,19 +69,22 @@ for c in $containers; do
   done
 done
 for v in $volumes; do
-  for c in $(docker ps -aq --filter "volume=$v"); do has " $containers" "$c" || refuse "volume $v is used by container $c, which is not part of project $PROJ"; done
+  users="$(docker ps -aq --filter "volume=$v")" || refuse "the containers that use volume $v could not be listed"
+  for c in $users; do has " $containers" "$c" || refuse "volume $v is used by container $c, which is not part of project $PROJ"; done
 done
 
 # 3. The networks: every one is this project's and one of its three; nothing else is attached to them.
 networks="$(docker network ls --format '{{.Name}}' --filter "label=com.docker.compose.project=$PROJ" | sort | tr '\n' ' ')"
-for n in $(docker network ls --format '{{.Name}}' --filter "name=${PROJ}_"); do
+named="$(docker network ls --format '{{.Name}}' --filter "name=${PROJ}_")" || refuse "the networks could not be listed"
+for n in $named; do
   case "$n" in "${PROJ}_"*) has " $networks" "$n" || refuse "network $n carries the project's name but not its label" ;; esac
 done
 for n in $networks; do
   has "$NETS" "$n" || refuse "network $n is not one of the smoke stack's three networks"
   IFS='|' read -r nproject nname <<<"$(docker network inspect --format '{{ index .Labels "com.docker.compose.project" }}|{{ index .Labels "com.docker.compose.network" }}' "$n")"
   [ "$nproject" = "$PROJ" ] && [ "${PROJ}_${nname}" = "$n" ] || refuse "network $n is not labelled as network '${n#"${PROJ}"_}' of project $PROJ"
-  for c in $(docker ps -aq --filter "network=$n"); do has " $containers" "$c" || refuse "network $n has container $c attached, which is not part of project $PROJ"; done
+  attached="$(docker ps -aq --filter "network=$n")" || refuse "the containers on network $n could not be listed"
+  for c in $attached; do has " $containers" "$c" || refuse "network $n has container $c attached, which is not part of project $PROJ"; done
 done
 
 echo "Compose project: $PROJ"

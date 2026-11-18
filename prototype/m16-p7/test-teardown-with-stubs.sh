@@ -12,9 +12,9 @@ echo "$*" >>"$STUB/calls"
 case "$1 $2" in
   "volume ls") [ "$5" = "label=com.docker.compose.project=opspilot-m16-p7-smoke" ] && tr ' ' '\n' <"$STUB/volumes" | grep . || true ;;
   "volume inspect") key="$(echo "$4" | sed 's/.*"\(.*\)".*/\1/')"; awk -v v="$5" -v k="$key" '$1==v && $2==k {print $3}' "$STUB/labels" ;;
-  "ps -aq") cat "$STUB/containers" ;;
+  "ps -aq") [ ! -e "$STUB/ps-fails" ] || exit 1; cat "$STUB/containers" ;;
   "inspect -f") cat "$STUB/container-project" ;;
-  "run --rm") cat "$STUB/marker" ;;
+  "run --rm") [ ! -e "$STUB/run-fails" ] || exit 125; cat "$STUB/marker" ;;
   "compose -p"|"volume rm") ;;
   *) echo "stub docker: unexpected call: $*" >&2; exit 99 ;;
 esac
@@ -24,7 +24,7 @@ export PATH="$t/bin:$PATH" STUB="$t"
 [ "$(command -v docker)" = "$t/bin/docker" ] || { echo "the stub is not first on PATH"; exit 1; }
 fail() { echo "TEARDOWN STUB TEST FAILED: $*"; cat "$t/calls" 2>/dev/null; exit 1; }
 good() {   # the state a finished smoke run leaves behind
-  : >"$t/calls"
+  rm -f "$t/ps-fails" "$t/run-fails"; : >"$t/calls"
   echo "${P}_pgdata ${P}_state" >"$t/volumes"
   { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opspilot.p7.data disposable-harness-smoke"; done; } >"$t/labels"
   echo c1 >"$t/containers"; echo "$P" >"$t/container-project"
@@ -69,6 +69,12 @@ good; sed -i.bak "s/HARNESS-SMOKE/VM-CRASH/" "$t/marker"; refused "the journal v
 good; echo NO-MARKER >"$t/marker"; refused "the journal volume has entries but no marker"
 good; : >"$t/marker"; refused "the marker could not be read"
 good; echo opspilot >"$t/container-project"; refused "a container of another project uses a volume"
+
+good; touch "$t/ps-fails"; refused "docker cannot list the containers that use a volume (before: the check was skipped in silence)"
+good; touch "$t/run-fails"; refused "the marker container cannot run (for example: the image is not present, and it is never pulled)"
+good; run 0 "DRY RUN"; grep -qE "^run --rm --pull never --network none .*:/state:ro " "$t/calls" || fail "the marker is not read with --pull never, without network, read-only"
+[ "$(grep -c "^run " "$t/calls")" = 1 ] || fail "the dry run starts more than the one marker container"
+echo "ok: the dry run starts exactly one container: the marker read, --pull never, no network, the volume read-only"
 
 good; echo EMPTY >"$t/marker"; run 0 "init never ran"; [ "$(destructive)" = 0 ] || fail "dry run removed"
 good; run 0 "removed the disposable smoke state" --confirm "$P" "$AUTH"

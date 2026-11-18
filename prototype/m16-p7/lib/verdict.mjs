@@ -173,6 +173,9 @@ export function classifyCycle({ comparison, run, cycle }) {
   if (cycle.cutConfirmed !== 'yes') inconclusive.push(run.failureModel === 'VM-CRASH' ? 'CRASH_NOT_CONFIRMED' : 'POWER_LOSS_NOT_CONFIRMED');
   if (QUALIFYING_MODELS.includes(run.failureModel) && cycle.rebootObservedAfterCut !== true) inconclusive.push('REBOOT_AFTER_CUT_NOT_OBSERVED');
   if (cycle.workerStopsBeforeCut?.length || cycle.silentWorkerStops?.length) inconclusive.push('WORKLOAD_STOPPED_BEFORE_CUT');
+  // Product-owner ruling A (18 November 2026): the cut REQUEST is not the power loss. A worker that reported its stop
+  // after the request stopped while the machine still had power.
+  if (cycle.workerStopsAfterCut?.length) inconclusive.push('WORKER_STOPPED_AFTER_CUT_REQUEST');
   if (cycle.authenticatedRejections) inconclusive.push('RECORDER_REJECTED_AUTHENTICATED_MESSAGES');
   if (cycle.journalWriteFailure || cycle.journalWriteFailures?.length) inconclusive.push('JOURNAL_WRITE_FAILED');
   if (cycle.tornTailRepairProblem) inconclusive.push('TORN_TAIL_NOT_REPAIRABLE');

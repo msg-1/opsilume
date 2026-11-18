@@ -15,9 +15,10 @@ import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { appendDurable, fsyncDir, readLedger, writeOnce } from './lib/ledger.mjs';
+import { appendDurable, fsyncDir, fsyncFile, readLedger, writeOnce } from './lib/ledger.mjs';
+import { monoMs } from './lib/protocol.mjs';
 import { WINDOW_MS, keyFromHex, newKeyHex, nextStream, signResponse, streamKey, verifyRequest } from './lib/protocol.mjs';
-import { FAILURE_MODELS, QUALIFYING_MODELS, STORAGE_FIELDS, finalStatus, physicalStreak, storageProblems, storageQualifies } from './lib/verdict.mjs';
+import { FAILURE_MODELS, QUALIFYING_MODELS, STORAGE_FIELDS, durableSettings, finalStatus, physicalStreak, storageProblems, storageQualifies } from './lib/verdict.mjs';
 import { REQUIRED_ATTESTATIONS, freshVolumeProblems } from './lib/preflight.mjs';
 import { CLEARANCE_ENVELOPE, DOCKER_ARCH, SILENT_STOP_MS, seriesPlanOf, bindingDiff, digestOf, identityProblems, qualifyingWorkloadProblems, recorderBinding, vetTestBinding } from './lib/readiness.mjs';
 import { LOCK_FILE, alive, withDirLock } from './lib/lock.mjs';
@@ -127,9 +128,11 @@ export function runStore(dir, run) {
     rejections: () => readLedger(f('rejections.jsonl')).entries,
     result: (n) => (fs.existsSync(f(`results/cycle-${pad(n)}.json`)) ? JSON.parse(fs.readFileSync(f(`results/cycle-${pad(n)}.json`), 'utf8')) : null),
     results: () => (fs.existsSync(f('results')) ? fs.readdirSync(f('results')).sort().map((x) => JSON.parse(fs.readFileSync(f(`results/${x}`), 'utf8'))) : []),
-    event: (e) => appendDurable(f('events.jsonl'), { ...e, at: new Date().toISOString(), atMs: Date.now() }),
-    ack: (a) => { fs.mkdirSync(f('acks'), { recursive: true }); appendDurable(f(`acks/cycle-${pad(a.cycle)}.jsonl`), { ...a, at: new Date().toISOString(), atMs: Date.now() }); },
-    reject: (r) => appendDurable(f('rejections.jsonl'), { ...r, at: new Date().toISOString(), atMs: Date.now() }),
+    // `mono`: the host's monotonic clock (the same for every process on the host until it reboots). Durations that
+    // decide something are measured with it, never with the wall clock, which can be set.
+    event: (e) => appendDurable(f('events.jsonl'), { ...e, at: new Date().toISOString(), atMs: Date.now(), mono: monoMs() }),
+    ack: (a) => { fs.mkdirSync(f('acks'), { recursive: true }); appendDurable(f(`acks/cycle-${pad(a.cycle)}.jsonl`), { ...a, at: new Date().toISOString(), atMs: Date.now(), mono: monoMs() }); },
+    reject: (r) => appendDurable(f('rejections.jsonl'), { ...r, at: new Date().toISOString(), atMs: Date.now(), mono: monoMs() }),
     accept: (u) => appendDurable(f('accepted.jsonl'), { ...u, at: new Date().toISOString() }),
     stop: (s) => { if (!store.stopped()) writeOnce(f('STOPPED.json'), { ...s, at: new Date().toISOString() }); },
     saveResult: (n, r) => { fs.mkdirSync(f('results'), { recursive: true }); writeOnce(f(`results/cycle-${pad(n)}.json`), r); },
@@ -149,7 +152,7 @@ export function dirState(dir) {
   // A registry or keys without runs and identity is what is left of a recorder whose history was removed, not a new one.
   return fs.readdirSync(dir).some((f) => !f.startsWith('.') && !['runs', 'rejections.jsonl'].includes(f)) ? 'damaged' : 'empty';
 }
-/** What is wrong with one ledger file, in words that carry no path: null, 'ends in an incomplete line', or 'cannot be read (CODE)'. Read-only. */
+/** What is wrong with one ledger file, in words that carry no path: null, 'ends in an incomplete line', or 'cannot be read (CODE or reason)'. Read-only. */
 export function ledgerProblemOf(file) {
   let fd;
   try { fd = fs.openSync(file, 'r'); } catch (e) { return e.code === 'ENOENT' ? null : `cannot be read (${e.code ?? 'error'})`; }
@@ -161,11 +164,21 @@ export function ledgerProblemOf(file) {
     return b[0] !== 0x0a ? 'ends in an incomplete line' : null;
   } catch (e) { return `cannot be read (${e.code ?? 'error'})`; } finally { fs.closeSync(fd); }
 }
+/**
+ * The same, and further: a complete line that is not a record. That cannot come from an interrupted append (someone
+ * or something changed the file), and every reader of the ledger fails on it, so `verify-dir` and the run's own
+ * ledger check name it. (The volume registry has its own, stricter checks and keeps the plain one.)
+ */
+function runLedgerProblemOf(file) {
+  const p = ledgerProblemOf(file);
+  if (p) return p;
+  try { readLedger(file); return null; } catch (e) { return `cannot be read (${/ is not a record$/.test(e.message ?? '') ? 'a line is not a record' : e.code ?? 'error'})`; }
+}
 /** Every ledger (.jsonl) in the directory that has a problem: [{ file (relative), problem }]. Read-only; never throws for one file. */
 export function ledgerProblems(dir) {
   let files;
   try { files = filesOf(dir); } catch (e) { return [{ file: '(a directory of the recorder)', problem: `cannot be read (${e.code ?? 'error'})` }]; }
-  return files.filter((f) => f.endsWith('.jsonl')).map((f) => ({ file: f, problem: ledgerProblemOf(path.join(dir, f)) })).filter((x) => x.problem);
+  return files.filter((f) => f.endsWith('.jsonl')).map((f) => ({ file: f, problem: (f === 'volumes.jsonl' ? ledgerProblemOf : runLedgerProblemOf)(path.join(dir, f)) })).filter((x) => x.problem);
 }
 /**
  * The ledgers a run's cycles depend on: its events, its rejections and its accepted claims. (Acknowledgement files
@@ -173,7 +186,7 @@ export function ledgerProblems(dir) {
  * noise and is nobody's cycle record.) Returns the first problem as "<file> <problem>", or null.
  */
 export function runLedgerDamage(s) {
-  for (const f of ['events.jsonl', 'rejections.jsonl', 'accepted.jsonl']) { const p = ledgerProblemOf(path.join(s.root, f)); if (p) return `${f} ${p}`; }
+  for (const f of ['events.jsonl', 'rejections.jsonl', 'accepted.jsonl']) { const p = runLedgerProblemOf(path.join(s.root, f)); if (p) return `${f} ${p}`; }
   return null;
 }
 /** The cut's command: nothing (the manual prompt), or a non-empty array of non-empty strings. Checked BEFORE a cut is scheduled. */
@@ -336,6 +349,130 @@ function createRunLocked(dir, o) {
 }
 
 const startsOf = (events, n) => events.filter((e) => e.cycle === n && e.kind === 'cycle_start');
+/**
+ * Whether an authenticated refusal counts against cycle n. Decided by what the recorder stamped on the record when it
+ * refused the request, never by a clock: `open` is the cycle that was open then (null: none; 'unknown': the recorder
+ * could not tell), `named` the cycle the request named (the path's; the body's only where the path names none; null:
+ * none it could use) and `contradicts` whether path and body named different cycles.
+ *  - refused while cycle n was open: it counts if it named n, named no usable cycle, contradicted itself, or was a
+ *    report of a journal write failure or a worker stop (`signal`: those are facts about the machine under test,
+ *    whatever cycle they name). Any other request that consistently named ANOTHER cycle is on record but not counted
+ *    (as before: it belongs to no open cycle);
+ *  - refused while the open cycle could not be determined: it counts against EVERY cycle of the run, for good (the
+ *    run has to be replaced). The count of a cycle therefore never changes once its result is stored;
+ *  - refused while no cycle, or another cycle, was open: it does not count against n.
+ * A record written before the stamp existed (no `open` field) is counted as it was then: by its cycle and its time.
+ */
+function countsAgainst(n, { authenticated, open, named, contradicts, signal, atMs, reason }, startMs) {
+  if (!authenticated) return false;
+  // A PASS refused only because records were added after its check read the view is no fault of anything: the next
+  // check reads the view again and is held to every rule afresh.
+  if (reason === 'pass_evidence_changed_since_it_was_checked') return false;
+  if (open === undefined) return named === n && atMs >= startMs;
+  if (open === 'unknown') return true;
+  return open === n && (named === n || named === null || contradicts || !!signal);
+}
+const RESTARTED = 'the recorder restarted while this cycle was open';
+/**
+ * Ruling C: a mark of everything the recorder holds that a cycle's verdict rests on, as it is now: the size of each
+ * of the run's ledgers, of the cycle's acknowledgement file, of the stop marker and of the volume registry. Every
+ * ledger is append-only, so any record added since changes the mark. `check` sends back the mark of the view it
+ * verified; the recorder stores a PASS only if the mark is still the same, in the same synchronous step as the store.
+ */
+function evidenceMarkOf(s, n, rejections) {
+  const dir = path.dirname(path.dirname(s.root));
+  const files = [...['events.jsonl', 'accepted.jsonl', `acks/cycle-${pad(n)}.jsonl`, 'STOPPED.json'].map((f) => path.join(s.root, f)), registryFile(dir)];
+  const sizes = files.map((f) => { try { return fs.statSync(f).size; } catch (e) { return e.code === 'ENOENT' ? -1 : `error:${e.code ?? 'unknown'}`; } });
+  // Of the rejection log, only the AUTHENTICATED refusals: an unsigned request from anyone on the network must not be
+  // able to make a PASS stale. (The log's damage is covered by `damage.runLedgers`.)
+  return createHash('sha256').update(JSON.stringify([...sizes, rejections.filter((r) => r.authenticated).length])).digest('hex');
+}
+/** How many fresh acknowledgements or worker reports for cycle n arrived after its result was stored (each contradicts a PASS). */
+// ('*': a contradiction whose cycle could not be determined, because the run's ledgers could not be read when it
+// arrived. It counts against every decided cycle.)
+const contradicts = (x, n) => x.afterResultOf === '*' || [].concat(x.afterResultOf ?? []).includes(n);
+/**
+ * The third place a contradiction after a result is kept when neither of the run's ledgers can take it: a write-once
+ * file of its own per request (`<recorder dir>/contradictions/<run>/contradiction-<nonce>.json`), outside the run's
+ * directory. Read by every view. A marker that cannot be read counts against every decided cycle (fail closed).
+ */
+const contradictionsDir = (dir, run) => path.join(dir, 'contradictions', run);
+function writeContradictionMarker(dir, run, rec) {
+  const d = contradictionsDir(dir, run), file = path.join(d, `contradiction-${rec.nonce}.json`);
+  // Never creates the recorder directory itself (an unmounted disk leaves an empty mount point, or nothing): only the
+  // two levels below it.
+  for (const x of [path.dirname(d), d]) { try { fs.mkdirSync(x); } catch (e) { if (e.code !== 'EEXIST') throw e; } }
+  // Durable only when every directory entry on the way is: the run's marker directory, `contradictions`, the recorder
+  // directory. A file an earlier attempt left behind is synced again before it is taken as kept.
+  let written = file;
+  try { writeOnce(file, rec); } catch (e) {
+    if (e.code !== 'EEXIST') throw e;
+    let same = false;
+    try { same = JSON.stringify(JSON.parse(fs.readFileSync(file, 'utf8'))) === JSON.stringify(rec); } catch { same = false; }
+    if (same) { fsyncFile(file); fsyncDir(d); } else { written = path.join(d, `contradiction-${rec.nonce}-${randomBytes(8).toString('hex')}.json`); writeOnce(written, rec); } // another record has that name: this one gets its own
+  }
+  fsyncDir(path.dirname(d)); fsyncDir(dir);
+  return written;
+}
+export const writeContradictionMarkerForTest = writeContradictionMarker;
+function markerContradictions(s, n) {
+  const d = contradictionsDir(path.dirname(path.dirname(s.root)), path.basename(s.root));
+  let files;
+  try { files = fs.readdirSync(d); } catch (e) { return e.code === 'ENOENT' ? 0 : 1; }
+  return files.filter((f) => { try { return contradicts(JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')), n); } catch { return true; } }).length;
+}
+const contradictionsAfterResult = (n, rejections, events, s, held = []) => rejections.filter((r) => contradicts(r, n)).length + events.filter((e) => e.kind === 'refusal_not_recorded' && contradicts(e, n)).length
+  + (s ? markerContradictions(s, n) : 0) + held.filter((h) => contradicts(h, n)).length;
+const finalOf = (result, recovered, contradicted) => (result?.verdict === 'PASS' && contradicted ? 'INCONCLUSIVE' : finalStatus(result, recovered));
+/**
+ * Ruling B: why the recorder's own records, and what `check` reports it observed after the reboot, do not support a
+ * PASS (null: they do). Checked after the damage, refusal, cut and silence rules, in the same synchronous step that
+ * stores the result. The reboot, settings and identity rules apply to the qualifying failure models only: a PASS of
+ * any other run never counts toward the series (`physicalStreak`).
+ */
+function passEvidenceProblem({ dir, run0, view, body, allEvents }) {
+  if (view.workerStopsAfterCut.length) return 'pass_for_a_cycle_whose_worker_stopped_after_the_cut_request';
+  if (!view.claimAcksBeforeCut) return 'pass_for_a_cycle_without_an_acknowledged_claim';
+  if (view.events.some((e) => e.kind === 'cut_confirmed' && e.powerWasCut !== 'yes')) return 'pass_for_a_cycle_with_contradictory_cut_confirmations';
+  if (QUALIFYING_MODELS.includes(run0.failureModel)) {
+    // A reboot after the cut: contact from a boot other than every boot the cycle started on, reported after the cut
+    // request in the ledger, and the one `check` itself ran on.
+    // Boot ids are compared as the start keeps them (64 characters). Every start must name its boot; no boot reported
+    // before the cut request (in the run's ledger) is a reboot after it.
+    const bid = (x) => (typeof x === 'string' ? x.slice(0, 64) : '');
+    if (!view.starts.every((x) => bid(x.bootId))) return 'pass_without_contact_after_the_cut';
+    const cutAt = allEvents.findIndex((e) => e.cycle === view.cycle && e.kind === 'cut_sent');
+    const known = new Set([...view.starts.map((x) => bid(x.bootId)), ...allEvents.slice(0, Math.max(cutAt, 0)).filter((e) => e.kind === 'boot_report').map((e) => bid(e.bootId))]);
+    const rebooted = view.bootReportsAfterCut.filter((b) => bid(b.bootId) && !known.has(bid(b.bootId)));
+    if (!rebooted.length) return 'pass_without_contact_after_the_cut';
+    if (!rebooted.some((b) => bid(b.bootId) === bid(body.reboot?.bootIdNow))) return 'pass_reboot_differs_from_the_contact_after_the_cut';
+    // The durability settings: on, and (for a POWER-CUT run) exactly the configuration readiness approved, both as
+    // every process reported them at its start and as `check` found them after the reboot.
+    const ready = run0.failureModel === 'POWER-CUT' ? acceptedReadiness(allEvents) : null;
+    if (run0.failureModel === 'POWER-CUT' && !ready) return 'pass_identity_differs_from_the_verified_run';
+    const approved = ready?.binding?.test?.postgresql?.settings ?? null; // (the bound settings, as strings: lib/readiness.mjs)
+    const settingsOk = (x) => durableSettings(x) && (!approved || Object.entries(approved).every(([k, v]) => String(x?.[k] ?? '') === v));
+    if (!settingsOk(body.settings) || !view.starts.every((x) => settingsOk(x.settings))) return 'pass_settings_differ_from_the_qualifying_configuration';
+    // The identity: the run, the database cluster (as registered for the series and as every start reported it), and
+    // for a POWER-CUT run the journal, the registry and the recorder exactly as readiness bound them.
+    const id = body.identity ?? {};
+    let vol = null;
+    try { vol = volumeOf(dir, run0.rootRun ?? run0.run); } catch { vol = null; }
+    if (body.run !== run0.run || !vol || id.pgSystemId !== vol.pgSystemId || !view.starts.every((x) => x.pgSystemId === vol.pgSystemId)) return 'pass_identity_differs_from_the_verified_run';
+    if (ready) {
+      const t = ready.binding.test;
+      if (id.pgSystemId !== t.pgSystemId || id.journalMarkerSha256 !== t.journal?.markerSha256 || id.installationId !== t.journal?.installationId) return 'pass_identity_differs_from_the_verified_run';
+      if (!view.starts.every((x) => x.bindingDigest === ready.digest)) return 'pass_identity_differs_from_the_verified_run';
+      let now;
+      try { now = digestOf(recorderBindingOf(dir, run0.run)); } catch { now = null; }
+      if (now !== digestOf(ready.binding.recorder)) return 'pass_identity_differs_from_the_verified_run';
+    }
+  }
+  // Ruling C, last: nothing the verdict rests on was added since `check` read the view it verified.
+  if (typeof body.evidenceMark !== 'string') return 'pass_without_the_evidence_mark_of_its_check';
+  if (body.evidenceMark !== view.evidenceMark) return 'pass_evidence_changed_since_it_was_checked';
+  return null;
+}
 function openCycle(s, events = s.events()) {
   const started = [...new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle))].sort((a, b) => a - b);
   const last = started.at(-1) ?? 0;
@@ -371,22 +508,44 @@ export function replayAcks(s, n) {
  * knows about the cycle (an acknowledgement it could not store, an authenticated refusal it could record nowhere);
  * the server passes it when it serves the view. A view computed by another process cannot know it.
  */
-export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS, memoryDamage = null } = {}) {
-  const events = s.events().filter((e) => e.cycle === n);
+export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS, memoryDamage = null, held = [] } = {}) {
+  const all = s.events();
+  const events = all.filter((e) => e.cycle === n);
   const starts = startsOf(events, n);
+  // A recorder process that took this cycle over while it was open: whatever the earlier process knew only in its
+  // memory (a refusal it could record nowhere) is lost, so the cycle's records cannot be relied on for a PASS.
+  const restarted = events.filter((e) => e.kind === 'recorder_restarted').length;
+  const restartDamage = restarted ? `${RESTARTED} (${restarted} time${restarted > 1 ? 's' : ''}): what the earlier process knew only in memory is lost` : null;
   const ackDamage = replayAcks(s, n).damaged;
   const runLedgers = runLedgerDamage(s);
   const acks = ackDamage?.includes('cannot be read') ? [] : s.acks(n);
   const cut = events.find((e) => e.kind === 'cut_sent');
+  const cutAt = cut ? events.indexOf(cut) : -1; // its place in the ledger: events are ordered by where they stand, not by the clock
   const confirm = events.filter((e) => e.kind === 'cut_confirmed').at(-1);
   const lastByStream = new Map();
-  for (const a of acks) lastByStream.set(streamKey(a), a.atMs);
+  // Only acknowledgements that arrived before the cut was requested say whether a worker was running then: one that
+  // arrives afterwards is kept as evidence and changes nothing about a silence before the cut.
+  const beforeCut = (a) => !cut || (Number.isFinite(a.mono) && Number.isFinite(cut.mono) ? a.mono <= cut.mono : a.atMs <= cut.atMs);
+  for (const a of acks) if (beforeCut(a)) lastByStream.set(streamKey(a), a);
+  // How long before the cut a worker last acknowledged: by the host's monotonic clock when both records carry it (a
+  // wall clock set back before the cut would hide a silent worker; set ahead, it would invent one). Records written
+  // before the monotonic stamp existed are compared by their wall-clock time, as they always were. A host reboot
+  // resets the monotonic clock, and with it restarts the recorder: that cycle is damaged in any case.
+  // BOTH clocks must agree that the worker was recent: the monotonic clock stands still while a host is suspended, so
+  // by itself it would call a worker recent that died during the pause. A wall clock set AHEAD between the last
+  // acknowledgement and the cut therefore reports a silent worker that was not one (INCONCLUSIVE, never PASS).
+  const recentEnough = (a) => !!a && a.atMs >= cut.atMs - silentStopMs && (!(Number.isFinite(a.mono) && Number.isFinite(cut.mono)) || a.mono >= cut.mono - silentStopMs);
   const silentWorkerStops = cut ? starts.flatMap((st) => Array.from({ length: st.workers }, (_, i) => ({ proc: st.proc, worker: i + 1 })))
-    .filter((w) => !((lastByStream.get(`${w.proc}/${w.worker}`) ?? 0) >= cut.atMs - silentStopMs))
-    .map((w) => ({ ...w, lastAckAtMs: lastByStream.get(`${w.proc}/${w.worker}`) ?? null })) : [];
+    .filter((w) => !recentEnough(lastByStream.get(`${w.proc}/${w.worker}`)))
+    .map((w) => ({ ...w, lastAckAtMs: lastByStream.get(`${w.proc}/${w.worker}`)?.atMs ?? null })) : [];
   const result = s.result(n);
   const recovered = recoveryOf(events, n);
   const boots = events.filter((e) => e.kind === 'boot_report');
+  const claimAcksBeforeCut = acks.filter((a) => a.kind === 'claim' && beforeCut(a)).length;
+  const startMs = starts[0]?.atMs;
+  let rejections = [];
+  let rejectionsUnreadable = 0;
+  try { rejections = s.rejections(); } catch { rejectionsUnreadable = 1; /* reported as damage.runLedgers */ }
   const last = acks.at(-1);
   return {
     run: s.run().run,
@@ -407,9 +566,17 @@ export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS, memoryDamage = 
     operatorAttestedCut: confirm?.operatorAttestedCut ?? null,
     // Nothing on this host observes the cut itself; the cut lies between the last acknowledgement and the first contact after it.
     independentlyObservedCutAt: null,
-    firstContactAfterCut: cut ? (boots.find((b) => b.atMs > cut.atMs) ?? null) : null,
+    firstContactAfterCut: cut ? (boots.find((b) => events.indexOf(b) > cutAt) ?? null) : null,
     bootReports: boots,
-    workerStopsBeforeCut: events.filter((e) => e.kind === 'worker_stopped' && (!cut || e.atMs < cut.atMs)),
+    workerStopsBeforeCut: events.filter((e, i) => e.kind === 'worker_stopped' && (!cut || i < cutAt)),
+    // Ruling A: a stop reported after the cut REQUEST (its place in the same ledger decides, not a clock) counts too.
+    workerStopsAfterCut: cut ? events.filter((e, i) => e.kind === 'worker_stopped' && i > cutAt) : [],
+    bootReportsAfterCut: cut ? boots.filter((b) => events.indexOf(b) > cutAt) : [],
+    claimAcksBeforeCut,
+    // Ruling C: see evidenceMarkOf. Fresh acknowledgements or worker reports refused after the result: each one
+    // contradicts a stored PASS, and the cycle's final status is then INCONCLUSIVE.
+    evidenceMark: evidenceMarkOf(s, n, rejections),
+    contradictedAfterResult: contradictionsAfterResult(n, rejections, all, s, held),
     // A journal write or sync that failed on the test machine, as a worker reported it. Unlike an ordinary worker stop
     // it counts whenever it arrived, before or after the cut was requested: the cycle saw a storage or harness error.
     journalWriteFailures: events.filter((e) => e.kind === 'journal_write_failed'),
@@ -417,58 +584,144 @@ export function cycleView(s, n, { silentStopMs = SILENT_STOP_MS, memoryDamage = 
     // `check` must know before it decides: any damage makes the cycle INCONCLUSIVE. Reasons only; nothing secret.
     // `runLedgers`: one of the run's own ledgers ends in a fragment or cannot be read, so refusals or events of this
     // cycle may be missing. It is read from the files, so a restarted recorder reports it as well.
-    damage: { acknowledgementLedger: ackDamage, recorderMemory: memoryDamage, runLedgers },
-    damaged: !!(ackDamage || memoryDamage || runLedgers),
+    // `recorderRestarted` is present only when it happened (read from the ledger, so any process reports it).
+    damage: { acknowledgementLedger: ackDamage, recorderMemory: memoryDamage, runLedgers, ...(restartDamage ? { recorderRestarted: restartDamage } : {}) },
+    damaged: !!(ackDamage || memoryDamage || runLedgers || restartDamage),
     silentWorkerStops,
-    // Only refusals after the cycle began count against it: a refused start (e.g. a forgotten recover) must not poison the cycle.
+    // Only refusals made while the cycle was open count against it: a refused start (e.g. a forgotten recover) must not
+    // poison the cycle. Which cycle was open is what the recorder stamped on each refusal (`countsAgainst`), not a time.
     // (and the refusals the rejection log could not take, which the server keeps as events: `refusal_not_recorded`)
-    authenticatedRejections: starts.length ? s.rejections().filter((r) => r.authenticated && r.cycle === n && r.atMs >= starts[0].atMs).length + events.filter((e) => e.kind === 'refusal_not_recorded' && e.authenticated && e.atMs >= starts[0].atMs).length : 0,
+    // (a rejection log that cannot be read is damage already, `runLedgers`: the view is served, and counts what it can)
+    authenticatedRejections: starts.length ? rejections.filter((r) => countsAgainst(n, { ...r, named: r.cycle, contradicts: 'claimedCycle' in r }, startMs)).length
+      + all.filter((e) => e.kind === 'refusal_not_recorded' && countsAgainst(n, { ...e, named: e.open === undefined ? e.cycle : e.named, contradicts: 'claimedCycle' in e }, startMs)).length : 0,
     result,
     recovered,
-    final: finalStatus(result, recovered),
+    // (a rejection log that cannot be read may hold a contradiction: a stored PASS is not final while it cannot)
+    final: finalOf(result, recovered, contradictionsAfterResult(n, rejections, all, s, held) + rejectionsUnreadable),
   };
 }
 
-export function runStatus(s) {
+export function runStatus(s, { held = [] } = {}) {
   const events = s.events();
-  const finals = s.results().map((r) => ({ cycle: r.cycle, verdict: r.verdict, status: finalStatus(r, recoveryOf(events, r.cycle)) }));
+  // Read once; a log that cannot be read may hold a contradiction, so no stored PASS is final while it cannot.
+  let rejections = [], unreadable = 0;
+  try { rejections = s.rejections(); } catch { unreadable = 1; }
+  const finals = s.results().map((r) => ({ cycle: r.cycle, verdict: r.verdict, status: finalOf(r, recoveryOf(events, r.cycle), contradictionsAfterResult(r.cycle, rejections, events, s, held) + unreadable) }));
   const { run, ...rest } = s.run();
   const attestations = events.filter((e) => e.kind === 'attestation').map((e) => ({ item: e.item, evidence: e.evidence, at: e.at, attestation: 'operator' }));
   const ready = acceptedReadiness(events);
-  return { run: { run, ...rest }, readiness: ready ? { digest: ready.digest, at: ready.at, workload: ready.binding.test.workload, plan: ready.plan ?? null } : null, attestations, cyclesStarted: new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle)).size, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: s.rejections().length };
+  return { run: { run, ...rest }, readiness: ready ? { digest: ready.digest, at: ready.at, workload: ready.binding.test.workload, plan: ready.plan ?? null } : null, attestations, cyclesStarted: new Set(events.filter((e) => e.kind === 'cycle_start').map((e) => e.cycle)).size, stopped: s.stopped(), accepted: s.accepted(), cycles: finals, streak: physicalStreak(finals, s.run().failureModel), rejections: unreadable ? null : rejections.length };
 }
 
 // ───────────────────────────────────────────── server ─────────────────────────────────────────────
-export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SILENT_STOP_MS, lockTimeoutMs = 8000, beforeStartWrite = null } = {}) {
+/**
+ * The server's time for the protocol (the time window, the time it gives clients to sign with): the wall clock as it
+ * was when the server started, plus what the host's monotonic clock has counted since. Setting the host's clock while
+ * the server runs therefore changes nothing for requests in flight or for clients that already asked for the time.
+ */
+const steadyNow = () => { const wall = Date.now(), mono = monoMs(); return () => wall + (monoMs() - mono); };
+export function createRecorder(dir, { now = steadyNow(), silentStopMs = SILENT_STOP_MS, lockTimeoutMs = 8000, beforeStartWrite = null, unauthenticatedLogCapBytes = 16 << 20 } = {}) {
   const cache = new Map(); // run -> { key, nonces: Map(nonce -> ts), cycles: Map(n -> { streams, claimSeqs, damaged }) }
+  const startedAtMs = now(); // requests signed before this are not this server's (F16)
+  // Contradictions held for a run this server could not load (its records could not be read): moved into the run's
+  // own hold as soon as it loads, and counted by `heldContradictions` meanwhile.
+  const orphanHeld = new Map();
+  // Requests `rescueReport` has kept, by run and nonce, with their timestamps. An entry older than the time window is
+  // dropped: such a request is refused as stale before it gets here.
+  const rescued = new Map();
+  // Every run key this server has seen (read at start and whenever one is read): a report can still be authenticated
+  // while the recorder's disk, with its `keys/` directory, is gone or replaced.
+  const keys = new Map();
+  try { for (const f of fs.readdirSync(path.join(dir, 'keys'))) if (f.endsWith('.key')) { try { keys.set(f.slice(0, -4), keyFromHex(fs.readFileSync(path.join(dir, 'keys', f), 'utf8'))); } catch { /* read when needed */ } } } catch { /* no keys yet */ }
+  // The recorder directory's identity as this server first saw it: a marker written where that identity is not found
+  // (an empty mount point, a replaced disk) proves nothing, and what it holds stays held.
+  let knownId = null;
+  try { knownId = recorderId(dir); } catch { knownId = null; }
+  const onOwnDisk = () => { let id = null; try { id = recorderId(dir); } catch { return false; } knownId ??= id; return !!id && id === knownId; };
+  // A marker counts as kept on the recorder's own disk only if, AFTER the identity was read, the file is still found
+  // at its path and lies on the same device as the identity file (a disk mounted back over an empty mount point in
+  // between hides it).
+  const keptOnOwnDisk = (file) => { if (!onOwnDisk()) return false; try { return fs.statSync(file).dev === fs.statSync(path.join(dir, 'recorder-id.json')).dev; } catch { return false; } };
+  /**
+   * A FRESH, signed report of work (an acknowledgement, a worker stop, a journal failure) that arrives while the run's
+   * records cannot be read (the run cannot be loaded, or its directory cannot be found). It may contradict a stored
+   * result, and nothing else would keep it: it is kept as contradicting every decided cycle ('*'), in a marker, or
+   * failing that in memory (`hold`). An unsigned, stale or pre-start request, or one this server knows as replayed,
+   * is not.
+   */
+  const rescueReport = ({ run, key, seen, req, url, raw, hold, alwaysHold = false }) => {
+    const rest = url.pathname.replace(/^\/runs\/[^/]+\/?/, '');
+    let body = null;
+    try { body = JSON.parse(raw); } catch { body = null; }
+    if (!(rest === 'ack' || (rest === 'event' && ['worker_stopped', 'journal_write_failed'].includes(body?.kind)))) return;
+    const headers = req.headers;
+    if (verifyRequest(key, { method: req.method, path: url.pathname, run, headers, body: raw, now: now(), seen: seen ?? new Map() }) !== null || Number(headers['x-p7-ts']) < startedAtMs) return;
+    // One request is kept once, however often it is sent (a captured request must not write markers without end).
+    const id = `${run}:${headers['x-p7-nonce']}`;
+    if (rescued.has(id)) return;
+    for (const [k, t] of rescued) if (Math.abs(now() - t) > WINDOW_MS) rescued.delete(k);
+    rescued.set(id, Number(headers['x-p7-ts']));
+    const rec = { kind: 'contradiction_after_result', afterResultOf: '*', reason: 'the run\'s records could not be read', path: url.pathname.slice(0, 120), authenticated: true, nonce: headers['x-p7-nonce'], ts: Number(headers['x-p7-ts']), at: new Date().toISOString(), atMs: Date.now(), mono: monoMs() };
+    // `alwaysHold`: the run's directory could not be found, so the recorder directory itself may not be the right one
+    // (an unmounted disk): a marker written now proves nothing. It is held as well, and written again once the run is found.
+    let written = null;
+    try { written = writeContradictionMarker(dir, run, rec); } catch { /* held below */ }
+    if (written && (!alwaysHold || keptOnOwnDisk(written))) return;
+    hold(rec);
+    if (!written) { console.error(`recorder: a report of work for run ${run} arrived while its records could not be read, and could be written NOWHERE. It is held in memory only and counts against every decided cycle. A RESTART NOW LOSES IT. Stop and report`); }
+  };
   // A rejection that cannot be written to its log (the log ends in a fragment, the disk is full, the file is not
   // writable) must never end the server or change what the request is answered: the request is refused all the same.
   // It is counted and reported on stderr; `verify-dir` names a ledger that ends in a fragment. Nothing repairs the log.
   let unrecorded = 0;
   const noteUnrecorded = (where, e) => {
     unrecorded += 1;
+    if (e?.code === 'LOG_AT_ITS_LIMIT') { if (unrecorded === 1 || unrecorded % 100 === 0) console.error(`recorder: ${where} has reached its size limit for unauthenticated requests; such requests are still refused but no longer written there (${unrecorded} rejections not written since this server started). Authenticated refusals are always written`); return; }
     if (unrecorded === 1 || unrecorded % 100 === 0) console.error(`recorder: a rejection could not be written to ${where} (${String(e?.code ?? 'error')}); ${unrecorded} since this server started. The request was refused all the same. Stop and report: run verify-dir, and do not edit the ledger`);
   };
   // An error no handler foresaw is answered 500 and named here: never swallowed, and never fatal. Only its name and
   // code are printed (a message can carry a path; nothing here can carry a key).
   const noteHandlerError = (e) => console.error(`recorder: a request could not be handled (${String(e?.name ?? 'Error')}${e?.code ? ` ${e.code}` : ''}). It was answered with an error. What it had written before the error, if anything, is in the ledgers; it was not answered as accepted. Stop and report if this repeats`);
-  const globalReject = (r) => { try { fs.mkdirSync(dir, { recursive: true }); appendDurable(path.join(dir, 'rejections.jsonl'), { ...r, at: new Date().toISOString() }); } catch (e) { noteUnrecorded('rejections.jsonl', e); } };
+  // An UNAUTHENTICATED request must not be able to grow a log without limit: each line is a synced append, and a run's
+  // log is read for every cycle view. Once a log is larger than the cap, unauthenticated refusals are counted (stderr)
+  // and no longer written to it. Authenticated refusals are always written: they decide cycles.
+  const logFull = (file) => { try { return fs.statSync(file).size > unauthenticatedLogCapBytes; } catch { return false; } };
+  // (never creates the recorder directory: if it is missing, nothing is written there)
+  const globalReject = (r) => { const file = path.join(dir, 'rejections.jsonl'); if (logFull(file)) return noteUnrecorded('rejections.jsonl', { code: 'LOG_AT_ITS_LIMIT' }); try { if (!fs.existsSync(dir)) throw Object.assign(new Error('missing'), { code: 'ENOENT' }); appendDurable(file, { ...r, at: new Date().toISOString() }); } catch (e) { noteUnrecorded('rejections.jsonl', e); } };
 
   function runState(s, run) {
     if (cache.has(run)) return cache.get(run);
     let key;
     try { key = keyFromHex(fs.readFileSync(s.keyFile, 'utf8')); } catch (e) { throw Object.assign(e, { keyUnreadable: true }); }
+    keys.set(run, key);
     // Rebuild the nonces accepted within the window from what was persisted (survives a recorder restart).
     const nonces = new Map();
     const t = now();
     const remember = (x) => { if (x?.nonce && Math.abs(t - Number(x.ts)) <= WINDOW_MS) nonces.set(x.nonce, Number(x.ts)); };
     const events = s.events();
     events.forEach(remember);
+    // (A ledger with a complete line that is not a record makes this throw: the run is then unusable for this
+    // server, visibly, and no verdict of any kind is stored. Pinned by test/recorder-availability.test.mjs.)
     s.rejections().forEach(remember);
     s.results().forEach(remember);
     const { open } = openCycle(s, events);
     if (open) s.ackFile(open).entries.forEach(remember);
-    const st = { key, nonces, cycles: new Map() };
+    // `lost`: this server knows that something about the run reached no ledger and cannot say which cycle it
+    // concerns. In memory only; while it is set, no PASS is stored for any cycle of the run and every view says so.
+    // `held`: contradictions after a result that no place could take (in memory only; see refuse). While any is held
+    // this server stores no PASS, records no recovery and starts no cycle for the run, and it tries to write them
+    // again at every request.
+    const st = { key, nonces, cycles: new Map(), tookOver: open, lost: null, held: [] };
+    // This process did not start the cycle that is open: it took it over from one that is gone, and cannot know what
+    // that one kept only in memory (an authenticated refusal it could record nowhere). So it says so, once, as an
+    // event of that cycle, and no PASS is stored for the cycle, by this process (`tookOver`) or a later one (the
+    // event). If the event cannot be written, this process still refuses, and says so in the view it serves; the next
+    // process that takes the cycle over writes its own. Acknowledgements are not affected: the streams continue.
+    if (open) {
+      const record = () => s.event({ cycle: open, kind: 'recorder_restarted' });
+      try { try { withDirLock(dir, record, { timeoutMs: Math.min(lockTimeoutMs, 250) }); } catch (e) { if (e?.status !== 503) throw e; record(); } }
+      catch (e) { cycleState(s, st, open).memoryDamage = `${RESTARTED} and could not record it`; console.error(`recorder: this server took over cycle ${open} of a run and could not record that (${String(e?.code ?? 'error')}). No PASS will be stored for the cycle`); }
+    }
     cache.set(run, st);
     return st;
   }
@@ -481,7 +734,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
     return c;
   }
 
-  return http.createServer((req, res) => {
+  const server = http.createServer((req, res) => {
     let raw = '';
     req.setEncoding('utf8');
     req.on('data', (c) => { raw += c; if (raw.length > 1 << 20) req.destroy(); });
@@ -500,14 +753,57 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
       if (!m || !RUN_ID.test(m[1])) { globalReject({ ...info, reason: 'bad_path', authenticated: false }); return plain(404, 'not found'); }
       const run = m[1];
       const s = runStore(dir, run);
-      if (!s.exists() || !fs.existsSync(s.keyFile)) { globalReject({ ...info, run, reason: 'unknown_run', authenticated: false }); return plain(404, 'unknown run'); }
+      // The recorder's time (see below, `time`) needs only the run's key: it is answered even while the run's ledgers
+      // cannot be read, so a client can still sign, and what it then reports reaches `rescueReport`.
+      // What is held for a run this server has not loaded is written again first, and released once it is on the
+      // recorder's own disk.
+      if (orphanHeld.has(run)) {
+        const left = orphanHeld.get(run).filter((h) => { try { return !keptOnOwnDisk(writeContradictionMarker(dir, run, h)); } catch { return true; } });
+        if (left.length) orphanHeld.set(run, left); else orphanHeld.delete(run);
+      }
+      if (m[2] === 'time' && req.method === 'POST' && (keys.has(run) || fs.existsSync(s.keyFile))) {
+        let key = keys.get(run);
+        if (!key) { try { key = keyFromHex(fs.readFileSync(s.keyFile, 'utf8')); keys.set(run, key); } catch { return plain(500, 'recorder key unreadable'); } }
+        const t = verifyRequest(key, { method: req.method, path: url.pathname, run, headers: req.headers, body: raw, now: now(), seen: new Map() });
+        if (t === null || t === 'stale_timestamp') {
+          const body = '{}', time = String(now());
+          return res.writeHead(200, { 'content-type': 'application/json', 'x-p7-time': time, 'x-p7-mac': signResponse(key, { nonce: req.headers['x-p7-nonce'], status: 200, body, time }) }).end(body);
+        }
+      }
+      if (!s.exists() || !fs.existsSync(s.keyFile)) {
+        // A run this server has served that cannot be found now: whatever this request was, it leaves no trace in the run.
+        if (cache.has(run)) {
+          const c = cache.get(run);
+          c.lost ??= 'a request arrived while the run could not be found, and could not be recorded';
+          try { rescueReport({ run, key: c.key, seen: c.nonces, req, url, raw, hold: (rec) => c.held.push(rec), alwaysHold: true }); } catch { /* answered below all the same */ }
+        } else if (keys.has(run) || fs.existsSync(s.keyFile)) {
+          // A run this server has not loaded whose directory is missing (moved, unmounted) and whose key it knows.
+          try { rescueReport({ run, key: keys.get(run) ?? keyFromHex(fs.readFileSync(s.keyFile, 'utf8')), seen: null, req, url, raw, hold: (rec) => orphanHeld.set(run, [...(orphanHeld.get(run) ?? []), rec]), alwaysHold: true }); } catch { /* answered below all the same */ }
+        }
+        globalReject({ ...info, run, reason: 'unknown_run', authenticated: false }); return plain(404, 'unknown run');
+      }
       let rs;
-      try { rs = runState(s, run); } catch (e) { noteHandlerError(e); return plain(500, e?.keyUnreadable ? 'recorder key unreadable' : 'a ledger of this run cannot be read'); }
+      try { rs = runState(s, run); } catch (e) {
+        noteHandlerError(e);
+        // (the key this server already holds authenticates the report even when the key file cannot be read now)
+        const known = keys.get(run) ?? (e?.keyUnreadable ? null : (() => { try { return keyFromHex(fs.readFileSync(s.keyFile, 'utf8')); } catch { return null; } })());
+        if (known) {
+          try { rescueReport({ run, key: known, seen: null, req, url, raw, hold: (rec) => orphanHeld.set(run, [...(orphanHeld.get(run) ?? []), rec]) }); } catch { /* answered below all the same */ }
+        }
+        return plain(500, e?.keyUnreadable ? 'recorder key unreadable' : 'a ledger of this run cannot be read');
+      }
+      if (orphanHeld.has(run)) { rs.held.push(...orphanHeld.get(run)); orphanHeld.delete(run); }
+      // What this server holds in memory only (contradictions after a result) is written as soon as a place takes it.
+      rs.held = rs.held.filter((h) => { try { writeContradictionMarker(dir, run, h); return false; } catch { try { s.event({ ...h, cycle: null, kind: 'refusal_not_recorded' }); return false; } catch { return true; } } });
       const headers = req.headers;
-      const why = verifyRequest(rs.key, { method: req.method, path: url.pathname, run, headers, body: raw, now: now(), seen: rs.nonces });
-      const authenticated = why === null || why === 'stale_timestamp' || why === 'replayed_nonce';
+      const verified = verifyRequest(rs.key, { method: req.method, path: url.pathname, run, headers, body: raw, now: now(), seen: rs.nonces });
       const nonce = headers['x-p7-nonce'];
       const ts = headers['x-p7-ts'];
+      // F16: a nonce is persisted only with what a request wrote. A request the earlier server answered with an error
+      // would be new to this one; so nothing signed before this server started is accepted. (Clients sign in this
+      // host's time: see `time` below.)
+      const why = verified ?? (m[2] !== 'time' && Number(ts) < startedAtMs ? 'signed_before_this_server_started' : null);
+      const authenticated = why === null || why === 'stale_timestamp' || why === 'replayed_nonce' || why === 'signed_before_this_server_started';
       const reply = (status, obj) => {
         const body = JSON.stringify(obj ?? {});
         const time = String(now());
@@ -517,11 +813,67 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
       let malformed = false;
       try { body = raw ? JSON.parse(raw) : {}; } catch { malformed = true; }
       if (body === null || typeof body !== 'object' || Array.isArray(body)) { body = {}; malformed = true; }
-      const cycleOf = Number.isInteger(body?.cycle) ? body.cycle : Number(/^cycles\/(\d+)/.exec(m[2] ?? '')?.[1]) || null;
+      // Which cycle a refused request is about: the path's cycle; the body's only where the path names none. A body
+      // that names a different cycle than the path is kept as a claim (`claimedCycle`) and never decides.
+      // A path that has a cycle which is not a usable cycle number (`cycles/2x`, `cycles/0`, `cycles/99999`) names no
+      // cycle at all: the body does not decide in its place.
+      const pathPart = /^cycles\/([^/]*)/.exec(m[2] ?? '')?.[1];
+      const pathCycle = pathPart !== undefined && /^\d{1,5}$/.test(pathPart) && isCycle(Number(pathPart)) ? Number(pathPart) : null;
+      const cycleOf = pathPart !== undefined ? pathCycle : (isCycle(body?.cycle) ? body.cycle : null);
+      // The recorder's time, for a client to sign with (lib/protocol.mjs, makeClient). Read-only and exempt from the
+      // time window and the nonce memory: it needs a valid MAC, writes nothing, remembers nothing, and answers a
+      // replay the same way. What it gives away is this host's clock.
+      if (m[2] === 'time' && req.method === 'POST' && authenticated) return reply(200, {});
+      // A report of a journal write failure or a worker stop is a fact about the machine under test: refused, it counts
+      // against the cycle that is open whatever cycle it names.
+      const signal = m[2] === 'event' && ['journal_write_failed', 'worker_stopped'].includes(body?.kind) ? { signal: body.kind } : {};
+      // What an authenticated request left in no ledger is held in memory: against the open cycle, or, when that
+      // cannot be determined, against the whole run (`lost`).
+      const markLost = (reason, stopAcks = false) => {
+        try { const { open } = openCycle(s); if (open) { const c = cycleState(s, rs, open); c.memoryDamage ??= reason; if (stopAcks) c.damaged ??= c.memoryDamage; } } catch { rs.lost ??= reason; }
+      };
+      const contradiction = pathCycle !== null && body?.cycle !== undefined && body.cycle !== null && body.cycle !== pathCycle ? { claimedCycle: isCycle(body.cycle) ? body.cycle : String(body.cycle).slice(0, 40) } : {};
       const refuse = (status, reason) => {
+        // An authenticated refusal is stamped with the cycle that is open as the recorder refuses it: that stamp, not
+        // the request's own words and not a clock, decides which cycle it counts against (`countsAgainst`).
+        let attribution = {};
+        if (authenticated) {
+          let openNow; try { openNow = openCycle(s).open; } catch { openNow = 'unknown'; }
+          // A FRESH acknowledgement or worker report (signed now: only the holder of the key can make one; a replay
+          // cannot) for a cycle that already has its result contradicts that result: the workload was still running.
+          // Which decided cycle it is about: the cycle it names, the cycle whose id it carries, and, when no cycle is
+          // open, the last cycle that started (a request whose cycle cannot be read is still a sign of a running workload).
+          let decided = [];
+          if (why === null && (m[2] === 'ack' || (m[2] === 'event' && ['journal_write_failed', 'worker_stopped'].includes(body?.kind)))) {
+            // The cycle it names is checked on its own (its result file alone decides), so it is found even when the
+            // ledgers cannot be read; if they cannot, the request counts against every decided cycle ('*').
+            try { if (isCycle(cycleOf) && s.result(cycleOf)) decided.push(cycleOf); } catch { decided = '*'; }
+            if (decided !== '*') try {
+              const ev = s.events();
+              const started = ev.filter((e) => e.kind === 'cycle_start');
+              const byId = started.find((e) => typeof body?.cycleId === 'string' && e.cycleId === body.cycleId)?.cycle;
+              const last = started.at(-1)?.cycle;
+              for (const c of [cycleOf, byId, openNow === null ? last : undefined]) if (isCycle(c) && !decided.includes(c) && s.result(c)) decided.push(c);
+              // A report that names no usable cycle and carries no known cycle id, while another cycle is open: it may
+              // be about the last decided cycle as well (it also counts against the open one).
+              if (!isCycle(cycleOf) && !isCycle(byId) && openNow !== null) { const lastDecided = started.map((e) => e.cycle).filter((c, i, a) => a.indexOf(c) === i && c !== openNow && s.result(c)).at(-1); if (isCycle(lastDecided) && !decided.includes(lastDecided)) decided.push(lastDecided); }
+            } catch { decided = '*'; }
+          }
+          attribution = { open: openNow, ...contradiction, ...signal, ...(decided === '*' || decided.length ? { afterResultOf: decided } : {}) };
+        }
+        if (!authenticated && logFull(path.join(s.root, 'rejections.jsonl'))) { noteUnrecorded(`runs/${run}/rejections.jsonl`, { code: 'LOG_AT_ITS_LIMIT' }); return plain(status, reason); }
+        // Nor can a replayed, stale or pre-restart request (anyone who captured a signed request can send those without
+        // limit): past the cap it is refused as before and not written, and what it would have counted against is held
+        // in this server's memory instead, so the open cycle gets no PASS. A refusal of a request signed NOW, which
+        // only the holder of the key can produce, is always written.
+        if (authenticated && why !== null && logFull(path.join(s.root, 'rejections.jsonl'))) {
+          noteUnrecorded(`runs/${run}/rejections.jsonl`, { code: 'LOG_AT_ITS_LIMIT' });
+          markLost('replayed or stale requests were refused and not written: the rejection log is at its size limit');
+          return why === 'stale_timestamp' ? plain(status, reason) : reply(status, { error: reason });
+        }
         // Persisting the nonce with the rejection means even a refused request can't be replayed after a restart.
         let recorded = true;
-        try { s.reject({ ...info, run, reason, authenticated, cycle: cycleOf, ...(authenticated ? { nonce, ts } : {}) }); } catch (e) { recorded = false; noteUnrecorded(`runs/${run}/rejections.jsonl`, e); }
+        try { s.reject({ ...info, run, reason, authenticated, cycle: cycleOf, ...attribution, ...(authenticated ? { nonce, ts } : {}) }); } catch (e) { recorded = false; noteUnrecorded(`runs/${run}/rejections.jsonl`, e); }
         // An unauthenticated request is answered exactly as before (the network check expects its 401): nothing about it
         // is claimed to be recorded, and it must not be able to write anywhere else.
         if (recorded || !authenticated) return authenticated && why !== 'stale_timestamp' ? reply(status, { error: reason }) : plain(status, reason);
@@ -534,7 +886,8 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
         // read already makes the cycle INCONCLUSIVE (`damage.runLedgers`), also after a restart; for any other
         // reason the log could not be written (a full disk, a read-only file) only this server's memory holds it.
         let fallback = 'none';
-        const record = () => s.event({ cycle: cycleOf, kind: 'refusal_not_recorded', reason, authenticated: true, nonce, ts: Number(ts) });
+        // (filed under the cycle that is open, so it is in that cycle's view; `named` is what the request named)
+        const record = () => s.event({ cycle: isCycle(attribution.open) ? attribution.open : null, named: cycleOf, ...attribution, kind: 'refusal_not_recorded', reason, authenticated: true, nonce, ts: Number(ts) });
         if (why === null) {
           try {
             // Under the lock when it can be had; without it otherwise: it is one append, like an acknowledgement.
@@ -543,8 +896,14 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             fallback = 'event';
           } catch { /* the event ledger cannot take it either */ }
         }
+        // A contradiction after a result (see `afterResultOf`) that neither ledger took goes to a place of its own, and
+        // failing that is held in this server's memory (never described as recorded).
+        if (fallback === 'none' && attribution.afterResultOf?.length) {
+          const rec = { kind: 'contradiction_after_result', afterResultOf: attribution.afterResultOf, reason, path: info.path, authenticated: true, nonce, ts: Number(ts), at: new Date().toISOString(), atMs: Date.now(), mono: monoMs() };
+          try { writeContradictionMarker(dir, run, rec); fallback = 'contradiction_marker'; } catch { rs.held.push(rec); console.error(`recorder: a contradiction of a stored result could be written NOWHERE (${String(attribution.afterResultOf)}). It is held in memory only: this server stores no PASS, records no recovery and starts no cycle for the run until it is written. A RESTART NOW LOSES IT. Stop and report; do not restart the recorder until it is written`); }
+        }
         if (fallback === 'none') {
-          try { const { open } = openCycle(s); if (open) { const c = cycleState(s, rs, open); c.memoryDamage ??= 'an authenticated refusal could not be recorded'; c.damaged ??= c.memoryDamage; } } catch { /* the ledgers cannot be read either: every later request fails on that */ }
+          markLost('an authenticated refusal could not be recorded', true);
         }
         return why === 'stale_timestamp' ? plain(500, 'refusal_not_recorded') : reply(500, { error: 'refusal_not_recorded', refused: reason, fallback });
       };
@@ -557,8 +916,8 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
         const cm = /^cycles\/(\d+)(?:\/(start|result|recovered))?$/.exec(rest);
         const n = cm ? Number(cm[1]) : body.cycle;
         const stamp = { nonce, ts: Number(ts) };
-        if (req.method === 'GET' && rest === '') return reply(200, runStatus(s));
-        if (req.method === 'GET' && cm && !cm[2]) return isCycle(n) ? reply(200, cycleView(s, n, { silentStopMs, memoryDamage: rs.cycles.get(n)?.memoryDamage ?? null })) : refuse(400, 'invalid_cycle');
+        if (req.method === 'GET' && rest === '') return reply(200, runStatus(s, { held: rs.held }));
+        if (req.method === 'GET' && cm && !cm[2]) return isCycle(n) ? reply(200, cycleView(s, n, { silentStopMs, memoryDamage: rs.cycles.get(n)?.memoryDamage ?? rs.lost ?? null, held: rs.held })) : refuse(400, 'invalid_cycle');
         if (req.method !== 'POST') return refuse(405, 'method_not_allowed');
         // Read, decide and write as one step with respect to the operator commands (attest, create-run, abandon, cut):
         // they take the same lock. Acknowledgements only append to their own stream and stay outside it.
@@ -569,13 +928,14 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
 
         if (cm?.[2] === 'start') {
           if (!isCycle(n)) return refuse(400, 'invalid_cycle');
+          if (rs.held.length) return refuse(409, 'contradiction_after_a_result_not_recorded');
           if (s.stopped()) return refuse(409, 'run_stopped');
           // No cycle starts beside a ledger that ends in a fragment (a writer died mid-line): nothing more can be appended
           // to it, so the cycle would depend on records this recorder cannot write. Found here, before anything is seeded.
           // Which ledgers: the run's own (events, rejections, accepted claims) and the volume registry. Not another
           // cycle's acknowledgement file (that cycle was judged with it) and not the recorder-wide rejection log
           // (unauthenticated noise): `verify-dir` reports those too, but they stop no cycle.
-          const blocking = [...['events.jsonl', 'rejections.jsonl', 'accepted.jsonl'].map((f) => [`runs/${run}/${f}`, ledgerProblemOf(path.join(s.root, f))]), ['volumes.jsonl', ledgerProblemOf(registryFile(dir))]].find(([, problem]) => problem);
+          const blocking = [...['events.jsonl', 'rejections.jsonl', 'accepted.jsonl'].map((f) => [`runs/${run}/${f}`, runLedgerProblemOf(path.join(s.root, f))]), ['volumes.jsonl', ledgerProblemOf(registryFile(dir))]].find(([, problem]) => problem);
           if (blocking) return refuse(409, `${blocking[1].startsWith('ends') ? 'recorder_ledger_ends_in_a_fragment' : 'recorder_ledger_cannot_be_read'}: ${blocking[0]}`);
           // The result and the stop marker are two writes. If the recorder died between them, the result still decides.
           if (s.results().some((r) => r.verdict === 'FAIL' || (r.verdict === 'INCONCLUSIVE' && (run0.stopOnInconclusive ?? QUALIFYING_MODELS.includes(run0.failureModel))))) return refuse(409, 'run_has_a_result_that_stops_it');
@@ -639,7 +999,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           if (body.vet === true) return reply(200, { vetted: true });
           const cycleId = startsOf(events, n)[0]?.cycleId ?? randomBytes(16).toString('hex');
           if (beforeStartWrite) beforeStartWrite(); // tests only: the lock is held here
-          s.event({ cycle: n, kind: 'cycle_start', cycleId, proc: body.proc, workers: body.workers, dbHead: body.dbHead, capacity: body.capacity && Number.isInteger(body.capacity.affected) && Number.isInteger(body.capacity.adding) ? { affected: body.capacity.affected, adding: body.capacity.adding } : null, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing, bindingDigest, ...(noted ? { bindingNoted: noted } : {}), bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
+          s.event({ cycle: n, kind: 'cycle_start', cycleId, pgSystemId: String(body.pgSystemId ?? ''), startId: typeof body.startId === 'string' ? body.startId.slice(0, 64) : null, proc: body.proc, workers: body.workers, dbHead: body.dbHead, capacity: body.capacity && Number.isInteger(body.capacity.affected) && Number.isInteger(body.capacity.adding) ? { affected: body.capacity.affected, adding: body.capacity.adding } : null, journalHead: body.journalHead ?? null, settings: body.settings ?? null, sizing, bindingDigest, ...(noted ? { bindingNoted: noted } : {}), bootId: String(body.bootId ?? '').slice(0, 64), clockOffsetMs: body.clockOffsetMs ?? null, ...stamp });
           return reply(200, { cycleId });
         }
 
@@ -768,11 +1128,30 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
           // Nor beside a torn final journal line the check found it cannot repair: that cycle is INCONCLUSIVE.
           if (body.verdict === 'PASS' && body.tornTailRepairProblem) return refuse(409, 'pass_reports_a_torn_tail_that_cannot_be_repaired');
           // Nor for a cycle this server marked damaged (an acknowledgement or an authenticated refusal it could not store).
-          if (body.verdict === 'PASS' && (cycleState(s, rs, n).damaged || runLedgerDamage(s))) return refuse(409, 'pass_for_a_cycle_the_recorder_marked_damaged');
-          // NOT gated here: authenticated refusals in the cycle. `check` makes such a cycle INCONCLUSIVE when it computes
-          // a verdict, and re-vets a saved PASS against the cycle view before it sends it again (lib/attempts.mjs,
-          // savedResultProblem). A gate here as well would be defence in depth, but a committed test of this recorder
-          // stores a PASS in a cycle that has refusals on record: changing that is the product owner's decision.
+          // Nor for a cycle a recorder process took over while it was open (this one: `tookOver`; an earlier one: its
+          // event, which the view reads): what the process before it knew only in memory is lost.
+          const view = body.verdict === 'PASS' ? cycleView(s, n, { silentStopMs, memoryDamage: cycleState(s, rs, n).memoryDamage ?? rs.lost ?? (rs.held.length ? 'a contradiction after a result is held in memory only' : null), held: rs.held }) : null;
+          if (view && (cycleState(s, rs, n).damaged || rs.tookOver === n || view.damaged)) return refuse(409, 'pass_for_a_cycle_the_recorder_marked_damaged');
+          // Nor for a cycle in which this recorder refused an authenticated request while the cycle was open (approved
+          // by the product owner as the gate behind `check`, which makes such a cycle INCONCLUSIVE when it computes a
+          // verdict and re-vets a saved PASS before sending it). A refusal that is on record (in the rejection log, or
+          // in the event kept in its place) is counted by any recorder process. One that could be recorded nowhere
+          // is known only to the process that made it; a process that restarts with the cycle open therefore stores
+          // no PASS for it at all (above), whether or not such a refusal happened.
+          if (view && view.authenticatedRejections > 0) return refuse(409, 'pass_for_a_cycle_with_authenticated_rejections');
+          // Nor against what this host itself holds about the cut and the workers (each makes the cycle INCONCLUSIVE
+          // when `check` computes the verdict; a PASS that was computed earlier, or by anything else, is held to it):
+          // no cut on record, a cut whose LAST confirmation is not "yes", a worker that reported a stop before the cut
+          // or went silent before it.
+          if (view && !view.cutRequestedAt) return refuse(409, 'pass_for_a_cycle_without_a_recorded_cut');
+          if (view && view.cutConfirmed !== 'yes') return refuse(409, 'pass_for_a_cycle_whose_cut_is_not_confirmed');
+          if (view && (view.workerStopsBeforeCut.length || view.silentWorkerStops.length)) return refuse(409, 'pass_for_a_cycle_whose_workload_stopped_before_the_cut');
+          // Rulings A, B and C (passEvidenceProblem). Everything from the view above to the store below runs in one
+          // synchronous step of this process, under the directory lock: no other request of this server and no
+          // operator command can add a record in between. What arrived since `check` read its view is caught by the
+          // evidence mark; what arrives after the store contradicts the stored PASS (contradictionsAfterResult).
+          const evidenceProblem = view ? passEvidenceProblem({ dir, run0, view, body, allEvents: events }) : null;
+          if (evidenceProblem) return refuse(409, evidenceProblem);
           // The failure model comes from THIS host's run record, never from the test machine.
           s.saveResult(n, { ...body, cycle: n, failureModel: run0.failureModel, reportedFailureModel: body.failureModel ?? null, countsTowardPhysicalPowerLoss: false, recordedAt: new Date().toISOString(), ...stamp });
           if (body.verdict === 'FAIL') s.stop({ kind: 'fail', cycle: n, reason: 'cycle failed', fails: body.fails });
@@ -783,6 +1162,11 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
         }
 
         if (cm?.[2] === 'recovered') {
+          if (rs.held.some((h) => contradicts(h, n))) return refuse(409, 'contradiction_after_a_result_not_recorded');
+          // Nor while the rejection log cannot be read (it may hold a contradiction), or, for a PASS, while this server
+          // knows of something it could record nowhere.
+          try { s.rejections(); } catch { return refuse(409, 'recorder_ledger_cannot_be_read: rejections.jsonl'); }
+          if (rs.lost && s.result(n)?.verdict === 'PASS') return refuse(409, 'recorder_holds_an_unrecorded_refusal');
           // A run stopped by an INCONCLUSIVE cycle may still recover that cycle (so its state can be continued); nothing else.
           const stp = s.stopped();
           if (stp && !(stp.kind === 'inconclusive' && stp.cycle === n)) return refuse(409, 'run_stopped');
@@ -807,7 +1191,7 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
             if (!s.accepted().some((u) => u.cycle === n && u.seq === r.uncommitted.seq && u.actionId === r.uncommitted.actionId && !u.fromRun)) s.accept({ cycle: n, seq: r.uncommitted.seq, actionId: r.uncommitted.actionId, digest: body.digest ?? null });
           }
           s.event({ cycle: n, kind: 'recovered', cycleId: body.cycleId, steps: body.steps ?? [], cleared: body.cleared === true, finalState: body.finalState, summary: body.summary ?? null, ...stamp });
-          return reply(200, { ok: true, final: cycleView(s, n, { silentStopMs }).final });
+          return reply(200, { ok: true, final: cycleView(s, n, { silentStopMs, held: rs.held }).final });
         }
 
         if (rest === 'stop') {
@@ -822,12 +1206,27 @@ export function createRecorder(dir, { now = () => Date.now(), silentStopMs = SIL
         };
         return rest === 'ack' ? post() : withDirLock(dir, post, { timeoutMs: lockTimeoutMs });
       } catch (e) {
-        if (!e.status) noteHandlerError(e); // (an error with a status, like "busy", is an answer, not a fault)
+        // (an error with a status, like "busy", is an answer, not a fault: nothing was decided or written for it)
+        // An acknowledgement or a worker's report that was not handled is refused here instead: on record with its
+        // attribution, so it counts against the open cycle and contradicts a decided cycle it is about.
+        const reportOfWork = m[2] === 'ack' || !!signal.signal;
+        if (!e.status) { noteHandlerError(e); markLost('an authenticated request could not be handled, and what it reported could not be recorded'); if (reportOfWork) return refuse(500, 'recorder_error'); }
+        // "Busy" (an operator command holds the lock) is repeated by the sender, except that a worker's report of its
+        // stop is sent once and a journal failure only for about a minute: such a report that was answered "busy" is
+        // held in memory against the open cycle, so it is not lost if it never arrives again.
+        else if (e.status === 503) { if (signal.signal) { markLost(`a ${signal.signal} report was answered "busy" and not recorded`); return refuse(503, 'recorder_busy'); } }
+        // Any other error with a status (an inconsistent volume registry) refused the request outside the ordinary
+        // path: nothing is written to the run while the registry is in that state, so it is held in memory against
+        // the open cycle.
+        else markLost('a request was refused because the volume registry is inconsistent, and the refusal was not recorded');
         // An operating-system error message carries a path of this host: only its code is answered.
         return reply(e.status ?? 500, { error: e.path ? `recorder file error (${e.code ?? 'error'})` : String(e.message).slice(0, 200) });
       }
     };
   });
+  /** How many contradictions after a result this server holds in memory only (none may be lost by stopping it). */
+  server.heldContradictions = () => [...cache.values()].reduce((sum, r) => sum + r.held.length, 0) + [...orphanHeld.values()].reduce((sum, l) => sum + l.length, 0);
+  return server;
 }
 
 /** The cut must come within the time every process sized its action pool for (run --max-seconds). */
@@ -882,8 +1281,27 @@ async function main() {
       fs.writeFileSync(serving, String(process.pid));
     });
     process.on('exit', () => { try { if (Number(fs.readFileSync(serving, 'utf8')) === process.pid) fs.unlinkSync(serving); } catch { /* nothing to remove */ } });
-    for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
-    createRecorder(a.dir).listen(Number(a.port), a.host, () => console.log(`P7 recorder on ${a.host}:${a.port}, storing in ${a.dir}`));
+    const server = createRecorder(a.dir);
+    // A contradiction of a stored result that could be written nowhere lives only in this process: it does not stop on
+    // an ordinary signal while it holds one (it keeps trying to write it at every request). SIGKILL still ends it, and
+    // then the contradiction is lost (README, "Limits").
+    // Every catchable signal whose default is to end the process. Not: SIGKILL and SIGSTOP (cannot be caught), SIGUSR1
+    // (reserved by Node for its debugger), and the fatal ones (a crash). Names a platform lacks are skipped.
+    // (Not SIGPIPE: Node ignores it, and a handler would let a broken connection end the server. Not SIGPROF or SIGTRAP:
+    // profilers and debuggers send them.)
+    process.stderr.on('error', () => { /* a closed stderr must not end a server that holds something */ });
+    for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT', 'SIGUSR2', 'SIGALRM', 'SIGVTALRM', 'SIGXCPU', 'SIGXFSZ', 'SIGIO', 'SIGPOLL', 'SIGPWR', 'SIGSTKFLT', 'SIGSYS']) {
+      try {
+        process.on(sig, () => {
+          const held = server.heldContradictions();
+          if (!held) process.exit(0);
+          console.error(`recorder: NOT stopping on ${sig}: ${held} contradiction(s) of a stored result are held in memory only and would be lost. Restore the recorder's storage; they are written at the next request. Stop and report`);
+        });
+      } catch { /* not a signal on this platform */ }
+    }
+    // An error of the listening socket (for example too many open files) is reported, never fatal once listening.
+    server.on('error', (e) => { console.error(`recorder: server error (${String(e?.code ?? e?.name ?? 'error')})`); if (!server.listening) process.exit(1); });
+    server.listen(Number(a.port), a.host, () => console.log(`P7 recorder on ${a.host}:${a.port}, storing in ${a.dir}`));
     return;
   }
   if (cmd === 'create-run') {
@@ -942,6 +1360,9 @@ async function main() {
     if (!['yes', 'no'].includes(a['power-was-cut'])) throw new Error('--power-was-cut yes|no');
     locked(() => {
     if (!cycleView(s, n).cutRequestedAt) throw new Error('no cut recorded for this cycle');
+    // The result was decided with the confirmation as it stood: afterwards it is not changed (a "no" recorded after a
+    // stored PASS would leave that PASS standing). If the confirmation was wrong, stop and report; do not edit the ledger.
+    if (s.result(n)) throw new Error('refused: this cycle already has its result; the confirmation of its cut can no longer be changed. Nothing was recorded');
     // An operator attestation, recorded as such. It is not independent evidence of the cut.
     // Optional: when the operator saw the power go, as one instant (--attested-from only) or an interval.
     let attested = null;
@@ -973,6 +1394,11 @@ async function main() {
     if (!starts.length) throw new Error(`cycle ${n} has not started`);
     console.log(JSON.stringify({ run: a.run, cycle: n, failureModel: s.run().failureModel, ...throughputReport({ acks: s.acks(n), starts }) }, null, 2));
   } else if (cmd === 'status') {
+    // Another process than the server: it cannot see what a running server holds in memory only (a contradiction it
+    // could write nowhere), which that server's own views include.
+    let pid = null;
+    try { pid = Number(fs.readFileSync(path.join(a.dir, `${LOCK_FILE}.serving`), 'utf8')); } catch { /* none */ }
+    if (Number.isInteger(pid) && pid > 0 && alive(pid)) console.error(`note: a recorder (process ${pid}) is serving this directory. This status is read from the files: it does not include what that server holds in memory only. Ask the server (GET /runs/<run>) for its own view`);
     console.log(JSON.stringify(runStatus(s), null, 2));
   } else throw new Error('commands: serve, create-run, attest, abandon, cut, confirm-cut, status, measure, verify-dir');
 }

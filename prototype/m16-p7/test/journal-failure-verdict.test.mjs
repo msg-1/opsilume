@@ -4,6 +4,7 @@
 // HARNESS tests only: an in-process recorder on a temporary directory.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { confirmedCut, markOf } from './helpers/cut.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,9 +38,12 @@ describe('F4: a journal write failure reported by the worker belongs to its cycl
     assert.equal(sent.status, 200, JSON.stringify(sent.data));
     const v = cycleView(r.store(), 1);
     assert.deepEqual(v.journalWriteFailures.map((e) => [e.proc, e.worker, e.detail]), [['a', 1, 'dispatch, EIO; marker NOT written (EROFS)']]);
-    // An ordinary worker stop sent after the cut is stored but does not count; the journal failure report does.
+    // An ordinary worker stop sent after the cut request is stored, and is not a stop BEFORE the cut. Since the product
+    // owner's ruling A (18 November 2026) it counts all the same, as a stop after the cut request: the request is not
+    // the power loss. (Before the ruling this test said "not counted".)
     assert.equal((await r.post('event', { cycle: 1, cycleId: r.cycleId, kind: 'worker_stopped', proc: 'a', worker: 1, detail: 'claim_error' })).status, 200);
-    assert.deepEqual(cycleView(r.store(), 1).workerStopsBeforeCut, [], 'the ordinary stop arrived after the cut: not counted');
+    assert.deepEqual(cycleView(r.store(), 1).workerStopsBeforeCut, [], 'the ordinary stop arrived after the cut request: not a stop before it');
+    assert.deepEqual(cycleView(r.store(), 1).workerStopsAfterCut.map((e) => e.detail), ['claim_error'], 'ruling A: it is a stop after the cut request, and counts');
     assert.equal(cycleView(r.store(), 1).journalWriteFailures.length, 1);
     await r.close();
   });
@@ -92,8 +96,9 @@ describe('F4: a journal write failure reported by the worker belongs to its cycl
 
   test('a cycle without such a report is unaffected: PASS and recovery are accepted as before', async () => {
     const r = await openCycle('j3');
+    confirmedCut(r.store()); // (a PASS presupposes a recorded, confirmed cut)
     assert.deepEqual(cycleView(r.store(), 1).journalWriteFailures, []);
-    assert.equal((await r.post('cycles/1/result', { cycleId: r.cycleId, verdict: 'PASS', needsRecovery: [] })).status, 200);
+    assert.equal((await r.post('cycles/1/result', { cycleId: r.cycleId, verdict: 'PASS', needsRecovery: [], ...markOf(r.store()) })).status, 200);
     assert.equal((await r.post('cycles/1/recovered', { cycleId: r.cycleId, finalState: FINAL })).status, 200);
     // A report can only belong to the cycle that is open: one that arrives for a cycle already checked is refused,
     // so a recorded result is never contradicted after the fact.

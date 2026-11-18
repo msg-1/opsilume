@@ -114,3 +114,14 @@ export function measuredRate(acks) {
   // totalPerSecond bounds what ONE worker could reach alone: claims are serialised by the state-row lock.
   return rates.length ? { streams: rates.length, totalPerSecond: Math.round(rates.reduce((x, y) => x + y, 0) * 10) / 10, maxPerWorker: Math.round(Math.max(...rates) * 10) / 10, minPerWorker: Math.round(Math.min(...rates) * 10) / 10 } : null;
 }
+
+/**
+ * Why the `run` flags cannot be used as given, or null. A flag that is given must be a usable number: it is never
+ * ignored. (Before: `--target-rate 0` or a word fell through to another rate, unthrottled, and `--workers 1.5` passed.)
+ */
+export function runFlagProblem(a) {
+  const workers = a.workers === undefined ? 1 : Number(a.workers);
+  if (!Number.isInteger(workers) || workers < 1 || workers > 12) return '--workers must be a whole number from 1 to 12';
+  for (const k of ['rate', 'target-rate']) if (a[k] !== undefined && !(Number.isFinite(Number(a[k])) && Number(a[k]) > 0)) return `--${k} must be a number above zero`;
+  return null;
+}

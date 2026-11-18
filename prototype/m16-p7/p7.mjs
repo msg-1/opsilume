@@ -23,9 +23,9 @@ import { FailClosedJournal, WRITE_FAILED_FILE } from './lib/failclosed.mjs';
 import { attemptIdentity, isRefusal, planAttempt, recordRefusal, recordSuperseded, sameAttempt, savedResultProblem } from './lib/attempts.mjs';
 import { clearanceMatches, recoverRefusal, saveClearance, savedClearance } from './lib/recovery.mjs';
 import { keyFromHex, makeClient, runTag } from './lib/protocol.mjs';
-import { QUALIFYING_CYCLES, capacityRefusal, measuredRate, seriesPlan, sizePool, sizePlan } from './lib/sizing.mjs';
+import { QUALIFYING_CYCLES, capacityRefusal, measuredRate, seriesPlan, sizePool, sizePlan, runFlagProblem } from './lib/sizing.mjs';
 import { createPacer } from './lib/pacer.mjs';
-import { runWorker, whileBusy } from './lib/worker.mjs';
+import { runWorker, whileBusy, startCycle } from './lib/worker.mjs';
 import { runtimeFingerprint, sourceDigest } from './lib/source.mjs';
 import { preflightVerdict } from './lib/preflight.mjs';
 import { runNetcheck } from './lib/netcheck.mjs';
@@ -201,7 +201,7 @@ export async function netcheck(run, { strict = false } = {}) {
 async function cmdNetcheck(a, { quiet = false } = {}) {
   const st = await rec('GET', `/runs/${a.run}`);
   const r = await netcheck(a.run, { strict: st.run.failureModel !== 'HARNESS-SMOKE' });
-  evidenceFile(a.run, 'netcheck', `netcheck-${Date.now()}.json`, r);
+  evidenceFile(a.run, 'netcheck', `netcheck-${Date.now()}-${process.pid}.json`, r); // (two processes of one cycle start in the same millisecond)
   await rec('POST', `/runs/${a.run}/event`, { kind: 'netcheck', detail: r.ok ? `isolation checks passed (strict: ${r.strict}; host answers on the bridge address: ${r.hostAnswersOnBridge})` : `isolation FAILED: ${r.probes.filter((p) => !p.ok).map((p) => p.name).join('; ')}` }).catch(() => {});
   if (!quiet) console.log(JSON.stringify(r, null, 1));
   if (!r.ok) process.exitCode = 5;
@@ -366,6 +366,8 @@ async function cmdRun(a) {
   const workers = Number(a.workers ?? 1);
   const proc = a.proc ?? 'a';
   if (!/^[a-z]$/.test(proc) || !(workers >= 1 && workers <= 12)) throw new Error('bad --proc or --workers (1-12)');
+  const flagProblem = runFlagProblem(a);
+  if (flagProblem) throw new Error(`refused: ${flagProblem}. Nothing was seeded or started`);
   if (st.stopped) throw new Error(`run is stopped: ${JSON.stringify(st.stopped)}`);
   const smokeCrash = a['smoke-crash-after-claim-append'];
   if (smokeCrash && st.run.failureModel !== 'HARNESS-SMOKE') throw new Error('--smoke-crash-after-claim-append is only for HARNESS-SMOKE runs');
@@ -434,9 +436,11 @@ async function cmdRun(a) {
     await p.$executeRawUnsafe(`INSERT INTO approval (action_id) SELECT id FROM action WHERE id LIKE '${prefix}w${w}-%'`);
   }
   // The actions are seeded now. If an operator command holds the recorder's lock at this moment the recorder answers
-  // "busy" without having done anything: only that answer is repeated (lib/worker.mjs, whileBusy).
-  const started = await whileBusy(() => call('POST', `/runs/${a.run}/cycles/${cycle}/start`, startBody));
-  const cycleId = started.data.cycleId;
+  // "busy" without accepting the start: only that answer is repeated (lib/worker.mjs, whileBusy).
+  // If the answer to the start is lost, the recorder is asked whether it is on record (lib/worker.mjs, startCycle).
+  const started = await startCycle({ call, run: a.run, cycle, proc, body: startBody });
+  const cycleId = started.cycleId;
+  if (started.answerLost) console.error('the answer to the cycle start was lost; the recorder was asked and the start is on record');
   // A note only. The cycle is started: if this note is lost, the workers must still run (a lost answer here used to
   // end the process with a started cycle and no worker).
   await call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'netcheck', proc, detail: `clock offset to recorder ${started.clockOffsetMs} ms` }).catch((e) => console.error(`note not recorded (${lastLine(e)}); claiming continues`));
@@ -451,7 +455,8 @@ async function cmdRun(a) {
     if (wf) {
       console.error(`JOURNAL WRITE FAILED (${wf.what}, ${wf.code}); marker ${wf.marker}. Nothing more is written to this journal. Stop and report`);
       process.exitCode = 10; // `run` does not end with 0 after a journal write failure
-      // "Busy" is answered before the recorder reads or writes anything, so that one answer is repeated (lib/worker.mjs).
+      // "Busy" means the report was not accepted (the recorder records the busy answer itself, against the open cycle),
+      // so that one answer is repeated (lib/worker.mjs).
       await whileBusy(() => call('POST', `/runs/${a.run}/event`, { cycle, cycleId, kind: 'journal_write_failed', proc, worker, detail: `${wf.what}, ${wf.code}; marker ${wf.marker}` }))
         .catch((e) => console.error(`the journal write failure could NOT be reported to the recorder (${lastLine(e)})`));
     }
@@ -565,11 +570,15 @@ async function cmdCheck(a) {
   // (a check that could not be made is not a fact about the journal: nothing is saved, and `check` can be run again)
   if (repair.undetermined) throw new Error(`the torn final line could not be examined (${repair.undetermined}). No result was saved or sent (this attempt's directory holds the journal as found); run "check" again`);
   const tornTailRepairProblem = repair.wouldNotVerify ?? null;
-  const verdict = classifyCycle({ comparison, run: st.run, cycle: { settings: s, cutSentAt: v.cutRequestedAt, cutConfirmed: v.cutConfirmed, workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, rebootObservedAfterCut, authenticatedRejections: v.authenticatedRejections,
+  const verdict = classifyCycle({ comparison, run: st.run, cycle: { settings: s, cutSentAt: v.cutRequestedAt, cutConfirmed: v.cutConfirmed, workerStopsBeforeCut: v.workerStopsBeforeCut, workerStopsAfterCut: v.workerStopsAfterCut ?? [], silentWorkerStops: v.silentWorkerStops, rebootObservedAfterCut, authenticatedRejections: v.authenticatedRejections,
     journalWriteFailure, journalWriteFailures: v.journalWriteFailures ?? [], tornTailRepairProblem,
     // What the recorder says about its own records of this cycle (its acknowledgement ledger, and what its running
     // server could not store). Any damage: INCONCLUSIVE, decided here, before a result is saved or sent.
     recorderDamage: v.damage ?? null } });
+  // What the recorder checks a PASS against (rulings B and C): the identity found after the reboot, and the mark of
+  // the view this verdict was computed from (any record added since makes the recorder refuse the PASS).
+  const [{ id: pgSystemIdNow }] = await p.$queryRaw`SELECT system_identifier::text AS id FROM pg_control_system()`;
+  const identity = { pgSystemId: pgSystemIdNow, journalMarkerSha256: markerSha(j), installationId: row?.installation_id ?? null };
   const verifiedAt = Date.now();
   const toRec = (ms) => (Number.isFinite(ms) ? ms + offset : null); // this machine's clock -> recorder clock
   const timeline = {
@@ -604,7 +613,8 @@ async function cmdCheck(a) {
     cut: { requestedAt: v.cutRequestedAt, how: v.cutHow, commandStatus: v.cutCommandStatus, operatorConfirmed: v.cutConfirmed ?? null, operatorEvidence: v.operatorEvidence, operatorAttestedCut: v.operatorAttestedCut ?? null,
       independentlyConfirmed: false, note: 'the confirmation and any cut time are the operator\'s attestation, not an independent observation' },
     measuredRate: measuredRate(v.acks), sizing: v.starts.map((x) => ({ proc: x.proc, ...x.sizing })),
-    workerStopsBeforeCut: v.workerStopsBeforeCut, silentWorkerStops: v.silentWorkerStops, authenticatedRejections: v.authenticatedRejections,
+    workerStopsBeforeCut: v.workerStopsBeforeCut, workerStopsAfterCut: v.workerStopsAfterCut ?? [], silentWorkerStops: v.silentWorkerStops, authenticatedRejections: v.authenticatedRejections,
+    identity, evidenceMark: v.evidenceMark,
     timeline, files, evidenceDir: path.basename(dir), earlierAttempts: attempts, checkedAt: new Date(verifiedAt).toISOString(),
   };
   writeOnce(path.join(dir, 'recorder-cycle.json'), v);

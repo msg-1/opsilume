@@ -20,11 +20,11 @@ case "$1 $2" in
     esac ;;
   "ps -aq") case "$filter" in
       label=*) awk -F'|' '{print $1}' "$STUB/listed" ;;
-      volume=*) cat "$STUB/uses-volume" ;;
-      network=*) cat "$STUB/on-network" ;;
+      volume=*) [ ! -e "$STUB/fail-uses-volume" ] || exit 1; cat "$STUB/uses-volume" ;;
+      network=*) [ ! -e "$STUB/fail-on-network" ] || exit 1; cat "$STUB/on-network" ;;
     esac ;;
   "inspect --format") awk -F'|' -v c="$4" '$1==c {print $2"|"$3"|"$4"|"$5}' "$STUB/cinfo" ;;
-  "network ls") case "$filter" in label=*) cat "$STUB/nets-labelled" ;; name=*) cat "$STUB/nets-named" ;; esac ;;
+  "network ls") case "$filter" in label=*) cat "$STUB/nets-labelled" ;; name=*) [ ! -e "$STUB/fail-nets-named" ] || exit 1; cat "$STUB/nets-named" ;; esac ;;
   "network inspect") awk -F'|' -v n="$5" '$1==n {print $2"|"$3}' "$STUB/ninfo" ;;
   "network rm") [ -e "$STUB/keep-networks" ] || { grep -vx "$3" "$STUB/nets-labelled" >"$STUB/x" || true; mv "$STUB/x" "$STUB/nets-labelled"; }
                 [ ! -e "$STUB/volume-changes" ] || sed -i.bak 's/2026-11-17T10:30:49Z/2026-11-18T00:00:00Z/' "$STUB/volident" ;;
@@ -38,7 +38,7 @@ export PATH="$t/bin:$PATH" STUB="$t"
 [ "$(command -v docker)" = "$t/bin/docker" ] || { echo "the stub is not first on PATH"; exit 1; }
 fail() { echo "CONTAINERS-DOWN STUB TEST FAILED: $*"; cat "$t/calls" 2>/dev/null; exit 1; }
 good() {   # what a finished smoke run leaves: three stopped containers, three networks, two volumes
-  rm -f "$t"/keep-* "$t/volume-changes"; : >"$t/calls"
+  rm -f "$t"/keep-* "$t"/fail-* "$t/volume-changes"; : >"$t/calls"
   echo "${P}_pgdata ${P}_state" >"$t/volumes"
   { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opspilot.p7.data disposable-harness-smoke"; done; } >"$t/vlabels"
   { for v in pgdata state; do echo "${P}_$v 2026-11-17T10:30:49Z /var/lib/docker/volumes/${P}_$v/_data {\"opspilot.p7.data\":\"disposable-harness-smoke\"}"; done; } >"$t/volident"
@@ -70,6 +70,9 @@ echo "ok: the script's text has two removing commands (docker rm <id>, docker ne
 good; run 0 "DRY RUN: nothing was removed"; [ -z "$(removing)" ] || fail "the dry run removed something"
 out="$("$script")"; grep -q "Containers to remove (stopped): c1 c2 c3" <<<"$out" && grep -q "Networks to remove: ${P}_egress ${P}_p7db ${P}_p7gw" <<<"$out" && grep -q "Volumes KEPT, never removed by this script: ${P}_pgdata ${P}_state" <<<"$out" || fail "dry run listing: $out"
 echo "ok: dry run names the project, the exact containers and networks, the kept volumes, and removes nothing"
+
+# A docker listing that fails must refuse, never skip the check it feeds (before: an empty loop, in silence).
+for f in uses-volume nets-named on-network; do good; touch "$t/fail-$f"; refused "docker cannot list ($f)"; done
 
 for bad in opspilot opspilot-m16-p7 opspilot-isolated "${P}-2" "" ; do
   good; run 2 "must be exactly $P" --confirm "$bad"; [ ! -s "$t/calls" ] || fail "--confirm '$bad' reached docker"

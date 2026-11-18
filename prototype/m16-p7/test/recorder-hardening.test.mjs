@@ -2,6 +2,7 @@
 // HARNESS tests only: an in-process recorder on a temporary directory, loopback only.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { confirmedCut, markOf } from './helpers/cut.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -63,7 +64,8 @@ describe('C1: a journal write failure the check recorded ends recovery, even whe
     await x.close();
     // An empty list, or none, is not a report: in a cycle with no refusal on record such a PASS is stored.
     const y = await openCycle('c7ok');
-    assert.equal((await y.post('cycles/1/result', { cycleId: y.cycleId, verdict: 'PASS', needsRecovery: [], journalWriteFailuresReported: [], journalWriteFailure: null })).status, 200);
+    confirmedCut(y.store()); // (a PASS presupposes a recorded, confirmed cut)
+    assert.equal((await y.post('cycles/1/result', { cycleId: y.cycleId, verdict: 'PASS', needsRecovery: [], journalWriteFailuresReported: [], journalWriteFailure: null, ...markOf(y.store()) })).status, 200);
     await y.close();
   });
 });

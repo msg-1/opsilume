@@ -41,7 +41,9 @@ registry_before="$(cat "$work/recorder/volumes.jsonl" 2>/dev/null || true)"
 
 newdir=""; [ -d "$work/recorder/runs" ] || newdir=--new-directory   # only a recorder directory that has never held a run
 node "$here/recorder.mjs" serve --dir "$work/recorder" --port "$port" $newdir >"$work/recorder-$stamp.log" 2>&1 & rpid=$!
-trap 'kill $rpid 2>/dev/null || true' EXIT
+# On any failure the containers are STOPPED as well (never removed), so nothing keeps running and
+# ./smoke-containers-down.sh, which refuses running containers, can be used afterwards. A successful run stops them itself.
+trap 'code=$?; kill $rpid 2>/dev/null || true; [ "$code" -eq 0 ] || docker compose -p "$proj" -f "$here/compose.yml" -f "$here/compose.smoke.yml" stop >/dev/null 2>&1 || echo "NOTE: the smoke failed AND its containers could not be stopped: check docker compose -p $proj ps" >&2' EXIT
 sleep 1
 keyfile() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).keyFile))'; }
 keyA="$(node "$here/recorder.mjs" create-run --dir "$work/recorder" $newdir --run "$runA" --failure-model HARNESS-SMOKE --stop-on-inconclusive --machine "Docker Desktop (harness smoke only)" | keyfile)"

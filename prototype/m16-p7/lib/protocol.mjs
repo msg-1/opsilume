@@ -48,10 +48,29 @@ export function verifyResponse(key, { nonce, status, body, headers }) {
 }
 
 /** The test machine's client. Throws on an unauthenticated response; never retries (the caller decides). */
+export const monoMs = () => Number(process.hrtime.bigint() / 1_000_000n); // the host's monotonic clock: never set, never stepped
 export function makeClient({ baseUrl, key, run, timeoutMs = 10_000 }) {
+  // Requests are signed in the RECORDER's time, not this machine's: the recorder is asked for its time once (a signed,
+  // read-only request that is exempt from the time window), and from then on the timestamp is that time plus what
+  // this machine's monotonic clock has counted since. This machine's wall clock (wrong after a power cut, or corrected
+  // by NTP in the middle of a cycle) decides nothing.
+  let sync = null;
+  const send = async (method, path, body, now) => {
+    const headers = signRequest(key, { method, path, run, body, ...(now === undefined ? {} : { now }) });
+    const r = await fetch(`${baseUrl}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, body: body || undefined, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
+    const text = await r.text();
+    return { r, text, serverTime: verifyResponse(key, { nonce: headers['x-p7-nonce'], status: r.status, body: text, headers: r.headers }) };
+  };
   return async function call(method, path, payload) {
     const body = payload === undefined ? '' : JSON.stringify(payload);
-    const headers = signRequest(key, { method, path, run, body });
+    if (!sync) {
+      const t = await send('POST', `/runs/${run}/time`, '');
+      // (nothing of the request itself was sent yet)
+      if (t.serverTime === null) throw Object.assign(new Error(`recorder response to the time request before ${method} ${path} is not authenticated (status ${t.r.status})`), { status: t.r.status, unauthenticated: true });
+      if (!t.r.ok) throw Object.assign(new Error(`recorder refused the time request before ${method} ${path}: ${t.r.status}`), { status: t.r.status, data: t.text ? JSON.parse(t.text) : null });
+      sync = { serverMs: t.serverTime, mono: monoMs() };
+    }
+    const headers = signRequest(key, { method, path, run, body, now: sync.serverMs + (monoMs() - sync.mono) });
     const sentAt = Date.now();
     const r = await fetch(`${baseUrl}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, body: body || undefined, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' }); // a redirect is never followed: the signed request goes to the recorder address and nowhere else
     const text = await r.text();

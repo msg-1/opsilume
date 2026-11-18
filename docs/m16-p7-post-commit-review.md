@@ -320,3 +320,7 @@ Sections 1 to 12 are unchanged. The complete register, with the findings of the 
 | F24 | By design |
 
 Section 4.5 (documents contradicted by the code): the README sentence is corrected; the two script rows are unchanged, because no script was edited.
+
+## Resolutions added 18 November 2026 (later mission, uncommitted)
+
+F9, F11, F22: fixed. F17: partly fixed (unauthenticated lines only). F12, F21: changed, not validated against real Docker. F8, F16, F20: unchanged; see the table "Open after this mission" in `docs/m16-p7-hardening-progress.md`. **P7 remains NOT TESTED and NOT PASSED.**

@@ -2,6 +2,7 @@
 // HARNESS tests only: they say nothing about durability. Run: node --test prototype/m16-p7/test/
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { READY_SETTINGS, confirmedCut, qualifyingPassFields } from './helpers/cut.mjs';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -84,7 +85,7 @@ const callerFor = (base, dir, run, key = keyOf(dir, run)) => {
     if (/\/start$/.test(p) && body && body.readiness === undefined) {
       const st = runStore(dir, run), ev = st.events();
       if (st.run().failureModel === 'POWER-CUT' && !ev.some((e) => e.kind === 'readiness' || e.kind === 'cycle_start') && REQUIRED_ATTESTATIONS.every((i) => ev.some((e) => e.kind === 'attestation' && e.item === i))) makeReady(dir, run, body.workers, body.pgSystemId);
-      body = { ...body, readiness: TB(body.pgSystemId, body.workers) };
+      body = { ...body, readiness: TB(body.pgSystemId, body.workers), settings: body.settings ?? READY_SETTINGS, bootId: body.bootId ?? 'boot-at-start' };
     }
     try { const r = await c(method, p, body); return { status: 200, data: r.data }; } catch (e) { return { status: e.status, data: e.data, unauthenticated: e.unauthenticated }; }
   };
@@ -167,7 +168,7 @@ describe('recorder protocol and state machine', () => {
   const dir = path.join(tmp, 'rec');
   // 'p' is a qualifying run: one process and one worker, as decision B1 requires. Everything about several streams
   // (two processes, three workers) is the same protocol for every run type and is exercised on the smoke run 'pm'.
-  let srv, call, callM, cycleId, cycleM;
+  let srv, call, call2, callM, cycleId, cycleId2, cycleM;
   const ack = (body) => callM('POST', '/runs/pm/ack', { cycle: 1, cycleId: cycleM, ...body });
   const act = (proc, w, k) => T('pm', `c0001${proc}w${w}-${k}`);
   const actP = (k) => T('p', `c0001aw1-${k}`);
@@ -175,6 +176,10 @@ describe('recorder protocol and state machine', () => {
     mk(dir, { run: 'p', failureModel: 'POWER-CUT', storage: STORAGE, identity: IDENTITY, package: PACKAGE });
     createRun(dir, { run: 'other', failureModel: 'POWER-CUT', storage: STORAGE, identity: IDENTITY, package: PACKAGE });
     mk(dir, { run: 'pm', failureModel: 'HARNESS-SMOKE' });
+    // 'p2': a second qualifying run whose first cycle has no refusal on record. The recorder stores no PASS for a cycle
+    // in which it refused an authenticated request, and cycle 1 of 'p' is refused three starts on purpose below; so
+    // the tests of decisions 1 and 2, which need a stored PASS, run on 'p2'. Their assertions are unchanged.
+    mk(dir, { run: 'p2', failureModel: 'POWER-CUT', storage: STORAGE, identity: IDENTITY, package: PACKAGE });
     srv = await serve(dir);
     call = callerFor(srv.base, dir, 'p');
     callM = callerFor(srv.base, dir, 'pm');
@@ -261,31 +266,49 @@ describe('recorder protocol and state machine', () => {
     assert.equal((await ack({ proc: 'b', worker: 1, n: 5, kind: 'claim', seq: 0, actionId: act('b', 1, 0) })).data.error, 'outside_cycle');
   });
 
+  test('a PASS is not stored for a cycle with authenticated refusals that a restarted recorder took over; INCONCLUSIVE is', async () => {
+    // Cycle 1 of 'p' was refused three starts above (a second start of process a, a second process, more workers), and
+    // the recorder was restarted while it was open (the replay test). Either is enough; the takeover is checked first.
+    assert.ok(cycleView(runStore(dir, 'p'), 1).authenticatedRejections >= 3);
+    const pass = await call('POST', '/runs/p/cycles/1/result', { cycleId, verdict: 'PASS', needsRecovery: [] });
+    assert.deepEqual([pass.status, pass.data.error], [409, 'pass_for_a_cycle_the_recorder_marked_damaged']);
+    // (the restarted server records the takeover when it first serves the run: with the request above at the latest)
+    assert.match(cycleView(runStore(dir, 'p'), 1).damage.recorderRestarted, /restarted while this cycle was open/);
+    assert.equal(runStore(dir, 'p').result(1), null);
+    assert.equal((await call('POST', '/runs/p/cycles/1/result', { cycleId, verdict: 'INCONCLUSIVE', inconclusive: ['RECORDER_REJECTED_AUTHENTICATED_MESSAGES'], needsRecovery: [] })).data.stopped, true, 'and in a qualifying run that ends the series');
+  });
+
   test('decision 2: a PASS with the journal one claim ahead counts only after observed quarantine and clearance', async () => {
-    const result = { cycleId, verdict: 'PASS', quarantineRequired: true, uncommitted: { seq: 9, actionId: actP(9) }, needsRecovery: ['clear'] };
-    assert.equal((await call('POST', '/runs/p/cycles/1/result', result)).status, 200);
-    assert.equal(cycleView(runStore(dir, 'p'), 1).final, 'PENDING_RECOVERY');
-    assert.equal((await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
-    assert.equal((await call('POST', '/runs/p/event', { cycle: 1, cycleId, kind: 'quarantine_observed', detail: 'database head 8 is behind the journal head 9' })).status, 200);
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: false })).data.error, 'clearance_not_shown');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: { seq: 8, actionId: 'x' } })).data.error, 'clearance_not_shown');
-    const ok = await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted, digest: 'd' });
+    call2 = callerFor(srv.base, dir, 'p2'); // (an earlier test restarted the recorder: the client is for the server that runs now)
+    cycleId2 = (await call2('POST', '/runs/p2/cycles/1/start', { pgSystemId: pg('p2'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId; // a cycle with no refusal on record
+    assert.match(cycleId2, /^[0-9a-f]{32}$/);
+    // (a PASS presupposes an acknowledging worker and a recorded, confirmed cut: the recorder stores none without)
+    assert.equal((await call2('POST', '/runs/p2/ack', { cycle: 1, cycleId: cycleId2, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('p2', 'c0001aw1-1') })).status, 200);
+    confirmedCut(runStore(dir, 'p2'));
+    const result = { cycleId: cycleId2, verdict: 'PASS', quarantineRequired: true, uncommitted: { seq: 9, actionId: T('p2', 'c0001aw1-9') }, needsRecovery: ['clear'], ...qualifyingPassFields(runStore(dir, 'p2'), { run: 'p2', pgSystemId: pg('p2') }) };
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/result', result)).status, 200);
+    assert.equal(cycleView(runStore(dir, 'p2'), 1).final, 'PENDING_RECOVERY');
+    assert.equal((await call2('POST', '/runs/p2/cycles/2/start', { pgSystemId: pg('p2'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'previous_cycle_not_recovered');
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2, cleared: true, uncommitted: result.uncommitted })).data.error, 'quarantine_not_observed');
+    assert.equal((await call2('POST', '/runs/p2/event', { cycle: 1, cycleId: cycleId2, kind: 'quarantine_observed', detail: 'database head 8 is behind the journal head 9' })).status, 200);
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2, cleared: false })).data.error, 'clearance_not_shown');
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2, cleared: true, uncommitted: { seq: 8, actionId: 'x' } })).data.error, 'clearance_not_shown');
+    const ok = await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2, cleared: true, uncommitted: result.uncommitted, digest: 'd' });
     assert.equal(ok.data.final, 'PASS');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId, cleared: true, uncommitted: result.uncommitted })).data.error, 'already_recovered', 'repeated recovery');
-    assert.deepEqual(runStore(dir, 'p').accepted().map((u) => [u.seq, u.actionId]), [[9, actP(9)]]);
-    assert.equal((await call('POST', '/runs/p/cycles/1/result', { cycleId, verdict: 'PASS' })).data.error, 'cycle_not_open', 'a result is write-once');
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2, cleared: true, uncommitted: result.uncommitted })).data.error, 'already_recovered', 'repeated recovery');
+    assert.deepEqual(runStore(dir, 'p2').accepted().map((u) => [u.seq, u.actionId]), [[9, T('p2', 'c0001aw1-9')]]);
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/result', { cycleId: cycleId2, verdict: 'PASS' })).data.error, 'cycle_not_open', 'a result is write-once');
   });
 
   test('decision 1: an INCONCLUSIVE cycle in a qualifying run stops it and breaks the series', async () => {
-    const c2 = (await call('POST', '/runs/p/cycles/2/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
-    assert.equal((await call('POST', '/runs/p/cycles/2/result', { cycleId: c2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
-    assert.equal((await call('POST', '/runs/p/cycles/1/recovered', { finalState: FS, cycleId })).data.error, 'run_stopped', 'only the inconclusive cycle may still be recovered');
-    assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { cycleId: c2 })).data.error, 'final_state_missing');
-    assert.equal((await call('POST', '/runs/p/cycles/2/recovered', { finalState: FS, cycleId: c2 })).status, 200, 'so that a new run can continue this state');
-    assert.equal((await call('POST', '/runs/p/cycles/3/start', { pgSystemId: pg('p'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
-    const st = (await call('GET', '/runs/p')).data;
+    const c2 = (await call2('POST', '/runs/p2/cycles/2/start', { pgSystemId: pg('p2'), proc: 'a', workers: 1, dbHead: 9 })).data.cycleId;
+    assert.equal((await call2('POST', '/runs/p2/cycles/2/result', { cycleId: c2, verdict: 'INCONCLUSIVE', inconclusive: ['POWER_LOSS_NOT_CONFIRMED'], needsRecovery: [] })).data.stopped, true);
+    assert.equal((await call2('POST', '/runs/p2/cycles/3/start', { pgSystemId: pg('p2'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped');
+    assert.equal((await call2('POST', '/runs/p2/cycles/1/recovered', { finalState: FS, cycleId: cycleId2 })).data.error, 'run_stopped', 'only the inconclusive cycle may still be recovered');
+    assert.equal((await call2('POST', '/runs/p2/cycles/2/recovered', { cycleId: c2 })).data.error, 'final_state_missing');
+    assert.equal((await call2('POST', '/runs/p2/cycles/2/recovered', { finalState: FS, cycleId: c2 })).status, 200, 'so that a new run can continue this state');
+    assert.equal((await call2('POST', '/runs/p2/cycles/3/start', { pgSystemId: pg('p2'), proc: 'a', workers: 1, dbHead: 9 })).data.error, 'run_stopped', 'still stopped');
+    const st = (await call2('GET', '/runs/p2')).data;
     assert.match(st.stopped.reason, /series broken/);
     assert.equal(st.stopped.kind, 'inconclusive');
     assert.deepEqual([st.streak.consecutivePhysicalPasses, st.streak.brokenAtCycle, st.streak.brokenBy, st.streak.met], [1, 2, 'INCONCLUSIVE', false]);
@@ -430,7 +453,10 @@ describe('run lifecycle: a new run continues the same state after INCONCLUSIVE',
     // cycle 1: PASS with the journal one claim ahead -> quarantine, clearance: one claim accepted as never committed
     const id1 = (await call('POST', '/runs/a1/cycles/1/start', { pgSystemId: pg('a1'), proc: 'a', workers: 1, dbHead: 0 })).data.cycleId;
     const unc = { seq: 31, actionId: T('a1', 'c0001aw1-31') };
-    await call('POST', '/runs/a1/cycles/1/result', { cycleId: id1, verdict: 'PASS', quarantineRequired: true, uncommitted: unc, needsRecovery: ['clear'] });
+    // (a PASS presupposes an acknowledging worker and a recorded, confirmed cut: the recorder stores none without)
+    await call('POST', '/runs/a1/ack', { cycle: 1, cycleId: id1, proc: 'a', worker: 1, n: 1, kind: 'claim', seq: 1, actionId: T('a1', 'c0001aw1-1') });
+    confirmedCut(runStore(dir, 'a1'));
+    assert.equal((await call('POST', '/runs/a1/cycles/1/result', { cycleId: id1, verdict: 'PASS', quarantineRequired: true, uncommitted: unc, needsRecovery: ['clear'], ...qualifyingPassFields(runStore(dir, 'a1'), { run: 'a1', pgSystemId: pg('a1') }) })).status, 200);
     await call('POST', '/runs/a1/event', { cycle: 1, cycleId: id1, kind: 'quarantine_observed' });
     assert.equal((await call('POST', '/runs/a1/cycles/1/recovered', { cycleId: id1, cleared: true, uncommitted: unc, digest: 'd', finalState: { ...S1, head: 31 } })).data.final, 'PASS');
     // cycle 2: INCONCLUSIVE -> the run stops
@@ -1776,7 +1802,7 @@ describe('a qualifying run through the real endpoints and commands (no test shor
     const ready = await post('readiness', { test: binding() });
     assert.equal(ready.status, 200, JSON.stringify(ready.data));
     const sizing = { ...B1 };
-    const start = (cycle, dbHead, over = {}) => post(`cycles/${cycle}/start`, { pgSystemId: X, proc: 'a', workers: 1, dbHead, sizing, readiness: binding(), ...over });
+    const start = (cycle, dbHead, over = {}) => post(`cycles/${cycle}/start`, { pgSystemId: X, proc: 'a', workers: 1, dbHead, sizing, readiness: binding(), settings: READY_SETTINGS, bootId: 'boot-at-start', ...over });
 
     async function cycle(n, head) {
       const cycleId = (await start(n, head)).data.cycleId;
@@ -1785,7 +1811,7 @@ describe('a qualifying run through the real endpoints and commands (no test shor
       for (const [k, kind] of [[1, 'claim'], [2, 'dispatch']]) assert.equal((await post('ack', { cycle: n, cycleId, proc: 'a', worker: 1, n: k, kind, seq, actionId })).status, 200);
       runStore(dir, 'e1').event({ cycle: n, kind: 'cut_sent', how: 'manual prompt' }); // as `recorder.mjs cut` writes it after its wait
       assert.equal(op('confirm-cut', '--run', 'e1', '--cycle', String(n), '--power-was-cut', 'yes', '--evidence', 'unit test: no power exists here').status, 0);
-      assert.equal((await post(`cycles/${n}/result`, { cycleId, verdict: 'PASS', needsRecovery: [] })).status, 200);
+      assert.equal((await post(`cycles/${n}/result`, { cycleId, verdict: 'PASS', needsRecovery: [], ...qualifyingPassFields(runStore(dir, 'e1'), { run: 'e1', cycle: n, pgSystemId: X }) })).status, 200);
       assert.equal((await post(`cycles/${n}/recovered`, { cycleId, finalState: { installationId: 'inst-1', head: seq, headHash: 'ab'.repeat(32) } })).status, 200);
       return seq;
     }

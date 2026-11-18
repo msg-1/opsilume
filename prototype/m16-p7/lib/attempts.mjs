@@ -71,9 +71,23 @@ export const attemptIdentity = (plan) => ({ dir: plan.fresh, id: randomUUID(), e
  */
 export function savedResultProblem(saved, view) {
   if (saved?.verdict !== 'PASS') return null;
+  // Once the recorder holds a result for the cycle, nothing more can be stored: a resend is answered "not open", and
+  // `check` recognises its own result by its attempt id. Marking it here could mark a result the recorder did store.
+  if (view?.result) return null;
+  // Ruling C: the PASS was computed from one state of the recorder's records; if anything was added since, it is stale.
+  if (typeof saved.evidenceMark === 'string' && typeof view?.evidenceMark === 'string' && saved.evidenceMark !== view.evidenceMark) return 'the recorder\'s records of the cycle changed since this result was computed';
   if (view?.damaged) return `the recorder's records of the cycle are damaged (${Object.values(view.damage ?? {}).filter(Boolean).join('; ') || 'no detail'})`;
   if (view?.authenticatedRejections > 0) return `the cycle view shows ${view.authenticatedRejections} authenticated refusal(s) by the recorder`;
   if (view?.journalWriteFailures?.length) return 'the cycle view shows a reported journal write failure';
+  // What the recorder holds about the cut and the workers may have changed since the PASS was computed (the operator
+  // withdrew the confirmation; a stop was reported late). Only for a real cycle view, which always says whether a cut
+  // was requested.
+  if (view && 'cutRequestedAt' in view) {
+    if (!view.cutRequestedAt) return 'the cycle view shows no cut';
+    if (view.cutConfirmed !== 'yes') return 'the cycle view shows a cut that is not confirmed';
+  }
+  if (view?.workerStopsBeforeCut?.length || view?.silentWorkerStops?.length) return 'the cycle view shows a workload that stopped before the cut';
+  if (view?.workerStopsAfterCut?.length) return 'the cycle view shows a worker that stopped after the cut request';
   return null;
 }
 /** Marks a saved result that `check` itself will not send (see savedResultProblem). Same marker family as a refusal. */

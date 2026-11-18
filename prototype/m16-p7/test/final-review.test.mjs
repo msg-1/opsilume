@@ -2,6 +2,7 @@
 // HARNESS tests only: in-process recorders on temporary directories, loopback only.
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
+import { confirmedCut, markOf } from './helpers/cut.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -43,29 +44,61 @@ const FINAL = { installationId: 'inst-1', head: 1, headHash: 'ab'.repeat(32) };
 describe('D1: a saved PASS is not sent again once the cycle view no longer supports it', () => {
   test('after an authenticated refusal in the cycle, the view the recorder serves makes a saved PASS stale', async () => {
     const x = await openCycle('d1a');
+    confirmedCut(x.store()); // (a PASS presupposes a recorded, confirmed cut)
     const saved = { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [], attempt: { id: 'a1' } }; // saved, not yet delivered
     assert.equal(savedResultProblem(saved, await x.view()), null, 'while nothing was refused it may be sent');
     assert.equal((await x.ack(3, 'claim', { cycleId: 'f'.repeat(32) })).data.error, 'wrong_cycle_id'); // an authenticated refusal in this cycle
     assert.match(savedResultProblem(saved, await x.view()), /1 authenticated refusal/, 'check will not send it; it marks it and decides afresh');
     await x.close();
   });
-  test('a refused PASS whose answer was lost: after a recorder restart the refusal itself is on record, and the saved PASS is stale', async () => {
+  test('a refused PASS whose answer was lost: after a recorder restart the takeover and the refusal are on record, and the saved PASS is stale', async () => {
     const x = await openCycle('d1b');
     fs.chmodSync(path.join(x.root, 'acks', 'cycle-0001.jsonl'), 0o444);
     await x.ack(3, 'claim', { seq: 2, actionId: `${runTag('d1b')}c0001aw1-2` }); // cannot be stored: damage in memory only
     fs.chmodSync(path.join(x.root, 'acks', 'cycle-0001.jsonl'), 0o644);
     const saved = { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [], attempt: { id: 'a1' } };
     assert.equal((await x.post('cycles/1/result', saved)).data.error, 'pass_for_a_cycle_the_recorder_marked_damaged'); // ... and suppose this answer never reached the test machine
-    await x.restart(); // the in-memory damage is gone
+    await x.restart(); // what the earlier server knew only in memory is gone
     const v = await x.view();
-    assert.deepEqual([v.damaged, v.authenticatedRejections], [false, 1], 'the damage is forgotten; the refusal of the PASS is not');
-    assert.match(savedResultProblem(saved, v), /1 authenticated refusal/);
+    // The reason is forgotten; the refusals are not: the refused PASS and (since the review of 18 November 2026: an
+    // acknowledgement the recorder could not handle is refused on record) the acknowledgement that could not be stored.
+    assert.deepEqual([v.damage.recorderMemory, v.authenticatedRejections], [null, 2], 'the reason is forgotten; the refusals are not');
+    // ... and the server that took the cycle over says so, which is damage of its own: it cannot know what was forgotten.
+    assert.equal(v.damaged, true);
+    assert.match(savedResultProblem(saved, v), /restarted while this cycle was open/);
+    assert.match(savedResultProblem(saved, { ...v, damaged: false }), /2 authenticated refusal/, 'the refusals on record would be enough by themselves');
+    // And if the saved PASS were sent all the same, the recorder refuses it.
+    assert.equal((await x.post('cycles/1/result', saved)).data.error, 'pass_for_a_cycle_the_recorder_marked_damaged');
+    assert.equal(x.store().result(1), null);
     await x.close();
   });
-  test('STATED LIMIT: the recorder itself still stores a PASS for a cycle with refusals on record; only `check` prevents it', async () => {
+  test('the recorder itself refuses a PASS for a cycle with an authenticated refusal on record (the gate behind `check`)', async () => {
     const x = await openCycle('d1c');
-    await x.ack(3, 'claim', { cycleId: 'f'.repeat(32) });
-    assert.equal((await x.post('cycles/1/result', { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [] })).status, 200);
+    assert.equal((await x.ack(3, 'claim', { cycleId: 'f'.repeat(32) })).data.error, 'wrong_cycle_id');
+    const pass = await x.post('cycles/1/result', { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [] });
+    assert.deepEqual([pass.status, pass.data.error], [409, 'pass_for_a_cycle_with_authenticated_rejections']);
+    assert.equal(x.store().result(1), null, 'nothing was stored');
+    // A restarted recorder refuses as well. It reads the refusals from the ledger (the count is unchanged), and it
+    // stores no PASS for a cycle it took over in any case: that is the reason it gives.
+    await x.restart();
+    assert.equal(cycleView(x.store(), 1).authenticatedRejections, 2, 'the refused request and the refused PASS');
+    assert.equal((await x.post('cycles/1/result', { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [] })).data.error, 'pass_for_a_cycle_the_recorder_marked_damaged');
+    // The cycle is not a dead end: the verdict the refusals call for is accepted, and closes it.
+    assert.equal((await x.post('cycles/1/result', { cycleId: x.cycleId, verdict: 'INCONCLUSIVE', inconclusive: ['RECORDER_REJECTED_AUTHENTICATED_MESSAGES'], needsRecovery: [] })).status, 200);
+    assert.equal((await x.view()).final, 'INCONCLUSIVE');
+    await x.close();
+  });
+  test('a refusal that consistently names another cycle does not block the PASS of the open cycle, and refusals after the result change nothing stored', async () => {
+    const x = await openCycle('d1d');
+    confirmedCut(x.store());
+    // a refusal that names another cycle (cycle 2 has not started): it is logged as naming cycle 2, and not counted against cycle 1
+    // (refusals before the start, in another cycle, or by a wrong clock: test/d1-gate.test.mjs)
+    assert.equal((await x.post('cycles/2/start', { pgSystemId: '6800000000000000001', proc: 'a', workers: 1, dbHead: 1 })).data.error, 'cycle_1_is_open');
+    assert.equal((await x.view()).authenticatedRejections, 0);
+    assert.equal((await x.post('cycles/1/result', { cycleId: x.cycleId, verdict: 'PASS', needsRecovery: [], ...markOf(x.store()) })).status, 200);
+    // refusals during the recovery of a cycle that already has its result change nothing that was stored
+    assert.equal((await x.post('cycles/1/recovered', { cycleId: x.cycleId })).data.error, 'final_state_missing');
+    assert.equal((await x.post('cycles/1/recovered', { cycleId: x.cycleId, finalState: FINAL })).data.final, 'PASS');
     await x.close();
   });
   test('check re-vets a saved PASS against the cycle view before it re-sends it', () => {

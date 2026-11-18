@@ -2,6 +2,8 @@
 # Removes the DISPOSABLE HARNESS-SMOKE Docker state, and nothing else: the containers, networks and the two volumes of
 # the Compose project "opspilot-m16-p7-smoke". It is the only place in the P7 harness that removes a volume.
 #   ./smoke-teardown.sh                                   dry run: checks everything, prints what would be removed
+#                                                         (it starts one temporary read-only container to read the
+#                                                         journal volume's marker, and removes that container again)
 #   ./smoke-teardown.sh --confirm opspilot-m16-p7-smoke --volume-removal-authorised-by-product-owner
 #                                                         removes exactly what the dry run printed, VOLUMES INCLUDED
 # DISABLED BY DEFAULT: --confirm alone is refused. Deleting the smoke volumes needs the product owner's separate, explicit
@@ -39,13 +41,16 @@ for v in "${VOLS[@]}"; do
   [ "$(label "$v" com.docker.compose.project)" = "$PROJ" ] || refuse "volume $v does not belong to project $PROJ"
   [ "${PROJ}_$(label "$v" com.docker.compose.volume)" = "$v" ] || refuse "volume $v is not the Compose volume its name says"
   [ "$(label "$v" opspilot.p7.data)" = "$WANT_CLASS" ] || refuse "volume $v is not labelled opspilot.p7.data=$WANT_CLASS (found '$(label "$v" opspilot.p7.data)')"
-  for c in $(docker ps -aq --filter "volume=$v"); do
+  users="$(docker ps -aq --filter "volume=$v")" || refuse "the containers that use volume $v could not be listed"
+  for c in $users; do
     [ "$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$c")" = "$PROJ" ] || refuse "volume $v is used by container $c, which is not part of project $PROJ"
   done
 done
 # The marker `p7.mjs init` writes into the journal volume. Read-only, no network. The harness image declares no volumes
-# of its own, so this temporary container creates and removes nothing but itself.
-marker="$(docker run --rm --network none --entrypoint sh -v "${VOLS[1]}:/state:ro" opspilot-isolated-api:latest -c 'cat /state/p7-volume.json 2>/dev/null || { [ -z "$(ls -A /state)" ] && echo EMPTY || echo NO-MARKER; }')"
+# of its own, so this temporary container creates and removes nothing but itself. NOTE: this runs in the DRY RUN too:
+# the dry run starts this one short-lived container (and removes it). `--pull never`: it never fetches an image; if the
+# image is not there, the script refuses.
+marker="$(docker run --rm --pull never --network none --entrypoint sh -v "${VOLS[1]}:/state:ro" opspilot-isolated-api:latest -c 'cat /state/p7-volume.json 2>/dev/null || { [ -z "$(ls -A /state)" ] && echo EMPTY || echo NO-MARKER; }')" || refuse "the journal volume's marker could not be read (is the image opspilot-isolated-api:latest present? it is never pulled)"
 case "$marker" in
   EMPTY) echo "journal volume: empty (init never ran)" ;;
   *'"failureModel": "HARNESS-SMOKE"'*) echo "journal volume: initialised by a HARNESS-SMOKE run" ;;
@@ -56,6 +61,8 @@ echo "Compose project: $PROJ"
 echo "Containers and networks: those of project $PROJ only (docker compose -p $PROJ down, without -v)"
 echo "Volumes: ${VOLS[*]}"
 if [ -z "$confirm" ]; then echo "DRY RUN: nothing was removed. Removing the above, volumes included, needs the product owner's separate authorisation."; exit 0; fi
-docker compose -p "$PROJ" down
+# From a directory without a Compose file, so the project is addressed by its name alone (from the harness directory
+# Compose would read compose.yml, which needs the run's variables, and fail before removing anything).
+(cd / && docker compose -p "$PROJ" down)
 docker volume rm "${VOLS[0]}" "${VOLS[1]}"
 echo "removed the disposable smoke state of $PROJ. Recorder and evidence directories were not touched."
