@@ -4,6 +4,24 @@
 
 **Scope:** research, inspection and documentation only. No Oracle account was created or used, nothing was provisioned, and no application code, Dockerfile or Compose file was changed. All Oracle facts come from public pages read on 18 November 2026 (section 15).
 
+**Status note (18 November 2026, deployment readiness validation; the audit below is unchanged).** Read it together with [DEPLOYMENT_READINESS_REPORT.md](DEPLOYMENT_READINESS_REPORT.md).
+
+**What changed since the audit:**
+- The section 11 application changes are implemented on `feature/opsilume-public-demo` (commit `80df9d9`, not merged), with one difference: there is no published visitor account. Visitors enter without a password, and nobody else can sign in on the public endpoint.
+- The demo allows **2** concurrent investigations, not 3, with a 2-minute time limit.
+
+**Measured in the readiness validation:**
+- The long-running services' memory limits total about 3.3 GB, as estimated in section 5. The one-off `migrate` container adds 512 MB while it runs.
+- The stack used about **530 MiB at idle** (arm64 containers on Docker Desktop).
+- The locally built images are larger than the section 5 figures: API 854 MB, AI 696 MB, web 464 MB, before the base images. Allow 3–5 GB of disk for images and build cache.
+
+**What the owner must still verify personally before provisioning:** the section 16 checklist, in particular:
+- the A1 allowance and capacity actually shown in the console;
+- card acceptance;
+- the permanent home region;
+- not upgrading the account;
+- a domain or host name that can receive a Let's Encrypt certificate (ports 80 and 443 reachable from the internet).
+
 Labels used throughout:
 
 | Label | Meaning |

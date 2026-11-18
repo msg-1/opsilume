@@ -1,6 +1,6 @@
 # Project status
 
-**Last updated:** 18 November 2026 (public demo mode implemented, security-reviewed and remediated on `feature/opsilume-public-demo`, uncommitted at the time of writing).
+**Last updated:** 18 November 2026 (public demo mode committed on `feature/opsilume-public-demo` as `80df9d9` and pushed; deployment readiness validated locally, recorded in the commit that follows it).
 
 **Status recorded against:** branch `prototype/m16-p7-durability-harness`. The P7 hardening is commit `2de30aa1d262ad1a3c52305f29158d17000fef5d`; this documentation was added in the commit that follows it. `develop` is at `075302c`. `main` holds only the initial commit (`aed4476`).
 
@@ -89,7 +89,23 @@ Check the live state with `git branch --show-current`, `git rev-parse HEAD` and 
 | Backups and restore drill | COMPLETE (local) | Drill on the throwaway stack ([backup-and-restore.md](backup-and-restore.md)) |
 | Post-restore remediation safety (M16) | IN PROGRESS | Design reviewed; Phase 0 and Phase 0.5 prototypes validated in isolation; not in the product |
 | P7 durability harness | IMPLEMENTED | See section 6 |
-| Public demo mode (`PUBLIC_DEMO_MODE`) | IMPLEMENTED; security-reviewed and remediated; tested locally | Visitor entry without credentials; server-side visitor restrictions; visitors isolated by session; per-session, per-address and demo-wide investigation quotas; no sign-in but the visitor's; rule-based engine required; idempotent setup and locked reset. A 2-minute time limit per investigation, cancellation that frees the worker within seconds, and visitor-facing errors limited to the API's own wording. Tests: 85 dedicated API tests (including a real worker and queue), API 508/508, web 74/74, AI 358; the Nginx template and the web app's header handling exercised in throwaway processes. **NOT TESTED:** the `deploy/public-demo` containers together, TLS, client addresses on the real host, a reset under live traffic, a public host, an external security review. The API's rate limiters are in memory for one process ([deployment/PUBLIC_DEMO_MODE.md](deployment/PUBLIC_DEMO_MODE.md)) |
+| Public demo mode (`PUBLIC_DEMO_MODE`) | IMPLEMENTED; security-reviewed and remediated; tested locally | Visitor entry without credentials; server-side visitor restrictions; visitors isolated by session; per-session, per-address and demo-wide investigation quotas; no sign-in but the visitor's; rule-based engine required; idempotent setup and locked reset. A 2-minute time limit per investigation, cancellation that frees the worker within seconds, and visitor-facing errors limited to the API's own wording. Implementation committed as `80df9d9`, not merged. Tests: 86 dedicated API tests (including a real worker and queue), API 509/509, web 74/74, AI 358.
+
+**Readiness validation, local** ([deployment/DEPLOYMENT_READINESS_REPORT.md](deployment/DEPLOYMENT_READINESS_REPORT.md)):
+- the deployment's arm64 images ran together as containers, with the Compose file's configuration;
+- the whole visitor journey passed through Nginx over HTTPS with a self-signed certificate;
+- a reset under light live traffic passed;
+- one proxy defect was found and fixed: internal API endpoints were reachable through `/api/../`.
+
+**BLOCKED:** starting the Compose project itself (Docker Desktop has no free network address pool).
+
+**NOT TESTED:**
+- TLS issuance and renewal on a real domain;
+- client addresses on the real host;
+- a public host;
+- an external security review.
+
+The API's rate limiters are in memory for one process ([deployment/PUBLIC_DEMO_MODE.md](deployment/PUBLIC_DEMO_MODE.md)) |
 
 ## 6. In progress: Milestone 16, P7 durability
 
@@ -118,7 +134,7 @@ The full record is in [m16-p7-hardening-progress.md](m16-p7-hardening-progress.m
 | GitHub validation against github.com | BLOCKED | A read-only token for one test repository |
 | Paid model evaluation | BLOCKED | An approved model budget (the plan proposes a $1.00 ceiling; [ai-validation.md](ai-validation.md)) |
 | Release 0.1.0 to `main` | BLOCKED | Owner review and approval |
-| Public deployment | NOT STARTED | Section 10; the public demo mode is implemented (section 5), the hosting account is not |
+| Public deployment | NOT STARTED; readiness validated locally (CONDITIONAL, [deployment/DEPLOYMENT_READINESS_REPORT.md](deployment/DEPLOYMENT_READINESS_REPORT.md)) | Section 10; the public demo mode is implemented (section 5), the hosting account is not |
 
 ## 8. Unverified functionality
 
@@ -191,9 +207,14 @@ The preferred target is Oracle Cloud Always Free. That is subject to verifying e
 **Resume here.** Two independent tracks:
 
 **Portfolio deployment (preferred next):**
-1. Owner review of the public demo mode and its security remediation on `feature/opsilume-public-demo` ([deployment/PUBLIC_DEMO_MODE.md](deployment/PUBLIC_DEMO_MODE.md), sections 12 and 13), then a separate commit decision.
+1. The public demo mode and its readiness validation are committed on `feature/opsilume-public-demo`, which is not merged ([deployment/DEPLOYMENT_READINESS_REPORT.md](deployment/DEPLOYMENT_READINESS_REPORT.md): ready for a hosting validation, CONDITIONAL).
 2. Owner decision on the CONDITIONAL GO in [deployment/ORACLE_FREE_TIER_FEASIBILITY.md](deployment/ORACLE_FREE_TIER_FEASIBILITY.md). If yes, the owner creates the Oracle account and checks the card, home region, allowance and A1 capacity.
-3. A deployment-readiness review: run `deploy/public-demo` as containers once (it needs Docker network space), then TLS on the real host, and confirm in Nginx's access log that it sees real client addresses.
+3. On a real host, after the owner's decision:
+   - start the Compose project;
+   - issue and renew TLS as documented;
+   - confirm in Nginx's access log that it sees real client addresses (readiness report, section 13).
+
+   Locally, the Compose project can run only if Docker address space is freed or an explicit subnet is approved.
 
 **P7:** decide how to close the container-smoke gap:
 

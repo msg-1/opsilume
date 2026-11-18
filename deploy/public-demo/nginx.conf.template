@@ -29,6 +29,11 @@ server {
   add_header Strict-Transport-Security "max-age=31536000" always;
   add_header X-Content-Type-Options nosniff always;
 
+  # A path that climbs out of /api (/api/../metrics, or %2e / %25 encoded) is matched here as /metrics but
+  # forwarded as sent, and would reach the API's unauthenticated /metrics, /ready and /health. No page or API
+  # route uses dot segments or encoded dots in its path, so such requests are refused. Query strings are not checked.
+  if ($request_uri ~* "^[^?]*(\.\.|%2e|%25)") { return 400; }
+
   # Bounded requests: the demo accepts no uploads or ingestion from visitors.
   client_max_body_size 256k;
   client_body_timeout 10s;

@@ -1,6 +1,6 @@
 # Public demo mode
 
-**Status (18 November 2026):** implemented, security-reviewed and remediated, and tested locally on branch `feature/opsilume-public-demo`. **Not deployed:** nothing is public, and no cloud resource exists. The containers of `deploy/public-demo` have not run together, TLS has not been issued, and there has been no external security review. Hosting: [ORACLE_FREE_TIER_FEASIBILITY.md](ORACLE_FREE_TIER_FEASIBILITY.md).
+**Status (18 November 2026):** implemented, security-reviewed and remediated, and tested locally on branch `feature/opsilume-public-demo`. **Not deployed:** nothing is public, and no cloud resource exists. The Compose project of `deploy/public-demo` has not run (Docker Desktop had no free network address space). Its images ran together as containers in the readiness validation ([DEPLOYMENT_READINESS_REPORT.md](DEPLOYMENT_READINESS_REPORT.md)). TLS has not been issued for a real domain, and there has been no external security review. Hosting: [ORACLE_FREE_TIER_FEASIBILITY.md](ORACLE_FREE_TIER_FEASIBILITY.md).
 
 This document covers:
 - how a visitor explores OPSILUME without an account, and what stops a visitor from changing anything that matters;
@@ -256,7 +256,11 @@ No in-application scheduler was added. A host cron entry is the simplest bounded
 Run it before every deployment.
 
 - **Published ports:** only `proxy` publishes ports (80, 443). Docker-published ports bypass host firewalls such as UFW, so no other service has a `ports:` entry. PostgreSQL, Redis, the API and the AI service are reachable only on the internal network.
-- **Restarts and health:** `restart: unless-stopped` and health checks for every long-running service.
+- **Restarts and health:**
+  - `restart: unless-stopped` on every long-running service;
+  - health checks on every service except the proxy, which has none.
+
+  The proxy starts only once `web` is healthy. Nginx resolves `web` when it starts, so restart the proxy after recreating the web container.
 - **Memory limits:**
   - PostgreSQL and the AI service: 768 MB each;
   - API, worker, web and migrate: 512 MB each;
@@ -265,12 +269,20 @@ Run it before every deployment.
   That is about 3.8 GB when every limit is reached, within the 6–12 GB of the planned instance. Typical use is far lower.
 - **Logs and data:** json-file logs rotated at 10 MB × 3. Named volumes hold PostgreSQL and Redis data.
 - **Migrations and setup:** `migrate` runs `prisma migrate deploy`, then the idempotent `public-demo setup`, before the API and worker start.
-- **TLS:** Nginx serves the certificate from `/etc/letsencrypt` on the host. Obtain it once with certbot on the host before the first start, then let certbot renew it through the webroot (`/var/www/certbot`) and reload the proxy. The configuration redirects HTTP to HTTPS and sets HSTS.
+- **First start:** `setup` does not start the seeded investigations, so a fresh deployment shows no investigation until the first reset. Run `./reset.sh` once after the first `docker compose up -d`. It runs `reset --investigate`, which rebuilds the demonstration and starts one rule-based investigation per open incident. The cron entry then repeats this.
+- **TLS:** Nginx serves the certificate from `/etc/letsencrypt` on the host. The configuration redirects HTTP to HTTPS and sets HSTS.
+  - Nginx refuses to start until the certificate files exist (checked with `nginx -t`), so the first certificate cannot come through Nginx.
+  1. Before the first start, with nothing listening on port 80 and port 80 reachable from the internet, obtain it with certbot's standalone mode: `sudo certbot certonly --standalone -d <DEMO_HOSTNAME>`.
+  2. Start the stack (`docker compose up -d`). The proxy now starts, because the certificate files exist, and it serves `/.well-known/acme-challenge/` from `/var/www/certbot` on port 80.
+  3. With the proxy running, switch the certificate's renewals to that webroot and reload the proxy after each renewal (certbot 2.3 or later; `reconfigure` tests the new settings, so the proxy must be up): `sudo mkdir -p /var/www/certbot && sudo certbot reconfigure --cert-name <DEMO_HOSTNAME> --webroot -w /var/www/certbot --deploy-hook "docker compose -f /opt/opsilume/deploy/public-demo/compose.yml exec -T proxy nginx -s reload"`.
+  4. Confirm with `sudo certbot renew --dry-run`. The certbot package's timer then renews automatically.
+  - **None of this has been run against a real domain** (see the readiness report).
 - **Abuse limits:**
   - per address: 10 requests/s on `/api/` (burst 40) and 1 request/s on `/api/v1/auth/` (burst 10);
   - 20 connections per address;
   - request bodies of at most 256 KB (the API also refuses more than 256 KB in demo mode, `413`);
-  - refusals answered with `429`.
+  - refusals answered with `429`;
+  - a path containing `..`, an encoded dot or an encoded `%` refused with `400`. Such a path, `/api/../metrics` for example, was matched by Nginx as `/metrics` but forwarded as sent, and reached the API's unauthenticated `/metrics`, `/ready` and `/health` through the web app's `/api/*` rewrite. That was found in the readiness validation and fixed there.
 - **ARM64:** every image has an arm64 build, and the images build on ARM64 (feasibility audit, section 4). Build them on the host itself (`docker compose build`).
 
 ## 10b. API rate limits

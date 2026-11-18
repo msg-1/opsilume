@@ -93,6 +93,16 @@ describe('the demo proxy configuration', () => {
     expect(nginx).not.toMatch(/proxy_add_x_forwarded_for/);
   });
 
+  it("refuses a path that climbs out of /api, so the API's unauthenticated /metrics, /ready and /health stay internal", () => {
+    // This checks the rule's presence and its pattern, not Nginx itself. Nginx's behaviour (400 before the upstream
+    // for these forms, normal paths passed) was checked against a running proxy: DEPLOYMENT_READINESS_REPORT.md.
+    const guard = nginx.match(/if \(\$request_uri ~\* "([^"]+)"\) \{ return 400; \}/);
+    expect(guard, 'the path guard').not.toBeNull();
+    const refused = new RegExp(guard![1]!, 'i');
+    for (const uri of ['/api/../metrics', '/api/v1/../../ready', '/api/v1/%2e%2e/%2e%2e/metrics', '/api/v1/%2E%2E/health', '/api/v1/%252e%252e/metrics', '/api/v1/.%2e/x']) expect(refused.test(uri), uri).toBe(true);
+    for (const uri of ['/login', '/api/v1/incidents/cmwmd9xt30xdpn22jwsekmt7a', '/_next/static/chunks/app.js', '/api/v1/logs?query=a..b%2e']) expect(refused.test(uri), uri).toBe(false);
+  });
+
   it('limits request bodies, request rates and connections per address, and answers a refusal with 429', () => {
     expect(nginx).toMatch(/client_max_body_size\s+256k;/);
     expect(nginx).toMatch(/limit_req_zone\s+\$binary_remote_addr/);
