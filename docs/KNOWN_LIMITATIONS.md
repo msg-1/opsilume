@@ -19,6 +19,8 @@
 | Post-restore remediation safety is a design and prototypes, not product code | In progress | Milestone 16 ([post-restore-remediation-safety-design.md](post-restore-remediation-safety-design.md)). The product's restore path does not yet carry these safeguards ([recovery-readiness-audit.md](recovery-readiness-audit.md)) |
 | The OPSILUME name is not trademark-cleared | Accepted risk | Working name ([branding/opsilume-branding.md](branding/opsilume-branding.md)) |
 | Open Medium and Low findings | Known bugs | Listed in [engineering-audit.md](engineering-audit.md) |
+| Not safe to expose publicly as it is | Security | The seed gives every demo user, including OWNER and ADMIN, the documented password `OpsPilot-demo-1`. Self-registration is open. Admins can configure outbound webhooks. Internal services are published on loopback in `docker-compose.yml`. A public demo mode is required first ([deployment/ORACLE_FREE_TIER_FEASIBILITY.md](deployment/ORACLE_FREE_TIER_FEASIBILITY.md), sections 9 and 11) |
+| Free hosting is conditional | Infrastructure | Oracle Always Free A1 is now 2 OCPUs and 12 GB (official pages conflict). Capacity in Indian regions is uncertain. Idle instances can be reclaimed and inactive accounts suspended, with no support. Upgrading the account makes charges possible (same audit, sections 3 and 10) |
 
 ## P7 durability harness (`prototype/m16-p7/`)
 

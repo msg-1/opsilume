@@ -1,6 +1,6 @@
 # Project status
 
-**Last updated:** 18 November 2026.
+**Last updated:** 18 November 2026 (Oracle Cloud feasibility audit added; uncommitted at the time of writing).
 
 **Status recorded against:** branch `prototype/m16-p7-durability-harness`. The P7 hardening is commit `2de30aa1d262ad1a3c52305f29158d17000fef5d`; this documentation was added in the commit that follows it. `develop` is at `075302c`. `main` holds only the initial commit (`aed4476`).
 
@@ -147,6 +147,17 @@ The P7 harness also has accepted limits:
 
 **NOT STARTED.** There is no public URL. The application runs locally with Docker Compose.
 
+**Feasibility audit: COMPLETE** (18 November 2026, [deployment/ORACLE_FREE_TIER_FEASIBILITY.md](deployment/ORACLE_FREE_TIER_FEASIBILITY.md)). The recommendation is **CONDITIONAL GO** for one Oracle Always Free Ampere A1 instance.
+- **Fit:** Oracle's current allowance is 2 OCPUs and 12 GB. The stack uses about 0.7 GB at idle, about 1.3 GB at load-test peak without the web container, and already runs as linux/arm64 images locally.
+- **Conditions:**
+  - the owner's account and card are accepted;
+  - A1 capacity is available in the home region;
+  - the account is never upgraded;
+  - a public demo mode is implemented first (published OWNER and ADMIN passwords in the seed, open registration, outbound webhooks and a scheduled reset are blockers);
+  - HTTPS is set up at ₹0.
+
+No account has been created and nothing has been provisioned.
+
 The preferred target is Oracle Cloud Always Free. That is subject to verifying eligibility and that its resources can run the stack, with a zero monthly budget ([decisions.md](decisions.md), decisions 23 to 25). No cloud account, domain or paid service has been set up.
 
 ## 11. Security and safety status
@@ -175,13 +186,17 @@ The preferred target is Oracle Cloud Always Free. That is subject to verifying e
 
 ## 12. Next recommended task
 
-**Resume here.** Decide how to close the P7 container-smoke gap, then plan the portfolio deployment:
+**Resume here.** Two independent tracks:
+
+**Portfolio deployment (preferred next):** the owner decides on the CONDITIONAL GO in [deployment/ORACLE_FREE_TIER_FEASIBILITY.md](deployment/ORACLE_FREE_TIER_FEASIBILITY.md).
+- If yes, the owner creates the Oracle account and checks the card, home region, allowance and A1 capacity (no provisioning beyond that check).
+- In parallel, implement the public demo mode (section 11 of the audit) on a feature branch.
+
+**P7:** decide how to close the container-smoke gap:
 
 1. Owner decision: free Docker address space (remove stopped P7 scratch resources) or allow explicit subnets in the scratch override. Then run one container smoke of the final P7 source on a new isolated project, and record it here.
 2. Review and merge `prototype/m16-p7-durability-harness` into `develop` by pull request, if the owner approves. It is a prototype directory; it does not change the product.
-3. Start the portfolio deployment track in [roadmap.md](roadmap.md):
-   - check Oracle Cloud Always Free eligibility and resources;
-   - build the public demo mode (seeded data, rule-based engine, no paid AI).
+3. The portfolio deployment track is described above and in [roadmap.md](roadmap.md).
 
 P7 physical qualification stays a separate track that needs hardware and authorisation.
 
