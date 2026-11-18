@@ -52,7 +52,10 @@ describe('readiness binding', () => {
 });
 
 describe('decision B1 and the declared identity (pure)', () => {
-  const B1 = { procs: 1, workers: 1, maxSeconds: 660, headroom: 2, ratePerWorker: 300, targetRate: null, poolPerWorker: 99000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 30 };
+  // (F7: a qualifying workload names its 20 planned cycles and must fit as a series. 250/s for 110 burst seconds and
+  // 30/s for 550 quiet seconds allow 44,000 claims per cycle: 20 x 44,001 + 88,000 = 968,020. The earlier fixture's
+  // 300/s allowed 49,500 per cycle, which no longer fits 20 cycles.)
+  const B1 = { procs: 1, workers: 1, cycles: 20, maxSeconds: 660, headroom: 2, ratePerWorker: 250, targetRate: null, poolPerWorker: 88000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 30 };
   test('a qualifying workload is one process, one worker, with a burst pattern that fits before the cut', () => {
     assert.deepEqual(qualifyingWorkloadProblems(B1), []);
     assert.deepEqual(vetTestBinding(testBinding({ ...FACTS, workload: B1 })).problems, [], '(300 x 110 + 30 x 550) x 2 = 99,000 actions for 660 s');
@@ -60,7 +63,7 @@ describe('decision B1 and the declared identity (pure)', () => {
     assert.match(qualifyingWorkloadProblems({ ...B1, workers: 8 }).join(), /one worker, not 8/);
     assert.match(qualifyingWorkloadProblems({ ...B1, burstPeriodSeconds: null, burstSeconds: null, quietRate: null }).join(), /needs a burst pattern/);
     assert.match(qualifyingWorkloadProblems({ ...B1, burstPeriodSeconds: 661 }).join(), /longer than the time to the cut/);
-    assert.equal(qualifyingWorkloadProblems(undefined).length, 3);
+    assert.equal(qualifyingWorkloadProblems(undefined).length, 4); // the three rules above, and the planned cycles (F7)
   });
   test('the quiet rate must keep the worker inside the silent-stop window: a paced worker must never look stopped', () => {
     // The recorder counts a stream with no acknowledgement in the last SILENT_STOP_MS before the cut as stopped, which

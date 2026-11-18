@@ -53,13 +53,13 @@ export function makeClient({ baseUrl, key, run, timeoutMs = 10_000 }) {
     const body = payload === undefined ? '' : JSON.stringify(payload);
     const headers = signRequest(key, { method, path, run, body });
     const sentAt = Date.now();
-    const r = await fetch(`${baseUrl}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, body: body || undefined, signal: AbortSignal.timeout(timeoutMs) });
+    const r = await fetch(`${baseUrl}${path}`, { method, headers: { 'content-type': 'application/json', ...headers }, body: body || undefined, signal: AbortSignal.timeout(timeoutMs), redirect: 'error' }); // a redirect is never followed: the signed request goes to the recorder address and nowhere else
     const text = await r.text();
     const receivedAt = Date.now();
     const serverTime = verifyResponse(key, { nonce: headers['x-p7-nonce'], status: r.status, body: text, headers: r.headers });
     if (serverTime === null) throw Object.assign(new Error(`recorder response to ${method} ${path} is not authenticated (status ${r.status})`), { status: r.status, unauthenticated: true });
     const data = text ? JSON.parse(text) : null;
-    if (!r.ok) throw Object.assign(new Error(`recorder ${method} ${path}: ${r.status} ${data?.error ?? ''}`), { status: r.status, data });
+    if (!r.ok) throw Object.assign(new Error(`recorder ${method} ${path}: ${r.status} ${data?.error ?? ''}${typeof data?.refused === 'string' ? ` (${data.refused})` : ''}`), { status: r.status, data });
     return { data, serverTime, clockOffsetMs: Math.round(serverTime - (sentAt + receivedAt) / 2), roundTripMs: receivedAt - sentAt };
   };
 }

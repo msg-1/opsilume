@@ -55,6 +55,8 @@ export function preflightVerdict(f) {
     ...(c.unsignedRejected ? [] : ['the recorder did not reject an unauthenticated request']),
   ]);
   add('workload sizing', f.sizing?.ok ? [] : [f.sizing?.reason ?? 'not sized: give --max-seconds and --rate or --target-rate']);
+  // The whole series must fit before it starts (lib/sizing.mjs, seriesPlan). `p7.mjs preflight` always supplies it.
+  if (f.series !== undefined) add('series plan', f.series?.ok ? [] : [f.series?.reason ?? 'the series could not be planned']);
   const have = new Set(r.attestations ?? []);
   add('operator attestations (not independent observations)', REQUIRED_ATTESTATIONS.filter((a) => !have.has(a)).map((a) => `missing operator attestation: ${a}`));
   const reasons = checks.flatMap((x) => x.problems.map((p) => `${x.name}: ${p}`));

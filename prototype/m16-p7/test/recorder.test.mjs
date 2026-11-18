@@ -48,7 +48,7 @@ const FACTS = (pgSystemId, workers = 1, over = {}) => ({
   settings: { fsync: 'on', full_page_writes: 'on', synchronous_commit: 'on', wal_sync_method: 'fdatasync', data_checksums: 'off', server_version: '16.14' },
   netcheck: { strict: true, ok: true, bridges: ['172.22.0.1', '172.23.0.1'], probes: [{ name: 'host or bridge 172.22.0.1:22' }, { name: 'host or bridge 172.23.0.1:22' }] },
   // Decision B1's shape: one process, a burst pattern (10 s at 100/s in every 60 s, 20/s otherwise: 40,000 actions with headroom 2).
-  workload: { procs: 1, workers, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 },
+  workload: { procs: 1, workers, cycles: 20, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 },
   source: SOURCE, runtime: RT('x64', 'v22.0.0'), ...over,
 });
 const TB = (pgSystemId, workers, over) => testBinding(FACTS(pgSystemId, workers, over));
@@ -760,7 +760,7 @@ describe('readiness record: a qualifying cycle starts only on the exact configur
   const X = (n) => `75${String(n).padStart(17, '0')}`;
   // Decision B1: one process, one worker, one burst pattern. 10 burst seconds at 100/s in every 60, 20/s otherwise:
   // over 600 s that is (100 x 100 + 20 x 500) x 2 headroom = 40,000 actions.
-  const B1 = { procs: 1, workers: 1, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
+  const B1 = { procs: 1, workers: 1, cycles: 20, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
   const QB = (id, over = {}) => testBinding({ ...FACTS(id, 1), workload: B1, ...over });
   const W = (over) => ({ workload: { ...B1, ...over } });
   const post = (run, p, body) => callerFor(srv.base, dir, run)('POST', `/runs/${run}/${p}`, body);
@@ -1674,7 +1674,7 @@ describe('failure boundaries of the recorder', () => {
     assert.equal(volumeOf(dir, loser), null);
     await post(winner, 'event', { kind: 'initialised', installationId: 'inst-1' });
     for (const item of REQUIRED_ATTESTATIONS) runStore(dir, winner).event({ cycle: null, kind: 'attestation', item, evidence: 'e', attestation: 'operator' });
-    const B1 = { procs: 1, workers: 1, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
+    const B1 = { procs: 1, workers: 1, cycles: 20, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
     const test1 = testBinding({ ...FACTS(X(1), 1), workload: B1 });
     const records = await Promise.all([1, 2, 3].map(() => post(winner, 'readiness', { test: test1 })));
     assert.deepEqual(records.map((r) => r.status), [200, 200, 200]);
@@ -1771,7 +1771,7 @@ describe('a qualifying run through the real endpoints and commands (no test shor
     assert.equal((await post('event', { kind: 'volume_claimed', volume: { pgSystemId: X, publicRelations: 0, stateEntries: 0, walLsnBytes: 25 * 1024 * 1024, serverVersion: '16.14' } })).status, 200);
     assert.equal((await post('event', { kind: 'initialised', installationId: 'inst-1' })).status, 200);
     for (const item of REQUIRED_ATTESTATIONS) assert.equal(op('attest', '--run', 'e1', '--item', item, '--evidence', `done: ${item}`).status, 0);
-    const B1 = { procs: 1, workers: 1, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
+    const B1 = { procs: 1, workers: 1, cycles: 20, maxSeconds: 600, headroom: 2, ratePerWorker: 100, targetRate: null, poolPerWorker: 40000, burstPeriodSeconds: 60, burstSeconds: 10, quietRate: 20 };
     const binding = (over = {}) => testBinding({ ...FACTS(X, 1), workload: { ...B1, ...over } });
     const ready = await post('readiness', { test: binding() });
     assert.equal(ready.status, 200, JSON.stringify(ready.data));

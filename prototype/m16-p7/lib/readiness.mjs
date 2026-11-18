@@ -7,13 +7,13 @@
 // Only things that must stay the same for the whole series are bound: no heads, boot ids, WAL positions or times.
 import { createHash } from 'node:crypto';
 import { durableSettings } from './verdict.mjs';
-import { MIN_QUIET_RATE, SILENT_STOP_MS, hasBurst, sizePlan } from './sizing.mjs';
+import { MIN_QUIET_RATE, QUALIFYING_CYCLES, SILENT_STOP_MS, hasBurst, seriesPlan, sizePlan } from './sizing.mjs';
 import { HARNESS_BRIDGES } from './netcheck.mjs';
 
 export const CLEARANCE_ENVELOPE = 1_000_000; // waiting actions clearance was validated at (Phase 0.5)
 export { MIN_QUIET_RATE, SILENT_STOP_MS }; // defined once, in lib/sizing.mjs, where the workload is sized
 const PG_KEYS = ['fsync', 'full_page_writes', 'synchronous_commit', 'wal_sync_method', 'data_checksums', 'server_version'];
-const WORKLOAD_KEYS = ['procs', 'workers', 'maxSeconds', 'headroom', 'ratePerWorker', 'targetRate', 'poolPerWorker', 'burstPeriodSeconds', 'burstSeconds', 'quietRate'];
+const WORKLOAD_KEYS = ['procs', 'workers', 'cycles', 'maxSeconds', 'headroom', 'ratePerWorker', 'targetRate', 'poolPerWorker', 'burstPeriodSeconds', 'burstSeconds', 'quietRate'];
 /** process.arch of the harness container -> the Docker architecture name the operator declares for the image. */
 export const DOCKER_ARCH = { x64: 'amd64', arm64: 'arm64' };
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -87,6 +87,9 @@ export function qualifyingWorkloadProblems(w) {
   // A paced worker must never look stopped: quiet claims are 1/quietRate seconds apart, and the recorder counts a stream
   // that was silent for SILENT_STOP_MS before the cut as stopped (INCONCLUSIVE). The gap may be at most half of that.
   if (hasBurst(w) && !(w.quietRate >= MIN_QUIET_RATE)) out.push(`the quiet rate must be at least ${MIN_QUIET_RATE} claims per second: at ${w.quietRate} the worker is silent for longer than half the ${SILENT_STOP_MS / 1000} s after which the recorder counts it as stopped`);
+  // The whole series is planned before it starts (finding F7): 20 cycles, bound in the record, fitting the envelope.
+  if (w?.cycles !== QUALIFYING_CYCLES) out.push(`a qualifying series plans ${QUALIFYING_CYCLES} cycles, not ${w?.cycles ?? 'an unstated number'}`);
+  else { const plan = seriesPlanOf(w); if (!plan.ok) out.push(plan.reason); }
   return out;
 }
 
@@ -120,3 +123,6 @@ export function bindingDiff(a, b, at = '') {
   }
   return canon(a) === canon(b) ? [] : [at];
 }
+
+/** The series plan of a bound workload (lib/sizing.mjs, seriesPlan): what the readiness record stores as its calculation. */
+export const seriesPlanOf = (w) => seriesPlan({ cycles: w?.cycles, workers: w?.workers, procs: w?.procs, envelope: CLEARANCE_ENVELOPE, ratePerWorker: w?.ratePerWorker, maxSeconds: w?.maxSeconds, headroom: w?.headroom, pool: w?.poolPerWorker ?? NaN, burstPeriodSeconds: w?.burstPeriodSeconds, burstSeconds: w?.burstSeconds, quietRate: w?.quietRate });

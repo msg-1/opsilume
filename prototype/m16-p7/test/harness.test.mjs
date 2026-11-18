@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { GENESIS, serialize } from '../../m16-phase05/lib/journal.mjs';
-import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal } from '../lib/scan.mjs';
-import { classifyCycle, compareCycle } from '../lib/verdict.mjs';
+import { addFp, fp, hex, repairAppliedAt, repairBytes, scanJournal, repairProblem } from '../lib/scan.mjs';
+import { classifyCycle, compareCycle, finalStatus } from '../lib/verdict.mjs';
 import { appendDurable, readLedger, writeOnce } from '../lib/ledger.mjs';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-harness-test-'));
@@ -302,4 +302,101 @@ describe('torn-tail repair re-entrancy', () => {
     assert.deepEqual(codes(c), ['JOURNAL_CORRUPT']);
     assert.deepEqual(classifyCycle({ comparison: c, run: RUN, cycle: CYCLE }).needsRecovery, []);
   });
+});
+
+// Finding F4 of the post-commit review of 462f5d4: `check` recorded a journal write failure but its verdict ignored it.
+describe('classification: a known journal write failure is never a PASS', () => {
+  const ok = () => compareCycle(scenario());
+  const MARKER = { what: 'dispatch', code: 'EIO', at: '2026-11-18T10:00:00.000Z', marker: 'found' };
+  const REPORTED = [{ kind: 'journal_write_failed', proc: 'a', worker: 1, detail: 'claim, EIO; marker NOT written (EROFS)', atMs: 5 }];
+  test('the marker is present when the cycle is checked: INCONCLUSIVE, though everything else verified', () => {
+    assert.equal(classifyCycle({ comparison: ok(), run: RUN, cycle: CYCLE }).verdict, 'PASS', '(the same cycle without the failure passes)');
+    const r = classifyCycle({ comparison: ok(), run: RUN, cycle: { ...CYCLE, journalWriteFailure: MARKER } });
+    assert.deepEqual([r.verdict, r.inconclusive], ['INCONCLUSIVE', ['JOURNAL_WRITE_FAILED']]);
+  });
+  test('a marker that cannot be read counts the same', () => {
+    const r = classifyCycle({ comparison: ok(), run: RUN, cycle: { ...CYCLE, journalWriteFailure: { what: 'unknown', code: 'marker unreadable', at: null, marker: 'found' } } });
+    assert.equal(r.verdict, 'INCONCLUSIVE');
+  });
+  test('the marker is gone (lost with the reboot) but the worker reported the failure to the recorder: INCONCLUSIVE, whenever it was reported', () => {
+    const r = classifyCycle({ comparison: ok(), run: RUN, cycle: { ...CYCLE, journalWriteFailure: null, journalWriteFailures: REPORTED } });
+    assert.deepEqual([r.verdict, r.inconclusive], ['INCONCLUSIVE', ['JOURNAL_WRITE_FAILED']]);
+    assert.equal(classifyCycle({ comparison: ok(), run: RUN, cycle: { ...CYCLE, journalWriteFailures: [] } }).verdict, 'PASS');
+  });
+  test('it never softens a FAIL: a failed comparison stays FAIL, and names the write failure as well', () => {
+    const bad = compareCycle({ ...scenario(), journal: { status: 'corrupt', problem: 'x' } });
+    const r = classifyCycle({ comparison: bad, run: RUN, cycle: { ...CYCLE, journalWriteFailure: MARKER } });
+    assert.deepEqual([r.verdict, r.fails], ['FAIL', ['JOURNAL_CORRUPT']]);
+    assert.ok(r.inconclusive.includes('JOURNAL_WRITE_FAILED'), 'beside whatever else the failed comparison leaves inconclusive');
+  });
+  test('and it is one reason among the others in a smoke run, which is INCONCLUSIVE anyway', () => {
+    const r = classifyCycle({ comparison: ok(), run: { ...RUN, failureModel: 'HARNESS-SMOKE' }, cycle: { ...CYCLE, journalWriteFailure: MARKER } });
+    assert.ok(r.inconclusive.includes('JOURNAL_WRITE_FAILED') && r.inconclusive.includes('NOT_A_DURABILITY_RUN'));
+  });
+});
+
+// Product-owner decision of 18 November 2026 on finding F3: the Phase 0.5 verifier stays unchanged, so a torn final
+// line that is not valid UTF-8 cannot be repaired. Such a cycle is INCONCLUSIVE, never a provisional PASS.
+describe('a torn final line that is not valid UTF-8: INCONCLUSIVE, no repair, the journal as found', () => {
+  /** A consistent cycle (claims 1..5, all acknowledged) whose journal file ends in `tail`, as a power cut left it. */
+  function cycleWithTail(tail) {
+    const j = journalOf(claimsAndDispatches(1, 5));
+    fs.appendFileSync(j.file, tail);
+    const journal = { ...scanJournal(j.file), installationId: 'inst-1' };
+    const comparison = compareCycle({ ...scenario(), journal });
+    const tornTailRepairProblem = journal.status === 'torn_tail' ? repairProblem(j.file, journal.tornBytes) : null; // as `p7.mjs check` computes it
+    return { file: j.file, journal, comparison, tornTailRepairProblem, verdict: classifyCycle({ comparison, run: RUN, cycle: { ...CYCLE, tornTailRepairProblem } }) };
+  }
+  const REPORTED = Buffer.from([0x7b, 0x22, 0xff, 0xfe, 0x80, 0x41]); // the exact bytes of the review report
+
+  test('the exact bytes 7b 22 ff fe 80 41: check says INCONCLUSIVE, and the final status is INCONCLUSIVE whatever follows', () => {
+    const c = cycleWithTail(REPORTED);
+    assert.deepEqual([c.journal.status, c.journal.tornBytes], ['torn_tail', 6]);
+    assert.deepEqual(codes(c.comparison), [], 'the comparison itself finds nothing wrong: every acknowledged claim is there');
+    assert.match(c.tornTailRepairProblem, /6 bytes\) is not valid UTF-8/);
+    assert.deepEqual([c.verdict.verdict, c.verdict.inconclusive], ['INCONCLUSIVE', ['TORN_TAIL_NOT_REPAIRABLE']]);
+    // Before the decision this was a provisional PASS:
+    assert.equal(classifyCycle({ comparison: c.comparison, run: RUN, cycle: CYCLE }).verdict, 'PASS', '(what the classifier says when it is not told)');
+    // The final status never becomes PASS, with or without a recovery record.
+    const result = { verdict: c.verdict.verdict, quarantineRequired: c.verdict.quarantineRequired };
+    assert.equal(finalStatus(result, null), 'INCONCLUSIVE');
+    assert.equal(finalStatus(result, { quarantineObserved: true, cleared: true }), 'INCONCLUSIVE');
+  });
+
+  test('nothing is written for it: the journal is byte for byte as found, its invalid bytes included, and still a torn tail', () => {
+    const j = journalOf(claimsAndDispatches(1, 5));
+    fs.appendFileSync(j.file, REPORTED);
+    const asFound = fs.readFileSync(j.file);
+    const scan = scanJournal(j.file);
+    // What `p7.mjs recover` does at its repair step: ask first, and write only if there is no problem.
+    const problem = repairProblem(j.file, scan.tornBytes);
+    if (!problem) fs.appendFileSync(j.file, repairBytes(scan.tornBytes, scan.lastHash, AT));
+    assert.ok(problem, 'recovery stops here');
+    assert.ok(fs.readFileSync(j.file).equals(asFound));
+    assert.ok(fs.readFileSync(j.file).subarray(-6).equals(REPORTED), 'not replaced, not normalised');
+    assert.equal(scanJournal(j.file).status, 'torn_tail', 'not corrupt');
+    assert.equal(repairAppliedAt(j.file, scan.fileBytes, scan.tornBytes), false, 'and no repair record follows it');
+  });
+
+  test('it never softens a FAIL', () => {
+    const j = journalOf(claimsAndDispatches(1, 5));
+    fs.appendFileSync(j.file, REPORTED);
+    const journal = { ...scanJournal(j.file), installationId: 'inst-2' }; // another installation: a real failure
+    const comparison = compareCycle({ ...scenario(), journal });
+    const r = classifyCycle({ comparison, run: RUN, cycle: { ...CYCLE, tornTailRepairProblem: repairProblem(j.file, journal.tornBytes) } });
+    assert.equal(r.verdict, 'FAIL');
+    assert.ok(r.inconclusive.includes('TORN_TAIL_NOT_REPAIRABLE'));
+  });
+
+  for (const [name, tail] of [['an ASCII fragment', Buffer.from('{"type":"claim","seq":6')], ['zero bytes (a block never written)', Buffer.alloc(16)], ['valid multi-byte text', Buffer.from('{"x":"é')]]) {
+    test(`unchanged for a torn tail that IS valid UTF-8 (${name}): provisional PASS, repaired by recovery, PASS once recovered`, () => {
+      const c = cycleWithTail(tail);
+      assert.deepEqual([c.journal.status, c.tornTailRepairProblem], ['torn_tail', null]);
+      assert.deepEqual([c.verdict.verdict, c.verdict.inconclusive, c.verdict.needsRecovery], ['PASS', [], ['repair-torn-tail']]);
+      assert.equal(finalStatus({ verdict: 'PASS', quarantineRequired: false }, null), 'PENDING_RECOVERY');
+      fs.appendFileSync(c.file, repairBytes(c.journal.tornBytes, c.journal.lastHash, AT));
+      assert.deepEqual([scanJournal(c.file).status, scanJournal(c.file).head], ['ok', 5], 'the repair verifies');
+      assert.equal(finalStatus({ verdict: 'PASS', quarantineRequired: false }, { cleared: false }), 'PASS');
+    });
+  }
 });

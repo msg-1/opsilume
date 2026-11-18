@@ -7,6 +7,8 @@
 export const STRICT_BLOCKED = /^(timeout|error:(EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|ENOTFOUND))$/;
 /** compose.yml puts the harness on exactly two bridge networks (p7db, p7gw). Strict mode requires both to be probed. */
 export const HARNESS_BRIDGES = 2;
+/** The gateway is on exactly two as well (p7gw, egress). Strict mode requires its self-check to have probed both. */
+export const GATEWAY_BRIDGES = 2;
 export const INTERNET = [['1.1.1.1', 443], ['8.8.8.8', 53], ['9.9.9.9', 443], ['140.82.112.3', 443]];
 const HOST_PORTS = [22, 80, 443, 2375, 2376, 5432, 8787];
 const NAME = 'the name does not resolve here; this shows no DNS, it is not a routing test';
@@ -61,6 +63,9 @@ export async function runNetcheck({ strict = false, tcp, resolves, authenticated
   const d = await tcp('db', 5432);
   add('postgresql (db:5432, internal network)', 'reachable', d, d === 'connected');
   const t = parseTarget(target);
+  // In strict mode the target must be an address: for a host name, "does not resolve" would count as blocked below
+  // without any route having been tested (and the host firewall is given an address anyway).
+  if (t && strict) add('recorder target is an IPv4 address', 'an address, not a host name', t.host, /^\d{1,3}(\.\d{1,3}){3}$/.test(t.host) && t.host.split('.').every((o) => Number(o) <= 255));
   if (t) { const o = await tcp(t.host, t.port); add(`recorder host directly (${t.host}:${t.port}), bypassing the gateway`, 'blocked', o, blocked(o), nameNote(o)); }
   else add('recorder target (P7_RECORDER_TARGET)', 'host:port', 'not set or malformed', false);
   for (const [h, port] of INTERNET) { const o = await tcp(h, port); add(`internet ${h}:${port}`, 'blocked', o, blocked(o) && o !== 'refused'); }
@@ -88,14 +93,15 @@ export async function runNetcheck({ strict = false, tcp, resolves, authenticated
   const required = egressTargets(target, {}).map((x) => x.name);
   const missing = required.filter((n) => !got.has(n));
   const bridgeProbes = [...got.keys()].filter((n) => n.startsWith('gateway to host or bridge ')).length;
+  const gatewayBridges = new Set([...got.keys()].map((n) => /^gateway to host or bridge (.+):\d+$/.exec(n)?.[1]).filter(Boolean)).size;
   let egressOpen = false;
   for (const [name, o] of got) {
     const open = !STRICT_BLOCKED.test(o);
     if (open) egressOpen = true;
     add(name, strict ? 'dropped by the host firewall' : 'reported only (no host firewall in a smoke run)', o, strict ? !open : true);
   }
-  if (strict) add('gateway egress self-check', 'every fixed destination and at least one bridge address probed', egErr ?? `${got.size} probes; missing: ${missing.length}; bridge probes: ${bridgeProbes}`,
-    !egErr && got.size > 0 && missing.length === 0 && bridgeProbes > 0, 'an empty or incomplete probe set is not a pass');
+  if (strict) add('gateway egress self-check', `every fixed destination and both of the gateway's bridge addresses probed`, egErr ?? `${got.size} probes; missing: ${missing.length}; bridge probes: ${bridgeProbes}; bridges probed: ${gatewayBridges} of ${GATEWAY_BRIDGES}`,
+    !egErr && got.size > 0 && missing.length === 0 && bridgeProbes > 0 && gatewayBridges === GATEWAY_BRIDGES, 'an empty or incomplete probe set is not a pass');
   else if (egErr) add('gateway egress self-check', 'reported only', egErr, true);
   // Where the gateway really listens, as its own sockets report it: on the address the harness reaches it at (the
   // internal network), on both ports, and nowhere else. A wildcard address would also listen on the egress network.

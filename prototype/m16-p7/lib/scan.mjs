@@ -101,6 +101,46 @@ export function repairBytes(tornBytes, lastHash, at = new Date().toISOString()) 
   return `#\n${serialize({ type: 'repair', ignoredBytes: tornBytes + 1, reason: 'P7: torn final line (N1)', at }, lastHash)}`;
 }
 
+/**
+ * Whether a repair for the torn fragment at the end of `file` would be accepted by the reused verifier. Read-only.
+ * Exactly one of:
+ *   { verifiable: true }      the repair can be written;
+ *   { wouldNotVerify: why }   a fact about the journal: the verifier would refuse the repair record and the journal,
+ *                             a repairable torn tail, would become `corrupt`. The cycle is INCONCLUSIVE;
+ *   { undetermined: why }     the check itself could not be made (the fragment could not be read, or its length does
+ *                             not fit the file). Nothing is known about the journal; nothing is written either.
+ * The rule is the verifier's own measure (journal.mjs, verifyRange): it counts the ignored line by the byte length of
+ * its DECODED text, while the repair record names raw bytes. They are equal for valid UTF-8. For most invalid UTF-8
+ * they differ (an invalid byte usually decodes to a three-byte replacement character); for a few invalid sequences,
+ * such as a four-byte character cut after three bytes, they happen to be equal, and the repair does verify. So the
+ * test is the length, not validity. A fragment that fails it is left exactly as it is: nothing replaced or normalised.
+ * Changing the rule would be a change to the Phase 0.5 verifier, which this harness does not modify.
+ */
+export function repairCheck(file, tornBytes) {
+  if (!(Number.isInteger(tornBytes) && tornBytes > 0)) return { undetermined: 'there is no torn fragment to repair' };
+  let fragment;
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (tornBytes > size) return { undetermined: `the torn fragment (${tornBytes} bytes) is longer than the file (${size} bytes)` };
+      // (a fact about the journal, so the cycle can be closed as INCONCLUSIVE: nothing this long is a torn line)
+      if (tornBytes > 64 * 1024 * 1024) return { wouldNotVerify: `the torn final fragment is ${tornBytes} bytes: too long to be a torn line, and not examined. Nothing was written; the journal is left as found` };
+      fragment = Buffer.alloc(tornBytes);
+      if (fs.readSync(fd, fragment, 0, tornBytes, size - tornBytes) !== tornBytes) return { undetermined: 'the torn fragment could not be read in full' };
+    } finally { fs.closeSync(fd); }
+  } catch (e) { return { undetermined: `the torn fragment could not be read (${e.code ?? 'error'})` }; }
+  // Exactly the verifier's measure of the line the repair would end: the fragment and the '#' that closes it.
+  const asVerifierMeasures = Buffer.byteLength(Buffer.concat([fragment, Buffer.from('#')]).toString('utf8'));
+  if (asVerifierMeasures !== tornBytes + 1) return { wouldNotVerify: `the torn final line (${tornBytes} bytes) is not valid UTF-8 in a way the journal's verifier counts differently: it would count ${asVerifierMeasures - 1} bytes and refuse the repair record, which would make the journal corrupt. Nothing was written; the journal is left as found` };
+  return { verifiable: true };
+}
+/** Why a repair must NOT be written now (null = it can be): either answer of repairCheck that is not `verifiable`. */
+export function repairProblem(file, tornBytes) {
+  const c = repairCheck(file, tornBytes);
+  return c.verifiable ? null : c.wouldNotVerify ?? c.undetermined;
+}
+
 /** True when the repair for a torn fragment that ended at `endOfFragment` is already in the file (recovery re-entrancy). */
 export function repairAppliedAt(file, endOfFragment, tornBytes) {
   const fd = fs.openSync(file, 'r');

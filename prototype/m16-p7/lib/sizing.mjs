@@ -61,6 +61,46 @@ export function sizePlan({ workers, procs = 1, envelope, ...size }) {
   return total > envelope ? { ok: false, reason: `${procs} process(es) x ${workers} worker(s) x ${s.pool} actions = ${total} exceeds the ${envelope} actions clearance was validated at` } : { ...s, workers, procs, total };
 }
 
+/** The cycles of a qualifying series (decision 9: 20 consecutive passes). The series is planned for all of them. */
+export const QUALIFYING_CYCLES = 20;
+
+/**
+ * The whole series, planned before it starts (product-owner decision of 18 November 2026 on finding F7).
+ * Clearance was validated for `envelope` affected actions. A claimed action stays affected for the rest of the series
+ * (the harness never moves it out of EXECUTING, by decision), so every cycle's claims accumulate. The plan therefore is:
+ *   cycles x (the most claims that can START in one cycle within maxSeconds, for every worker of every process)
+ *   + the pool of one cycle (which already holds headroom x the allowance, headroom >= 2)
+ * and it must not exceed the envelope. Nothing is reduced to make it fit: a workload that does not fit is refused.
+ * `maxClaimsPerCyclePermitted` is derived from this calculation for the given pool; it is not a fixed figure.
+ * The bound is for the planned time: a cut that comes later than planned lets a worker claim more (up to its pool),
+ * which the count before every cycle (capacityRefusal) catches.
+ */
+export function seriesPlan({ cycles, workers, procs = 1, envelope, ...size }) {
+  if (!(Number.isInteger(cycles) && cycles >= 1)) return { ok: false, reason: 'the planned number of cycles must be a whole number of at least 1' };
+  const burst = { burstPeriodSeconds: size.burstPeriodSeconds, burstSeconds: size.burstSeconds, quietRate: size.quietRate };
+  if (!hasBurst(burst)) return { ok: false, reason: 'a series can be planned only for a paced workload (a burst pattern): without one the claims of a cycle have no bound' };
+  const plan = sizePlan({ workers, procs, envelope, ...size });
+  if (!plan.ok) return plan;
+  const tb = burstSecondsWithin(size.maxSeconds, burst);
+  // The pacer's own bound (lib/pacer.mjs, maxClaimsWithin): the allowance, and at most one claim more.
+  const perWorker = Math.floor(size.ratePerWorker * tb + size.quietRate * (size.maxSeconds - tb)) + 1;
+  const claimsPerCycle = procs * workers * perWorker;
+  const poolTotal = procs * workers * plan.pool;
+  const total = cycles * claimsPerCycle + poolTotal;
+  const calculation = `${cycles} cycles x ${claimsPerCycle} claims + ${poolTotal} pooled actions = ${total} of ${envelope}`;
+  const out = { cycles, claimsPerCycle, poolTotal, total, envelope, headroom: size.headroom ?? MIN_HEADROOM, maxClaimsPerCyclePermitted: Math.floor((envelope - poolTotal) / cycles), calculation };
+  return total <= envelope ? { ok: true, ...out } : { ok: false, ...out, reason: `${calculation}: the series does not fit the number of affected actions clearance was validated at. The workload is not reduced to fit: decide another one` };
+}
+
+/**
+ * Before every cycle, on the ACTUAL count (the backstop): `affected` is what clearance would have to process now,
+ * `adding` what this start would seed. Returns why the start is refused (before anything is seeded), or null.
+ */
+export function capacityRefusal({ affected, adding, envelope }) {
+  if (!(Number.isInteger(affected) && affected >= 0 && Number.isInteger(adding) && adding >= 1)) return 'the number of affected actions could not be established: nothing is seeded without it';
+  return affected + adding > envelope ? `${affected} actions are already affected (claimed in earlier cycles, or waiting) and this start would add ${adding}: ${affected + adding} exceeds the ${envelope} clearance was validated at. Nothing was seeded, and nothing is reduced to fit` : null;
+}
+
 /** Claims per second per stream, from the recorder's acknowledgements of one cycle (its own clock). */
 export function measuredRate(acks) {
   const by = new Map();

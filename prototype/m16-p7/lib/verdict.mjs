@@ -146,7 +146,19 @@ export const storageQualifies = (st) => storageProblems(st).length === 0;
 
 /**
  * run: { failureModel, storage } (fixed on the recorder when the run is created).
- * cycle: { settings, cutSentAt, cutConfirmed, workerStopsBeforeCut, silentWorkerStops, rebootObservedAfterCut, authenticatedRejections }.
+ * cycle: { settings, cutSentAt, cutConfirmed, workerStopsBeforeCut, silentWorkerStops, rebootObservedAfterCut, authenticatedRejections,
+ *          journalWriteFailure (what the journal's failure marker says now, or null), journalWriteFailures (the failures
+ *          workers reported to the recorder in this cycle, at any time), tornTailRepairProblem (why the torn final
+ *          line cannot be repaired, from lib/scan.mjs repairProblem, or null), recorderDamage (the `damage` of the
+ *          recorder's cycle view: { acknowledgementLedger, recorderMemory, runLedgers }, each a reason or null) }.
+ * A known journal write failure is never a PASS: the comparison may still verify, but the cycle saw a storage or
+ * harness error. It is INCONCLUSIVE, and it never softens a FAIL.
+ * A torn final line that cannot be repaired (not valid UTF-8; the reused verifier would refuse its repair record, and
+ * the verifier stays unchanged by decision) is INCONCLUSIVE too: recovery writes nothing for it, so the cycle can
+ * never be recovered, and it must not stand as a provisional PASS.
+ * Damage to the recorder's records of the cycle (its acknowledgement ledger, or what its running server could not
+ * store) is INCONCLUSIVE as well: the acknowledgements the comparison rests on cannot be relied on, and the recorder
+ * stores no PASS for such a cycle.
  * A PASS here is provisional when recovery is needed: it becomes final only when the recorder holds a verified recovery
  * (finalStatus). A journal one claim ahead is never an unconditional pass (decision 2).
  */
@@ -162,6 +174,9 @@ export function classifyCycle({ comparison, run, cycle }) {
   if (QUALIFYING_MODELS.includes(run.failureModel) && cycle.rebootObservedAfterCut !== true) inconclusive.push('REBOOT_AFTER_CUT_NOT_OBSERVED');
   if (cycle.workerStopsBeforeCut?.length || cycle.silentWorkerStops?.length) inconclusive.push('WORKLOAD_STOPPED_BEFORE_CUT');
   if (cycle.authenticatedRejections) inconclusive.push('RECORDER_REJECTED_AUTHENTICATED_MESSAGES');
+  if (cycle.journalWriteFailure || cycle.journalWriteFailures?.length) inconclusive.push('JOURNAL_WRITE_FAILED');
+  if (cycle.tornTailRepairProblem) inconclusive.push('TORN_TAIL_NOT_REPAIRABLE');
+  if (cycle.recorderDamage && Object.values(cycle.recorderDamage).some(Boolean)) inconclusive.push('RECORDER_CYCLE_RECORDS_DAMAGED'); // any reason, in any of its parts
   if (!comparison.counts?.claimAcks) inconclusive.push('NO_ACKNOWLEDGED_CLAIMS');
   const verdict = fails.length ? 'FAIL' : inconclusive.length ? 'INCONCLUSIVE' : 'PASS';
   const needsRecovery = verdict === 'FAIL' ? [] : comparison.needsRecovery;

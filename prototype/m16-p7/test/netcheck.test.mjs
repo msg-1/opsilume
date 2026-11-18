@@ -205,3 +205,23 @@ describe('gateway (loopback only)', () => {
     await Promise.all([fwd, upstream].map((s) => new Promise((r2) => s.close(r2))));
   });
 });
+
+// Post-commit review F18 and F19 (strict mode only).
+describe('strict mode: every gateway bridge is probed, and the recorder target is an address', () => {
+  test('F18: a gateway that probed only one of its two bridges does not pass', async () => {
+    assert.deepEqual(failed(await strict()), [], '(two bridges probed: passes)');
+    const oneBridge = () => gatewayEgress({ tcp: async () => 'timeout', interfaces: { lo: LO, eth0: nic('172.23.0.3') }, target: TARGET }).then((r) => ({ ...r, listeners: LISTEN }));
+    const r = await strict({ egress: oneBridge });
+    assert.equal(r.ok, false);
+    assert.match(failed(r).join(' | '), /gateway egress self-check -> .*bridges probed: 1 of 2/);
+  });
+  test('F19: a host NAME as the recorder target is refused in strict mode: a name that does not resolve is not a blocked route', async () => {
+    const w = world();
+    const named = await runNetcheck({ strict: true, ...w.deps, target: 'recorder.example:8787' });
+    assert.equal(named.ok, false);
+    assert.match(failed(named).join(' | '), /recorder target is an IPv4 address -> recorder\.example/);
+    // Outside strict mode (a smoke run on Docker Desktop uses host.docker.internal) it is only reported.
+    const smoke = await runNetcheck({ strict: false, ...world().deps, target: 'host.docker.internal:8787' });
+    assert.ok(!failed(smoke).some((f) => f.startsWith('recorder target is an IPv4 address')));
+  });
+});

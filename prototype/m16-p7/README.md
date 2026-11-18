@@ -240,12 +240,111 @@ Product-owner decisions of 18 November 2026: **a failed journal `fsync` must fai
 - **Limits, stated exactly:**
   - **There is no unconditional guarantee across processes.** The marker is written to the very volume whose write just failed, so it may not be writable either. **If the marker cannot be written, a restarted process does not know about the failure and will append.** Only the process that saw the failure refuses, for as long as it lives. A test pins exactly this behaviour.
   - **A marker whose own write or sync failed** may be incomplete (it then still counts as a failure for whoever finds it). It is in the file system's cache, where other processes of the same boot see it, but it may be gone after a reboot or a power cut. After a reboot the harness then has only what is on the disk, which every command verifies in full; it no longer knows that a write had failed.
-  - The failure itself says which case applies (`journalWriteFailure.marker` in the check result: `written`, `found`, `written, but not confirmed on disk`, or `NOT written`). A second, independent trace is the `worker_stopped` event the worker sends to the recorder, when it gets there.
+  - Which case applies is said where it can be known. The worker that saw the failure reports it to the recorder as an event of its own, `journal_write_failed`, with what became of the marker (`written`, `found`, `written, but not confirmed on disk`, or `NOT written`). `check` runs in a new process after the reboot, so in its result `journalWriteFailure.marker` can only read `found`, or the field is null when the marker is gone. (An earlier version of this sentence said the check result shows all four; it cannot.)
   - A marker that exists but is empty, torn or unreadable counts as a failure, never as none.
   - Any error from an append other than those three refusals sets the marker for good, including an error opening or reading the file before a byte was written. That is deliberate: the harness cannot tell those apart safely.
   - This is the harness's addition, **not part of the Phase 0.5 design**, which says a failed write throws and nothing commits. It is stricter than the design in one respect: the design lets a failed `dispatch` line leave trust unaffected; here any failed journal write stops everything. Whether the production implementation should do the same is a design decision that has not been taken.
   - The recorder's own ledgers are not covered: a failed acknowledgement write marks that cycle's file damaged, but a failed write to another recorder ledger is only answered with an error.
 - Tested with unit tests on a file system that fails on demand (`test/failclosed.test.mjs`). The wiring in `p7.mjs` has never run: it only loads inside the image.
+
+## After a journal write failure: what `check`, `recover` and the recorder do
+
+Added after the post-commit review of commit `462f5d4` (`docs/m16-p7-post-commit-review.md`, finding F4).
+
+- **A known journal write failure is never a PASS.** `check` makes the cycle INCONCLUSIVE with the reason `JOURNAL_WRITE_FAILED` when the marker is beside the journal, or when a worker reported a failure to the recorder during the cycle. A failed comparison stays FAIL.
+- **The worker's report (`journal_write_failed`) counts whether it arrived before or after the cut was requested,** unlike an ordinary worker stop. The recorder accepts it only while the cycle is open (started, not yet checked); a report for a cycle already checked is refused.
+- **The recorder decides with the check, not after it.** For a cycle with such a report it refuses a PASS (`pass_contradicts_a_recorded_journal_write_failure`) and refuses the recovery (`journal_write_failed_in_this_cycle`). It also refuses a PASS whose own result carries the marker or the reports (`pass_reports_a_journal_write_failure`).
+- **`recover` stops the run** before it probes, repairs or clears anything, for a failure known from any of four places: the marker as it is now, a worker's report held by the recorder, or the marker or a report as `check` recorded them with its result (the marker may be gone by the time `recover` runs). The recorder refuses the recovery for the three of those it can know (it cannot see the marker on the test machine; that case reaches it as `recover`'s stop). The rule is `lib/recovery.mjs`. A journal write that fails inside the clearance itself also stops the run on the recorder, and the worker's report is repeated while the recorder only answers "busy".
+- **What is still not covered:** a failure whose marker is lost **and** whose report never reached the recorder is known to nobody. That is the stated limit of the wrapper, unchanged.
+- The rule and the recorder's refusals are unit-tested (`test/harness.test.mjs`, `test/journal-failure-verdict.test.mjs`). `p7.mjs check` itself has never run.
+
+## A torn final line the verifier cannot accept a repair for: INCONCLUSIVE, never repaired
+
+Post-commit review, finding F3. **Product-owner decision of 18 November 2026: the Phase 0.5 verifier stays unchanged, and this mitigation is accepted for the time being.**
+
+- **The limitation:** the reused verifier measures an ignored line by the length of its decoded text, and the repair record names the raw byte count. For a fragment that is not valid UTF-8 (the review's example: the bytes `7b 22 ff fe 80 41`) the two differ, and the verifier refuses the repair record. Before the fix, `recover`'s own write therefore turned a repairable torn tail into a `corrupt` journal.
+- **What the harness does:**
+  - **`check`** asks, read-only, whether a repair would be verified (`lib/scan.mjs`, `repairCheck`). If it would not, the cycle is **INCONCLUSIVE** with the reason `TORN_TAIL_NOT_REPAIRABLE`, not a provisional PASS. A failed comparison stays FAIL. The result carries `tornTailRepairProblem`. If the question could not be answered at all (the fragment could not be read), `check` saves no result (the attempt's directory keeps the journal as found) and can be run again. A fragment longer than 64 MiB is not examined and is treated as one the verifier would not accept.
+  - **The test is the verifier's own measure, not "valid UTF-8".** Most invalid UTF-8 fails it. A few invalid sequences decode to the same length (a four-byte character cut after three bytes, for example); those are repairable, are repaired, and behave like any other torn tail.
+  - **`recover`** stops before it probes, repairs, clears or retires anything, on what `check` recorded. It writes `recovery-not-possible-*.json` in the cycle's evidence and exits 8. (If `check` found the tail repairable and it is not so when `recover` reaches it, the journal is not as it was found: that stops the run.) **No repair record is written.** The journal stays byte for byte as found, with its invalid bytes: nothing is replaced, normalised or truncated, and it is still a torn tail, not corrupt.
+  - **The recorder** stores no PASS for such a result (`pass_reports_a_torn_tail_that_cannot_be_repaired`) and accepts no recovery for the cycle (`torn_tail_cannot_be_repaired`). Its final status is INCONCLUSIVE and stays so.
+- **A torn tail that is valid UTF-8 is handled as before:** provisional PASS, repaired by `recover`, PASS once the recovery is recorded. ASCII fragments, blocks of zero bytes and valid multi-byte text are covered by tests.
+- **What follows from INCONCLUSIVE:** in a qualifying run it ends the series, and because the cycle cannot be recovered, no run can continue that database and journal. **Physical power-cut testing cannot proceed through this condition.** A power cut can leave such a tail; if one does, the series stops there, safely and without a wrong result, and can only be taken further after the verifier's length rule has been resolved in a separately approved change.
+- Unit-tested at library level and on the recorder (`test/repair-utf8.test.mjs`, `test/harness.test.mjs`, `test/journal-failure-verdict.test.mjs`). The wiring in `p7.mjs check` and `recover` has never run.
+
+## The recorder never dies on a request, and never loses a refusal silently
+
+Post-commit review, findings F1 and F2.
+
+- **A request target that is not a URL** (for example `GET http://[`) is answered `400 bad request target`. Nothing is read or written for it: no ledger, and no rejection line. (An unknown path or an unknown run is still logged as a rejection, one line, as before.)
+- **A rejection that cannot be written to its log** (the log ends in a fragment, the disk is full, the file is not writable) no longer ends the server. The request is refused all the same:
+  - **Unauthenticated** (unsigned, bad MAC, unknown path or run): answered exactly as before, so the network check's unsigned probe still gets its 401. Nothing about it is recorded anywhere; the server counts it and prints a line on stderr for the first one and every hundredth.
+  - **Authenticated:** answered `500 refusal_not_recorded`, with `refused` (what was refused) and `fallback`. (A request with a stale timestamp gets the same status without the signed body, as stale requests always did.) The refusal is kept as an event in the run's ledger (`refusal_not_recorded`, `fallback: "event"`), where it still counts against its cycle as a reason for INCONCLUSIVE and still blocks a replay. It is appended under the directory lock when the lock can be had, and without it otherwise.
+  - **No such event for a replayed or stale request** (`fallback: "none"`): anyone who captured a signed request can send those, and they must not be able to write to the run's event ledger.
+  - **With `fallback: "none"`,** or if the event ledger cannot be written either, this server accepts no further acknowledgement and no PASS for the open cycle. That flag is in memory only and does not survive a restart of the recorder. What does survive: a run ledger that ends in a fragment is itself reported as damage in every cycle view (`damage.runLedgers`), so the cycle is INCONCLUSIVE and no PASS is stored for it, before and after a restart.
+  - It is never answered as an ordinary refusal, and never reported as recorded.
+- **Nothing repairs a damaged ledger.** A final line without its newline is left byte for byte; readers skip it and writers refuse to append after it.
+- **It is made visible:** `verify-dir` lists every ledger that ends in an incomplete line, or cannot be read, as a problem (exit 1). A cycle start is refused while a ledger the cycle depends on is in that state: the run's events, rejections or accepted claims, or the volume registry (`recorder_ledger_ends_in_a_fragment: <file>` or `recorder_ledger_cannot_be_read: <file>`; when the damaged file is the run's own rejection log, that text arrives inside a `refusal_not_recorded` answer). Another cycle's acknowledgement file and the recorder-wide rejection log stop no cycle; `verify-dir` reports them all the same.
+- **An error no handler foresaw** is answered 500 and named on stderr (its name and code only); it does not end the server. A handler that fails part-way may already have written something; it is never answered as accepted.
+- Unit-tested with a real server in a process of its own (`test/recorder-availability.test.mjs`).
+
+## A damaged cycle is INCONCLUSIVE, and a refused result never blocks the cycle
+
+Second safety review, finding A (a cycle that could never be closed).
+
+- **The recorder says what is damaged.** The cycle view it serves carries `damaged` and `damage`, with three reasons that may each be null:
+  - `runLedgers`: one of the run's own ledgers (events, rejections, accepted claims) ends in a fragment or cannot be read, so refusals or events of the cycle may be missing. Read from the files, so a restarted recorder reports it too.
+  - `acknowledgementLedger`: the cycle's acknowledgement file ends in a fragment, holds a line that does not follow its stream, or cannot be read. Any process that reads the file sees this.
+  - `recorderMemory`: what only the running server knows: an acknowledgement it could not store, or an authenticated refusal it could record nowhere. **It does not survive a restart of the recorder,** and a view computed by another process (the `cut` command, a test) does not have it.
+  Only reasons are reported: no key, no MAC, no request content. A reason may carry an operating-system error code.
+- **`check` decides before it saves anything.** Any damage makes the cycle INCONCLUSIVE with the reason `RECORDER_CYCLE_RECORDS_DAMAGED`; a failed comparison stays FAIL. The recorder stores no PASS for a damaged cycle (`pass_for_a_cycle_the_recorder_marked_damaged`), so the two agree, and the cycle's final status is INCONCLUSIVE whether or not it is recovered. `recover` works from the result the recorder accepted, as for any inconclusive cycle; while one of the run's ledgers is damaged it is refused before it changes anything, because the recorder could not record it.
+- **A result the recorder refuses is evidence, not a dead end** (`lib/attempts.mjs`):
+  - It is marked beside itself (`result-refused-<time>.json`: who refused, the status and the reason), kept byte for byte, and never sent again. `check` exits 9.
+  - The next run of `check` makes a **fresh attempt in a directory of its own** (`cycle-NNNN-attempt-<time>`), reads the cycle view again and decides again. Nothing is overwritten or deleted.
+  - Every result carries its attempt's identity (`attempt.dir`, a random `attempt.id`, the earlier attempts, and which of them were refused), so one attempt cannot be taken for another.
+  - A refused result was never accepted: the recorder stored nothing for it. Only the recorder's stored result counts, for `recover` and for the series. (If the answer is "not open" because this very result did arrive earlier, `check` recognises it by its attempt id and does not mark it.)
+  - **A saved PASS is checked against the cycle view before it is sent again.** If the view now shows damage, an authenticated refusal or a reported journal write failure, `check` does not send it: it marks it (`refusedBy: "check"`), keeps it, and the next run decides afresh. A result file that cannot be read is a dead attempt, neither sent nor reused.
+  - **Limit:** the recorder itself does not refuse a PASS merely because the cycle has authenticated refusals on record; only `check` prevents that. Whether the recorder should refuse it too is an open decision (a committed test of the recorder stores such a PASS).
+  - Only a refusal releases a saved result. One that was merely not delivered (a timeout, a lost connection, an unauthenticated or busy answer, a server fault) is sent again exactly as saved, as before.
+- **Limits:** if the recorder restarts between the failure and the check, `recorderMemory` is empty and only ledger damage is seen. A fresh attempt that still computes a result the recorder refuses is refused again, in its own directory; each run of `check` makes at most one attempt.
+- Unit-tested against a real in-process recorder with the library functions `check` uses (`test/cycle-closure.test.mjs`). `p7.mjs check` itself has never run.
+
+## An event belongs to a cycle that has started
+
+Second safety review, finding B (post-commit review, F14).
+
+- An event that names a cycle is accepted only if that cycle **has started**, and only with that cycle's own id, given as a string and equal to it exactly. Otherwise: `cycle_not_started` or `wrong_cycle_id`.
+- A `worker_stopped` event must name its cycle (`worker_stopped_needs_its_cycle`) and is accepted only for the cycle that is **open**: started and not yet checked (`cycle_not_open`). A `journal_write_failed` report is held to the same.
+- A refused event is logged as an authenticated rejection, like any other refusal, and stored nowhere else: it cannot count against another cycle. Before this, a `worker_stopped` sent ahead of a cycle without an id was stored and later made the real cycle INCONCLUSIVE.
+- Unchanged: run-level events without a cycle (`volume_claimed`, `initialised`, `adopted`, a `netcheck` outside a cycle), and cycle events with the right id, including `quarantine_observed` and `netcheck` for a cycle already checked.
+- Unit-tested (`test/cycle-events.test.mjs`).
+
+## The whole series is planned before it starts
+
+Post-commit review F7; product-owner decision of 18 November 2026.
+
+- **Why:** clearance was validated for 1,000,000 affected actions. A claimed action stays affected for the rest of the series (the harness never moves it out of `EXECUTING`, by decision), so every cycle's claims accumulate.
+- **The plan (`lib/sizing.mjs`, `seriesPlan`):** `20 cycles x the most claims that can start in one cycle within the planned time + the pool of one cycle` must not exceed 1,000,000. The pool already holds the headroom (at least 2) over the allowance. The most claims per cycle is the pacer's own bound, for every worker of every process.
+- **Preflight** computes it (`--cycles`, 20 by default) and is BLOCKED if the series does not fit. **Nothing is reduced to fit:** another workload must be decided. The largest number of claims per cycle that fits follows from the calculation for the given pool (`maxClaimsPerCyclePermitted`); no fixed figure is built in.
+- **The readiness record** binds the planned cycles with the rest of the workload, and stores the calculation (`plan`, shown by `status`). The recorder accepts a record only for 20 planned cycles that fit; a start on another plan is `readiness_stale`.
+- **Before every cycle, on the actual count:** `run` counts every action clearance would have to process now (claimed and still `EXECUTING`, settled as unknown, or waiting) and refuses, before the recorder is asked and before anything is seeded, if that plus the new pool would pass 1,000,000. It reports both numbers with the start; the recorder refuses a count that is malformed, that is not for the recorded pool, or that passes the envelope (`series_capacity_exceeded`), and keeps the count with the start.
+- **Limits:** the plan bounds the claims of the planned time; a cut that comes later than planned lets a worker claim more, up to its pool, which only the count before the next cycle sees. The recorder cannot count the database: it checks what the test machine reports, and a start that reports no count is not refused by the recorder. The count and its SQL are in `p7.mjs`, which has never run.
+- Unit-tested: `test/series-plan.test.mjs`.
+
+## Further hardening after the second safety review
+
+Each item names its finding in `docs/m16-p7-post-commit-review.md` (F) or `docs/m16-p7-second-safety-review.md` (C).
+
+- **`recover` is not tried again after a recorded recovery failure** (F5), also when the run was "only" stopped as inconclusive.
+- **A clearance leaves its evidence at once** (F6): `clearance-<time>.json` in the cycle's evidence, written as soon as the clearance committed; a re-run reads the digest back from it instead of reporting none. The cycle summary is written before the recovery is reported, and the recorder's answer beside it when it arrives (`recovery-recorded-<time>.json`). A saved clearance is used only if it names this cycle and this claim.
+- **A lost note after the cycle start no longer leaves a started cycle without workers** (F8, in part). A start request whose answer is lost is still a stop: the actions are seeded and that cycle cannot be started again.
+- **The cut's command is checked before a cut is scheduled** (F13): `--command-json` must be a non-empty JSON array of strings.
+- **An accepted claim is recorded once** (F15), also when the recovery report is repeated.
+- **Strict network check** (F18, F19): the gateway's self-check must have probed both of the gateway's bridge addresses, and the recorder target must be an IPv4 address, not a host name.
+- **The recorder client never follows a redirect** (F23): before, a redirect from whatever answered at the recorder address made the client send the signed request to the redirect's target.
+- **Not changed, and why:** the scripts (`smoke-teardown.sh`, `smoke-containers-down.sh`, `smoke-docker-desktop.sh`, the firewall script: F9, F11, F12, F20, F21) cannot be exercised under the restrictions these changes were made under, so they were left as they are. The size check before a cycle (F7) is a decision for the product owner: counting every affected action could refuse a later cycle of a series. F16, F17, F22 and C6 are recorded as open.
+- **From the final review of these changes** (`docs/m16-p7-second-safety-review.md`, D1 to D12): a stop is recorded even when its event cannot be written (the marker is written first); the client's error names what was refused; an unreadable acknowledgement file or directory is reported by error code, never by a path of the recorder host; `run` ends with exit code 10 after a journal write failure; the strict target rule takes a real IPv4 address only.
+- All of the above that is in `p7.mjs` has never run.
 
 ## Removing smoke state
 
