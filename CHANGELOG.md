@@ -4,6 +4,32 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Milestones 15 and 16: recovery and post-restore remediation safety (branch `prototype/m16-p7-durability-harness`, not yet merged)
+- **Milestone 15, phase 1:** a recovery readiness audit ([docs/recovery-readiness-audit.md](docs/recovery-readiness-audit.md)).
+- **Milestone 16:** the post-restore remediation safety design, its decision review and the product-owner decisions of 17 November 2026; an isolated Phase 0 prototype and Phase 0.5 validation (`prototype/m16-phase05`).
+- **Milestone 16, P7 (`prototype/m16-p7`):** a power-loss durability harness. It has a workload container, a recorder on a separate host (HMAC-signed requests, append-only ledgers) and check and recovery tools. Commits on the branch from `c5c2c13` to `2de30aa`.
+  - The latest hardening (`2de30aa`, 18 November 2026) covers:
+    - refusals attributed by the recorder, not by a clock or the request;
+    - a recorder restart during an open cycle makes it INCONCLUSIVE;
+    - a PASS gate that verifies the evidence itself, under rulings A, B and C;
+    - an evidence boundary between the check and the stored PASS;
+    - post-result contradictions kept durably, or held fail-closed in memory.
+  - **Validation:**
+    - unit suite 480/480 on three consecutive runs;
+    - removal and firewall stub suites, Compose rendering, syntax checks and `git diff --check` pass;
+    - repeated independent adversarial reviews ([docs/m16-p7-second-safety-review.md](docs/m16-p7-second-safety-review.md)).
+  - **Not validated:**
+    - The final container smoke was **blocked** by Docker address-pool exhaustion, so the final source has **not** passed a container smoke. Smoke 7, the last that ran, predates the post-result contradiction work.
+    - No native Linux run.
+    - No physical power-cut series.
+  - **P7 status: NOT TESTED AND NOT PASSED.** The physical 20-cycle qualification has not taken place.
+- **Project documentation:**
+  - [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md) and [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) are new;
+  - [docs/engineering-rules.md](docs/engineering-rules.md) holds the repository's working rules;
+  - the roadmap now has a forward plan;
+  - decisions 18 to 26 were added;
+  - the architecture document now has diagrams and the implemented and planned topology.
+
 ### Added
 - Paid evaluation: `--key-env NAME` (required) reads the key from that variable only; a ledger allows one repeat across all scenarios. A paid run with no key is refused instead of silently running the rule-based engine.
 - Paid evaluation runs are bounded by construction: the runner reads only the process environment (never `.env`), keeps the ceiling in a ledger file shared by every invocation (so a repeat cannot start with a fresh budget, and a crashed scenario stays charged), reserves an upper bound for every model call before sending it, refuses prompts that could reach Haiku 5.5's long-prompt prices, does not retry, charges calls of unknown outcome at their bound, and stops if a response comes from another model. Ordinary investigations keep their existing accounting. `services/ai/tests/test_eval_budget.py`.

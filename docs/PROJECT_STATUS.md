@@ -1,0 +1,197 @@
+# Project status
+
+**Last updated:** 18 November 2026.
+
+**Status recorded against:** branch `prototype/m16-p7-durability-harness`. The P7 hardening is commit `2de30aa1d262ad1a3c52305f29158d17000fef5d`; this documentation was added in the commit that follows it. `develop` is at `075302c`. `main` holds only the initial commit (`aed4476`).
+
+This is the single source of truth for where the project stands. Statuses mean:
+
+| Status | Meaning |
+|---|---|
+| COMPLETE | Implemented and validated by the evidence named |
+| IMPLEMENTED | The code exists; validation is incomplete |
+| IN PROGRESS | Active work |
+| BLOCKED | Waiting for a dependency or an owner decision |
+| NOT TESTED | Not verified |
+| DEFERRED | Intentionally postponed |
+| NOT STARTED | Future work |
+
+Code that exists is never COMPLETE by itself.
+
+## 1. The project
+
+**OPSILUME**, developed as OpsPilot; repository, packages and configuration keep the `opspilot` identifiers. Tagline: *Illuminate every incident.*
+
+It is an AI-assisted engineering intelligence and incident investigation platform. It correlates logs, metrics, traces, deployments, GitHub changes, service dependencies, documentation and past incidents. An investigation produces evidence-backed hypotheses, says what evidence is missing or contradictory, states its uncertainty, and computes an outcome (healthy, degraded, incident, undetermined) from the evidence. Remediation is proposed, approved by people and never executed by OPSILUME itself.
+
+The immediate goal is a **portfolio-ready public prototype**, not a commercial product. There are no customers, no production-scale validation, no commercial SLA and no compliance certification.
+
+## 2. Overall stage
+
+A working system for local use and evaluation, built in a public repository with CI. It runs on a laptop and in CI only. It is **not deployed** anywhere, and has **not** been hardened or validated for production.
+
+The current engineering work is Milestone 16: post-restore remediation safety. Its P7 durability harness has been built and reviewed, but not run on real hardware.
+
+## 3. Completed milestones
+
+The original build plan (M1 to M16 in [roadmap.md](roadmap.md)):
+
+| # | Milestone | Status | Evidence |
+|---|---|---|---|
+| M1 | Foundation and architecture | COMPLETE | Builds, lint and typecheck |
+| M2 | PostgreSQL and incident management | COMPLETE | API integration tests |
+| M3 | Services and deployment tracking | COMPLETE | API integration tests |
+| M4 | Log ingestion and analysis | COMPLETE | API integration tests |
+| M5 | GitHub integration | IMPLEMENTED | Tested against a local stub of the GitHub API and real webhook signatures. **NOT TESTED against github.com** (needs a token) |
+| M6 | Redis, BullMQ, background jobs | COMPLETE | Real worker and Redis; failure drills in CI |
+| M7 | Auth, RBAC, multi-tenancy | COMPLETE | API integration tests |
+| M8 | Python FastAPI AI service | COMPLETE | pytest; ran on the host and in Docker |
+| M9 | LLM integration | COMPLETE (limited) | One live run with `claude-haiku-5-5` ([claude-live-verification.md](claude-live-verification.md)) and mocked-API tests. No paid evaluation run since |
+| M10 | RAG, embeddings, pgvector | COMPLETE | Tests against real pgvector |
+| M11 | LangGraph investigation agent | COMPLETE | Evaluations on the rule-based engine; end to end through the queue |
+| M12 | MCP server | IMPLEMENTED | Tested in-process. **NOT TESTED with a real MCP client** |
+| M13 | Remediation and approvals | COMPLETE | API and browser tests |
+| M14 | Monitoring, collaboration, analytics | COMPLETE | API tests; Prometheus and Grafana run |
+| M15 | Testing, security, performance | IMPLEMENTED | Automated suites, a modest load test and a dependency audit exist. No external security review; no production-scale performance test |
+| M16 | Docker, CI/CD, documentation | COMPLETE | Full stack in Docker; CI on every pull request |
+
+Later improvement milestones, each merged into `develop` through a pull request. Details are in [CHANGELOG.md](../CHANGELOG.md) and the reports linked from [roadmap.md](roadmap.md):
+
+- **Milestones 3 to 10:** real AI validation, reliability, architecture hardening, pilot readiness, integration trust, pilot validation and final validation. COMPLETE as recorded in their reports, with the limits those reports state.
+- **Remediation integrity work:** pull requests #32 to #37, including transactional remediation audits. COMPLETE (merged, tested).
+- **Milestone 15, phase 1:** recovery readiness audit ([recovery-readiness-audit.md](recovery-readiness-audit.md)). COMPLETE (an audit; no code changed).
+
+## 4. Current branch and latest commit
+
+| | |
+|---|---|
+| Working branch | `prototype/m16-p7-durability-harness` (published to GitHub on 18 November 2026; not merged) |
+| P7 commit | `2de30aa1d262ad1a3c52305f29158d17000fef5d` |
+| `develop` | `075302c53120eac8e311e7d560ba49e6c5b2ad75` |
+| `main` | `aed447658b834826bec9100603439072cf776e18` (initial commit only; release 0.1.0 is on `release/0.1.0`, not merged) |
+
+Check the live state with `git branch --show-current`, `git rev-parse HEAD` and `git status`. This table records a moment, not a promise.
+
+## 5. Features and their validation status
+
+| Area | Status | Validation |
+|---|---|---|
+| Incidents, services, deployments, logs, metrics, alerts | COMPLETE | API integration tests against PostgreSQL |
+| Auth, sessions, RBAC, API keys, tenancy | COMPLETE | API integration tests (isolation, scopes, rotation) |
+| Investigation agent (rule-based engine) | COMPLETE | Unit tests, a pinned snapshot of every rule's output, 14 evaluation scenarios, local demo end to end |
+| Investigation agent with Claude | COMPLETE (limited) | One live investigation; no repeated or large-scale model evaluation |
+| Evidence provenance and guardrails | COMPLETE | Enforced twice (AI service and API); tested |
+| Remediation proposals, approvals bound to content, execution outcomes | COMPLETE | API and browser tests; transactional audits |
+| Knowledge base (pgvector, hybrid search) | COMPLETE | Tests against real pgvector |
+| GitHub integration | IMPLEMENTED | Stub and signature tests only. NOT TESTED against github.com |
+| MCP server | IMPLEMENTED | In-process only. NOT TESTED with a real client |
+| Backups and restore drill | COMPLETE (local) | Drill on the throwaway stack ([backup-and-restore.md](backup-and-restore.md)) |
+| Post-restore remediation safety (M16) | IN PROGRESS | Design reviewed; Phase 0 and Phase 0.5 prototypes validated in isolation; not in the product |
+| P7 durability harness | IMPLEMENTED | See section 6 |
+
+## 6. In progress: Milestone 16, P7 durability
+
+P7 asks whether a remediation claim recorded in PostgreSQL and in the journal survives a real power loss on native Linux. The harness (`prototype/m16-p7/`) runs the workload, a recorder on a second host, and the check and recovery tools.
+
+**P7 status: NOT TESTED AND NOT PASSED.**
+
+The validation levels are separate. Passing one says nothing about the next.
+
+| Level | Status | Evidence |
+|---|---|---|
+| Automated tests of the harness | COMPLETE | 480 of 480 on three consecutive runs (18 November 2026); stub suites (removal scripts, firewall), Compose rendering, syntax checks |
+| Independent code review | COMPLETE for the supported envelope | Repeated adversarial reviews; findings and dispositions in [m16-p7-second-safety-review.md](m16-p7-second-safety-review.md) sections 11 to 14.3 |
+| Docker container smoke | NOT TESTED for the final source | Container smokes passed on earlier source; the last that ran (18 November 2026) predates the post-result contradiction work. The final smoke was blocked by Docker address-pool exhaustion before any container started |
+| Native Linux verification | NOT STARTED | No native Linux host available |
+| Physical 20-cycle power-cut qualification | NOT STARTED | Not authorised; needs the hardware in section 9 |
+
+The full record is in [m16-p7-hardening-progress.md](m16-p7-hardening-progress.md), [m16-p7-post-commit-review.md](m16-p7-post-commit-review.md) and [m16-p7-second-safety-review.md](m16-p7-second-safety-review.md).
+
+## 7. Blocked
+
+| Item | Status | Blocked by |
+|---|---|---|
+| Container smoke of the final P7 source | BLOCKED | Docker Desktop address pools are exhausted by preserved scratch projects. Needs the owner's approval to remove stopped scratch resources, or explicit subnets in the scratch Compose override |
+| P7 native Linux and physical qualification | BLOCKED | Hardware: a native Linux test machine, a separate recorder host, a controllable power cut. Owner authorisation |
+| GitHub validation against github.com | BLOCKED | A read-only token for one test repository |
+| Paid model evaluation | BLOCKED | An approved model budget (the plan proposes a $1.00 ceiling; [ai-validation.md](ai-validation.md)) |
+| Release 0.1.0 to `main` | BLOCKED | Owner review and approval |
+| Public deployment | NOT STARTED | Section 10 |
+
+## 8. Unverified functionality
+
+All NOT TESTED:
+- the GitHub client against github.com;
+- the MCP server with a real MCP client;
+- Claude beyond the recorded live run (variance, more scenarios, other models);
+- the P7 harness on native Linux and under a real power loss;
+- the final P7 source in containers;
+- the P7 firewall script on a Linux host;
+- the P7 smoke teardown against real Docker;
+- the P7 recorder's SIGPIPE behaviour on Linux;
+- anything outside a laptop and CI.
+
+## 9. Known limitations
+
+See [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md). The most important:
+- no production deployment or validation;
+- no external security review;
+- GitHub and MCP not validated externally;
+- P7 not qualified.
+
+The P7 harness also has accepted limits:
+- total recorder-storage failure followed by a kill loses an in-memory contradiction;
+- replacing or remounting the recorder disk during operation is unsupported.
+
+## 10. Deployment status
+
+**NOT STARTED.** There is no public URL. The application runs locally with Docker Compose.
+
+The preferred target is Oracle Cloud Always Free. That is subject to verifying eligibility and that its resources can run the stack, with a zero monthly budget ([decisions.md](decisions.md), decisions 23 to 25). No cloud account, domain or paid service has been set up.
+
+## 11. Security and safety status
+
+- **In place:**
+  - authentication and session handling;
+  - RBAC and tenancy enforced on every query;
+  - secrets required, with no fallbacks;
+  - outbound requests to tenant URLs pinned against DNS rebinding;
+  - approvals bound to content;
+  - remediation never executed by OPSILUME;
+  - credentials masked at ingestion;
+  - spans scrubbed;
+  - `npm audit` of shipped Node dependencies in CI (no Python or container scanning).
+
+  Details: [architecture.md](architecture.md) (security summary) and [engineering-audit.md](engineering-audit.md).
+- **Not done:**
+  - an external security review or penetration test;
+  - production hardening;
+  - a compliance assessment.
+- **AI safety:**
+  - the agent is read-only;
+  - evidence is produced by code, never by the model;
+  - the outcome is computed from the evidence;
+  - every report is labelled with the engine that produced it.
+
+## 12. Next recommended task
+
+**Resume here.** Decide how to close the P7 container-smoke gap, then plan the portfolio deployment:
+
+1. Owner decision: free Docker address space (remove stopped P7 scratch resources) or allow explicit subnets in the scratch override. Then run one container smoke of the final P7 source on a new isolated project, and record it here.
+2. Review and merge `prototype/m16-p7-durability-harness` into `develop` by pull request, if the owner approves. It is a prototype directory; it does not change the product.
+3. Start the portfolio deployment track in [roadmap.md](roadmap.md):
+   - check Oracle Cloud Always Free eligibility and resources;
+   - build the public demo mode (seeded data, rule-based engine, no paid AI).
+
+P7 physical qualification stays a separate track that needs hardware and authorisation.
+
+## 13. Before the project is portfolio-ready
+
+All of these are NOT STARTED unless stated otherwise:
+- **A public URL** serving the application in a safe demo mode: seeded data, no paid AI, no real remediation destinations, reset on a schedule.
+- **A polished first-run experience** for a visitor.
+- **A README** that leads with the product, the architecture diagram and screenshots. The README exists; screenshots and a demo link do not.
+- **A short walkthrough video.**
+- **A technical case study,** and interview notes on the architecture and its decisions.
+- **Release 0.1.0** merged to `main`, with the protected branches in order.
+- **Honest limits stated** wherever the product is presented: no customers, no production validation, P7 not qualified.

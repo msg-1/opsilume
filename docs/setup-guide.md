@@ -176,6 +176,6 @@ The API tests that simulate outages (`apps/api/tests/reliability.test.ts`, `outa
 | Investigation fails with "AI service is not reachable" | Start the AI service (`npm run dev:ai`), check `AI_SERVICE_URL` |
 | Knowledge documents show "Keyword search only" | They were added while the AI service was down; Reindex all |
 | All services show "No data" | No metrics in the last 15 minutes; run the simulator or send metrics |
-| `prisma migrate dev` wants to drop an index | Expected; see the migration rule in CLAUDE.md |
+| `prisma migrate dev` wants to drop an index | Expected; see the migration rule in [engineering-rules.md](engineering-rules.md) |
 | Signed out unexpectedly after changing a password elsewhere | Intended: a password change ends every other session |
 | "Cross-origin request refused" | A browser sent a write from an origin other than `WEB_ORIGIN`; set `WEB_ORIGIN` to the address you open the app at |

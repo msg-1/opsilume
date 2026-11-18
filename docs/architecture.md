@@ -1,5 +1,58 @@
 # Architecture
 
+This document describes what is implemented. Planned architecture is marked **Planned**; nothing marked so exists yet. Current validation status: [PROJECT_STATUS.md](PROJECT_STATUS.md).
+
+## At a glance
+
+```mermaid
+flowchart LR
+  B[Browser] -->|HTTP| W["Web<br/>Next.js :3000"]
+  W -->|"/api/* proxy, session cookies"| A["API<br/>Express :4000"]
+  CI[CI/CD, log shippers] -->|API key| A
+  GH[GitHub] -->|signed webhook| A
+  A --> PG[("PostgreSQL 16<br/>+ pgvector, pg_trgm")]
+  A --> R[("Redis 7<br/>BullMQ")]
+  R --> WK["Worker<br/>(API codebase)"]
+  WK --> PG
+  WK -->|HTTP| AI["AI service<br/>FastAPI + LangGraph :8000"]
+  AI -->|"read-only tool API<br/>short-lived token"| A
+  AI -.->|optional| LLM["LLM provider<br/>(Claude, OpenAI, Ollama)"]
+  MCP["MCP server (stdio)"] -->|API key| A
+  A -.->|signed webhook, after human approval| EXT["Customer webhook<br/>(remediation)"]
+```
+
+- **Implemented:** every box above. It runs locally with Docker Compose (`docker-compose.yml`, profile `app`) or on the host (`npm run dev`). Prometheus and Grafana are optional (`npm run obs:up`).
+- **Deployment topology, implemented:** a single machine. Every published port is bound to loopback. No ingress, TLS terminator or public host.
+- **Deployment topology, planned:** a public demo on one Oracle Cloud Always Free instance, if eligibility and resources allow ([decisions.md](decisions.md), decision 23). Rule-based engine, seeded data, no outbound remediation. Nothing is provisioned.
+
+### Data flow of one investigation
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant API
+  participant Q as Redis/BullMQ
+  participant WK as Worker
+  participant AI as AI service
+  U->>API: start investigation
+  API->>Q: enqueue (run starts once, conditional update)
+  Q->>WK: job
+  WK->>AI: run agent (stream)
+  AI->>API: GET /api/v1/tools/* (read-only, org-scoped token)
+  AI-->>WK: steps, evidence ids, report
+  WK->>WK: the API's own guardrail pass, then the final report stored once
+  API-->>U: report: outcome computed from evidence, hypotheses, uncertainty
+```
+
+### Prototypes outside the product
+
+`prototype/` holds isolated Milestone 16 experiments. They are not part of the application:
+- **`m16-phase05`:** a remediation journal validated in isolation.
+- **`m16-p7`:** a power-loss durability harness. It has a workload container, a recorder on a second host (HMAC-signed protocol, append-only ledgers, a PASS gate that verifies evidence itself), and check and recovery tools.
+
+The harness is described in [prototype/m16-p7/README.md](../prototype/m16-p7/README.md). P7 is **NOT TESTED AND NOT PASSED**.
+
+
 ## System overview
 
 ```

@@ -32,3 +32,9 @@ services/ai/eval-runs/
 # demo environment (local state and results)
 demo/.state.json
 demo/results/
+
+# private working notes and local development-assistant configuration (never published)
+.private/
+CLAUDE.md
+CLAUDE.local.md
+.claude/

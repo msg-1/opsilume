@@ -1,8 +1,64 @@
 # Roadmap
 
-Status as of 14 November 2026. "Verified" means exercised by automated tests or by running the stack.
+The plan from here is in the first part, updated 18 November 2026. The milestone history below it was recorded as of 14 November 2026; "Verified" there means exercised by automated tests or by running the stack. The current status of everything is in [PROJECT_STATUS.md](PROJECT_STATUS.md).
 
-## Milestones
+## Direction
+
+OPSILUME's immediate goal is a **portfolio-ready public prototype**: a working application at a public URL, with controlled demonstration data, a polished experience and an honest technical record. Enterprise or commercial functionality is not a goal. Items below are plans, not commitments; anything marked *idea* is not a requirement.
+
+### 1. Completed milestones
+
+See [PROJECT_STATUS.md](PROJECT_STATUS.md), section 3, and the history below. In short: the M1 to M16 build plan, improvement Milestones 3 to 10, the remediation integrity work, the Milestone 15 recovery audit, and Milestone 16's design, its Phase 0 and 0.5 prototypes, and the P7 harness (implemented; P7 NOT TESTED).
+
+### 2. Immediate next steps
+
+| Item | Objective | Why it matters | Dependencies | Acceptance criteria | Priority | Status |
+|---|---|---|---|---|---|---|
+| P7 container smoke | Run the final P7 source in containers once | The final source has not been exercised in containers | Docker address space: owner approval to remove stopped scratch resources, or explicit subnets in the scratch override | One smoke on a new isolated project passes against a recorded source-tree hash | High | BLOCKED |
+| Merge the P7 branch | Bring `prototype/m16-p7-durability-harness` into `develop` | Keeps the record and harness on the integration branch | Owner review; CI green | Pull request merged with `--no-ff`; no product code changed | Medium | NOT STARTED |
+| Release 0.1.0 | Promote `release/0.1.0` to `main` | `main` holds only the initial commit | Owner review | `main` tagged 0.1.0, back-merged into `develop` | Medium | BLOCKED (owner approval) |
+
+### 3. Portfolio-readiness milestones
+
+| Item | Objective | Why it matters | Dependencies | Acceptance criteria | Priority | Status |
+|---|---|---|---|---|---|---|
+| Hosting feasibility | Confirm Oracle Cloud Always Free can run the stack | The deployment target must cost nothing per month | An Oracle account (owner); a resource check against the stack's memory and CPU | A written check: shape, memory, disk, network limits against measured usage; a go/no-go decision | High | NOT STARTED |
+| Public demo mode | A safe, resettable public instance | Visitors must not be able to change anything that matters or spend money | Hosting feasibility | Rule-based engine only (no paid AI); seeded fictional data; no outbound remediation webhooks; scheduled reset; sign-in for visitors or read-only access | High | NOT STARTED |
+| Public deployment | The demo at a public URL | The core portfolio deliverable | Public demo mode | HTTPS URL reachable; health checks green; documented deploy and rollback; zero monthly cost | High | NOT STARTED |
+| Presentation | README with screenshots, an architecture diagram and the demo link; a short walkthrough video | Lets a reviewer understand the product in minutes | Public deployment | README updated; video recorded and linked | Medium | NOT STARTED |
+| Case study | A technical case study and interview notes | Explains the decisions and trade-offs the owner can defend | The above | Written, linked from the README, consistent with [decisions.md](decisions.md) | Medium | NOT STARTED |
+
+### 4. Future technical improvements
+
+| Item | Objective | Why it matters | Dependencies | Acceptance criteria | Priority | Status |
+|---|---|---|---|---|---|---|
+| P7 physical qualification | Native Linux plus the 20-cycle power-cut series | The only evidence that would support a durability claim | Native Linux machine, separate recorder host, controllable power cut, owner authorisation | All criteria of the P7 plan met and independently reviewed | Low for the portfolio; High before any durability claim | NOT STARTED |
+| Post-restore remediation safety in the product | Bring the Milestone 16 design into the API | Closes critical finding C1 of the recovery audit | P7 outcome; implementation and security review | Implemented, tested, reviewed | Medium | NOT STARTED |
+| GitHub validation | Run the client against github.com | M5 is unverified externally | A read-only token | [github-validation.md](github-validation.md) procedure passes | Medium | BLOCKED (token) |
+| Model evaluation | Repeat runs and more scenarios with a model | One live run is not a measurement | An approved budget | [ai-validation.md](ai-validation.md) plan executed within its ceiling | Low | BLOCKED (budget) |
+| Live updates | Server-sent events instead of polling | Responsiveness | None | UI updates without polling | Low | NOT STARTED |
+| Scaling | Partition `LogEntry` by time; pre-aggregate views | Linear-time views | Load measurements | Measured improvement | Low | NOT STARTED |
+| Security tooling | Python and container scanning in CI | Only `npm audit` runs | None | Checks added and passing | Low | NOT STARTED |
+
+### 5. Long-term product possibilities (*ideas*, not requirements)
+
+- Notifications by email or chat.
+- More telemetry sources, and a dedicated log and metric store.
+- Deeper deployment-causality analysis and post-fix verification.
+- An external security review, if the project ever moves toward real use.
+
+### 6. Deferred or out of scope
+
+| Item | Status | Reason |
+|---|---|---|
+| Production-scale infrastructure | DEFERRED | Portfolio-first scope; zero budget ([decisions.md](decisions.md), decisions 22 and 24) |
+| Commercial features (billing, SLAs, compliance) | DEFERRED | Not a goal for the prototype |
+| Paid AI inference in the public demo | Out of scope | Decision 25 |
+| A paid domain | DEFERRED | Zero budget; needs owner approval |
+| Protection against replacing the P7 recorder disk while it runs | Out of scope | Owner ruling, 18 November 2026 |
+
+
+## Milestone history (as of 14 November 2026)
 
 | # | Milestone | Status | How it was verified |
 |---|---|---|---|

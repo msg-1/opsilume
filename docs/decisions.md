@@ -1,6 +1,6 @@
 # Decision log
 
-Newest last. Each entry: what was decided, why, and what it costs.
+Newest last. Each entry: what was decided, why, and what it costs. Entries from 18 onward also give the date the decision was recorded, its context, the alternatives where known, and whether it is still current. Dates before 18 November 2026 are given only where a document or commit records them; no earlier date is inferred.
 
 ### 1. Monorepo with npm workspaces and one Python service
 `apps/api`, `apps/web`, `services/ai`. One repository keeps the report contract, tool API and UI in step. The Python service uses `uv` and is not an npm workspace.
@@ -65,3 +65,37 @@ With the owner's approval, the 23 commits carrying an AI co-author trailer were 
 
 ### 17. Git workflow
 GitFlow-style: `main` for releases, `develop` for integration, `feature/*` and `bugfix/*` merged into `develop` with `--no-ff`, `release/*` and `hotfix/*` into `main` with a back-merge (see git-workflow.md). Commit messages follow Conventional Commits and carry no AI or tool attribution; a small shell hook checks both, locally and in CI, instead of adding a commit-lint dependency. The first seven backend branches were cut from work that already existed when the workflow was requested, so their intermediate commits are not individually runnable; from the AI service onward each branch was tested before merging.
+
+### 18. Post-restore remediation safety: product-owner decisions (17 November 2026)
+**Context:** Milestone 16 design and decision review. **Decision:** V1, V2 (24 hours; any verification failure quarantines all API processes) and V3 approved; P1 to P6 approved as design direction, subject to implementation review, security review and integration tests; P8 and P8a approved in principle, subject to production validation and to role and migration testing; P8b rejected; backup retention of 30 days and a tested envelope of 1,000,000 actions approved. P7 (native Linux durability) awaits evidence. **Alternatives and consequences:** in [post-restore-remediation-safety-decision-review.md](post-restore-remediation-safety-decision-review.md). **Current:** yes.
+
+### 19. P7 is a separate, hardware-dependent qualification (16 and 17 November 2026)
+**Context:** no native Linux host or hypervisor was available. **Decision:** no durability claim is made from Docker Desktop. P7 needs a native Linux test machine, a separate recorder host and a 20-cycle physical power-cut series. It stays NOT TESTED until then; the harness is built and reviewed in the meantime. **Consequences:** a durability claim waits for hardware. **Current:** yes.
+
+### 20. P7 recorder PASS gate (18 November 2026)
+**Context:** independent reviews found ways to store a PASS that the evidence did not support. **Decision:**
+- **A:** a worker stop reported after the cut request makes the cycle INCONCLUSIVE.
+- **B:** the recorder verifies all mandatory evidence itself before storing a PASS.
+- **C:** an evidence boundary ties a PASS to the records its check read.
+- A recorder restart during an open cycle makes the cycle INCONCLUSIVE and ends a POWER-CUT series.
+
+**Consequences:** stricter, fail-closed qualification; some honest runs end INCONCLUSIVE. Detail: [m16-p7-second-safety-review.md](m16-p7-second-safety-review.md) sections 14 to 14.3. **Current:** yes.
+
+### 21. P7 recorder failure envelope (18 November 2026)
+**Context:** handling of a contradiction that arrives after a stored PASS. **Decision:** the loss of a contradiction held only in memory, when the recorder can write nothing and is then killed, is accepted for the prototype. Replacing or remounting the recorder disk while it runs is outside the supported envelope. The recorder assumes its storage identity is stable while it runs. **Alternatives:** a second independent storage device or host (not adopted). **Consequences:** documented limits; no restart-safety claim under total storage failure. **Current:** yes.
+
+### 22. Portfolio-first scope (recorded 18 November 2026)
+**Context:** the owner's stated direction for the project. **Decision:** the goal is a portfolio-ready public prototype, not an enterprise or commercial product. Production-scale infrastructure and commercial functionality (billing, SLAs, compliance) are deferred. **Consequences:** effort goes to a safe public demo, presentation and an honest technical record. **Current:** yes.
+
+### 23. Deployment target: Oracle Cloud Always Free, if eligible (recorded 18 November 2026)
+**Context:** the public demo needs hosting at no cost. **Decision:** Oracle Cloud Always Free is the preferred target, subject to verifying account eligibility and that its resources can run the stack. **Alternatives:** other free tiers, not evaluated yet. **Consequences:** a feasibility check comes before any deployment work; nothing is provisioned without the owner's approval. **Current:** yes, unverified.
+
+### 24. Zero monthly deployment budget (recorded 18 November 2026)
+**Context:** owner constraint. **Decision:** no paid infrastructure, domain or service without explicit owner approval. **Consequences:** shapes hosting, observability and the demo design. **Current:** yes.
+
+### 25. Public demo without paid AI, on seeded data (recorded 18 November 2026)
+**Context:** a public instance must not spend money or touch real systems. **Decision:** the public demonstration uses the built-in rule-based engine (labelled as such in every report) and seeded fictional data. It sends no remediation to real destinations. A model provider stays an opt-in, local configuration. **Consequences:** visitors see real evidence-gathering without model reasoning; the live Claude run stays documented separately. **Current:** yes.
+
+### 26. Public repository, private working notes (recorded 18 November 2026)
+**Context:** the repository is a public portfolio. **Decision:** public documentation is tool-neutral engineering documentation. Development-assistant instructions and private session notes are kept out of version control (`.gitignore`). The repository's working rules are in [engineering-rules.md](engineering-rules.md). Existing history is not rewritten without explicit approval. **Consequences:** earlier commits still contain the former assistant instruction file. **Current:** yes.
+

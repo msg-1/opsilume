@@ -1,4 +1,7 @@
-# OPSILUME (repository: opspilot) — notes for Claude Code
+# Engineering rules
+
+The working rules of this repository: its layout, the commands used daily, and the invariants that are easy to break. Every contributor follows them, and reviews check them. They are enforced in code and tests where the text names a test or a check.
+
 
 AI-assisted incident investigation platform. OPSILUME is the product's working name; the repository and all identifiers keep `opspilot`. npm workspaces monorepo plus one Python service.
 
@@ -60,7 +63,7 @@ cd services/ai && uv run ruff check .
 - **Next.js page files** may only export the page component. Shared components go in `src/components`.
 - **Audit:** mutating routes call `audit(req, action, resourceType, id, metadata)` (best-effort). A remediation transition or a settings change writes its row with `auditIn(tx, auditEntry(...))` inside the transaction that makes the change, so a failed audit write rolls it back (`docs/reliability.md`, "Audit durability"). Never catch and suppress an `auditIn` error inside its transaction: PostgreSQL has already aborted it and turns the commit into a rollback, but Prisma then resolves the callback as if it had succeeded, so a claim that was rolled back would look claimed and could be dispatched. Let the error reach the transaction's owner. Never put secrets in metadata.
 - **Pinned majors:** TypeScript 5.9, Prisma 6, Next 15, Zod 3, Vitest 3 (see docs/decisions.md). Do not bump majors casually.
-- **Claude API:** the Anthropic provider (`services/ai/app/llm.py`) uses the official SDK with adaptive thinking (no `thinking`/`temperature`/`budget_tokens`, no forced `tool_choice`), `output_config.effort`, prompt caching on the tool loop, and `messages.parse` for structured output. Model, limits and prices come from configuration (`config.py`), never from literals in the code. Provider tests use a mocked API (`tests/test_claude_provider.py`); never add a test that calls the real API. Never print, log or return an API key.
+- **Anthropic provider:** `services/ai/app/llm.py` uses the official SDK with adaptive thinking (no `thinking`/`temperature`/`budget_tokens`, no forced `tool_choice`), `output_config.effort`, prompt caching on the tool loop, and `messages.parse` for structured output. Model, limits and prices come from configuration (`config.py`), never from literals in the code. Provider tests use a mocked API (`tests/test_claude_provider.py`); never add a test that calls the real API. Never print, log or return an API key.
 - **Engine labelling:** `analysisMode` (`llm` | `mock` | `heuristic`) must be carried through to the UI. Mock or rule-based output is never presented as model output.
 
 ## Git workflow
@@ -68,5 +71,5 @@ cd services/ai && uv run ruff check .
 GitFlow: `feature/*` and `bugfix/*` from `develop` → `develop`; `release/*` from `develop` → `main` + back-merge; `hotfix/*` from `main` → `main` + back-merge. Merge commits (`--no-ff`), never rebase or force-push `main`/`develop`. Details in `docs/git-workflow.md` and `docs/release-process.md`.
 
 - Conventional Commits: `feat`, `fix`, `security`, `refactor`, `test`, `docs`, `chore`.
-- **No AI or tool attribution anywhere**: no `Co-Authored-By` trailers, no "generated with" lines, in commits, pull requests or documents. The `.githooks/commit-msg` check enforces this.
+- **No attribution trailers** (`Co-Authored-By`, "generated with") in commits, pull requests or documents. The `.githooks/commit-msg` check enforces this.
 - Do not push, create a remote, merge into `main`, tag, or change branch protection without the owner's explicit approval.

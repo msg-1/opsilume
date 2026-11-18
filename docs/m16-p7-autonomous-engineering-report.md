@@ -1,6 +1,6 @@
 # M16 P7: autonomous engineering session report
 
-**Date:** 17 November 2026. **This file:** `/Users/shiva/Documents/project/opspilot-worktrees/m16-p7/docs/m16-p7-autonomous-engineering-report.md` (the harness worktree; the plan document is in the main checkout). **Branch:** `prototype/m16-p7-durability-harness`. **HEAD at start and at end:** `a12e6156033a8ea240cef7d007357cc10e2a277e` (nothing was committed).
+**Date:** 17 November 2026. **This file:** `docs/m16-p7-autonomous-engineering-report.md` (the harness worktree; the plan document is in the main checkout). **Branch:** `prototype/m16-p7-durability-harness`. **HEAD at start and at end:** `a12e6156033a8ea240cef7d007357cc10e2a277e` (nothing was committed).
 
 **P7 is NOT TESTED and NOT PASSED.** Everything below is harness engineering, verified by unit tests and stub tests on a development machine. No Docker container ran, no real host exists, and no power was cut. Nothing here is a Docker integration result, a real-host result or a durability result.
 

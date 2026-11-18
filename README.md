@@ -92,6 +92,7 @@ Step-by-step setup, costs, spending limits and troubleshooting: [docs/claude-int
 
 ## Documentation
 
+- **Start here:** [Project status](docs/PROJECT_STATUS.md) · [Known limitations](docs/KNOWN_LIMITATIONS.md) · [Roadmap](docs/roadmap.md) · [Decisions](docs/decisions.md) · [Engineering rules](docs/engineering-rules.md)
 - [Reliability: outcomes, action effects, approvals, checked figures](docs/reliability.md) · [Demo environment](demo/README.md) · [Branding](docs/branding/opsilume-branding.md)
 - [Claude integration](docs/claude-integration.md) · [Live verification](docs/claude-live-verification.md) · [Setup guide](docs/setup-guide.md) · [Architecture](docs/architecture.md) · [API](docs/api-documentation.md) · [Database](docs/database-design.md)
 - [Engineering audit](docs/engineering-audit.md) · [Changelog](CHANGELOG.md)

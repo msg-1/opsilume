@@ -34,7 +34,7 @@ PostgreSQL 16 with the `vector` and `pg_trgm` extensions. The schema is defined 
 | `Incident (organizationId, number)` unique | Per-organisation numbering |
 | `AuditLog (organizationId, createdAt DESC)` | Audit browsing and export |
 
-The HNSW index is created by hand-written SQL in the initial migration because Prisma cannot express it. See the migration rule in `CLAUDE.md` before generating a new migration.
+The HNSW index is created by hand-written SQL in the initial migration because Prisma cannot express it. See the migration rule in [engineering-rules.md](engineering-rules.md) before generating a new migration.
 
 ## Raw SQL
 

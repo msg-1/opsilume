@@ -1,6 +1,6 @@
 # M16 P7: final review and commit-readiness report
 
-**Date:** 18 November 2026. **Branch:** `prototype/m16-p7-durability-harness`. **HEAD:** `a12e6156033a8ea240cef7d007357cc10e2a277e`. **Nothing is committed.** This file is in the harness worktree, `/Users/shiva/Documents/project/opspilot-worktrees/m16-p7/docs/`.
+**Date:** 18 November 2026. **Branch:** `prototype/m16-p7-durability-harness`. **HEAD:** `a12e6156033a8ea240cef7d007357cc10e2a277e`. **Nothing is committed.** This file is in `docs/` of the harness branch.
 
 **P7 is NOT TESTED and NOT PASSED.** Everything below was checked by reading the code and by unit and stub tests on a development machine. No Docker command was run, no container has executed any of this, and no real host exists.
 
