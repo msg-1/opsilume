@@ -61,6 +61,16 @@ const schema = z.object({
   // How long an ingestion Idempotency-Key is remembered. A retry after this long is treated as a new request
   INGEST_IDEMPOTENCY_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   BCRYPT_ROUNDS: z.coerce.number().int().min(4).max(15).default(12),
+  // Public demonstration mode (docs/deployment/PUBLIC_DEMO_MODE.md). Off unless exactly "true";
+  // any value other than "true" or "false" stops the process instead of guessing.
+  PUBLIC_DEMO_MODE: z
+    .enum(['true', 'false'], { message: 'PUBLIC_DEMO_MODE must be "true" or "false"' })
+    .default('false')
+    .transform((v) => v === 'true'),
+  // Public demo only (ignored otherwise): investigations one visitor session may start, and
+  // investigations a day, and at once, from one client address (lib/demo.ts, assertVisitorQuota).
+  DEMO_SESSION_INVESTIGATION_LIMIT: z.coerce.number().int().min(1).default(3),
+  DEMO_ADDRESS_DAILY_INVESTIGATION_LIMIT: z.coerce.number().int().min(1).default(10),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -91,3 +101,5 @@ if (env.NODE_ENV === 'production') {
 }
 export const isProd = env.NODE_ENV === 'production';
 export const isTest = env.NODE_ENV === 'test';
+/** The rate limiters are off in tests, except in the tests of the limiters themselves (tests/rate-limits.test.ts). */
+export const rateLimitsOff = () => isTest && process.env.OPSILUME_TEST_RATE_LIMITS !== 'on';

@@ -3,8 +3,9 @@ import jwt from 'jsonwebtoken';
 import type { Role } from '@prisma/client';
 import { env } from '../config/env';
 import { sha256 } from '../lib/crypto';
-import { forbidden, unauthorized } from '../lib/errors';
+import { AppError, forbidden, unauthorized } from '../lib/errors';
 import { type Permission, roleHas } from '../lib/permissions';
+import { DEMO_VISITOR_EMAIL, VISITOR_PERMISSIONS, visitorMayRequest } from '../lib/demo';
 import { prisma } from '../lib/prisma';
 
 export interface AuthContext {
@@ -19,6 +20,10 @@ export interface AuthContext {
   label: string;
   actorId?: string;
   investigationId?: string;
+  /** The public demonstration's shared visitor (PUBLIC_DEMO_MODE only): read-only plus bounded investigations. */
+  demoVisitor?: boolean;
+  /** The visitor's session (one "Explore the demo" entry, kept across refreshes); it owns the visitor's investigations. */
+  demoSession?: string;
 }
 
 declare module 'express-serve-static-core' {
@@ -70,6 +75,8 @@ const SCOPE_GRANTS: Record<string, Permission[]> = {
 };
 
 export function can(auth: AuthContext, permission: Permission): boolean {
+  // The visitor's permissions are fixed, whatever role its membership carries.
+  if (auth.demoVisitor) return VISITOR_PERMISSIONS.includes(permission);
   if (auth.kind === 'user') return !!auth.role && roleHas(auth.role, permission);
   return auth.scopes.some((s) => SCOPE_GRANTS[s]?.includes(permission));
 }
@@ -89,15 +96,21 @@ async function fromUserToken(token: string): Promise<AuthContext | null> {
   if (claims.typ !== 'access' || !claims.sid) return null;
   // Signing out, rotating or changing the password revokes the session record, which
   // invalidates its access tokens at once instead of when they expire.
-  const session = await prisma.refreshToken.findUnique({ where: { id: claims.sid }, select: { revokedAt: true, userId: true } });
+  const session = await prisma.refreshToken.findUnique({ where: { id: claims.sid }, select: { revokedAt: true, userId: true, demoSessionId: true } });
   if (!session || session.revokedAt || session.userId !== claims.sub) return null;
   // Membership is re-read on every request so role changes and removals apply immediately.
   const membership = await prisma.membership.findUnique({
     where: { userId_organizationId: { userId: claims.sub, organizationId: claims.org } },
-    include: { user: { select: { name: true, isActive: true } } },
+    include: { user: { select: { name: true, email: true, isActive: true } } },
   });
   if (!membership || !membership.user.isActive) return null;
+  // Outside demo mode the visitor account has no special treatment (it is an ordinary VIEWER).
+  const demoVisitor = env.PUBLIC_DEMO_MODE && membership.user.email === DEMO_VISITOR_EMAIL;
+  // In the public demonstration the visitor is the only person who can be signed in. Operators work on
+  // the server (scripts/public-demo.ts), never through the public endpoint.
+  if (env.PUBLIC_DEMO_MODE && !demoVisitor) return null;
   return {
+    ...(demoVisitor ? { demoVisitor: true, ...(session.demoSessionId ? { demoSession: session.demoSessionId } : {}) } : {}),
     kind: 'user',
     organizationId: claims.org,
     userId: claims.sub,
@@ -145,19 +158,27 @@ async function fromToolToken(token: string): Promise<AuthContext | null> {
 
 async function resolve(req: Request, allowToolToken: boolean): Promise<AuthContext | null> {
   const apiKey = req.header('x-api-key');
-  if (apiKey) return fromApiKey(apiKey);
+  // The public demonstration ingests nothing, so no API key opens anything there.
+  if (apiKey) return env.PUBLIC_DEMO_MODE ? null : fromApiKey(apiKey);
   const token = bearer(req) ?? (req.cookies?.[ACCESS_COOKIE] as string | undefined);
   if (!token) return null;
-  if (token.startsWith('opk_')) return fromApiKey(token);
+  if (token.startsWith('opk_')) return env.PUBLIC_DEMO_MODE ? null : fromApiKey(token);
   const user = await fromUserToken(token);
   if (user) return user;
   return allowToolToken ? fromToolToken(token) : null;
+}
+
+/** The demo visitor may read and make a few listed requests; anything else is refused here, before any route runs. */
+export const demoRestricted = () => new AppError(403, 'demo_restricted', 'This action is not available in the public demo.');
+function guardVisitor(req: Request, auth: AuthContext) {
+  if (auth.demoVisitor && !visitorMayRequest(req.method, req.originalUrl)) throw demoRestricted();
 }
 
 /** Authenticates a user session (cookie or bearer) or an API key. */
 export const authenticate: RequestHandler = async (req, _res, next) => {
   const auth = await resolve(req, false);
   if (!auth) throw unauthorized();
+  guardVisitor(req, auth);
   req.auth = auth;
   next();
 };
@@ -166,6 +187,7 @@ export const authenticate: RequestHandler = async (req, _res, next) => {
 export const authenticateTool: RequestHandler = async (req, _res, next) => {
   const auth = await resolve(req, true);
   if (!auth) throw unauthorized();
+  guardVisitor(req, auth);
   req.auth = auth;
   next();
 };

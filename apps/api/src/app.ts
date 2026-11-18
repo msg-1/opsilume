@@ -4,7 +4,7 @@ import express, { type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
-import { env, isTest } from './config/env';
+import { env, isTest, rateLimitsOff } from './config/env';
 import { logger } from './lib/logger';
 import { httpMetrics, registry } from './lib/metrics';
 import { authenticate, authenticateTool } from './middleware/auth';
@@ -41,7 +41,8 @@ export function createApp() {
   app.use(cookieParser());
   app.use(
     express.json({
-      limit: '5mb',
+      // The public demonstration ingests nothing; its largest legitimate request is a question.
+      limit: env.PUBLIC_DEMO_MODE ? '256kb' : '5mb',
       // The raw body is needed to verify GitHub webhook signatures.
       verify: (req, _res, buf) => {
         (req as Request & { rawBody?: Buffer }).rawBody = buf;
@@ -77,7 +78,7 @@ export function createApp() {
       limit: 1200,
       standardHeaders: 'draft-7',
       legacyHeaders: false,
-      skip: () => isTest,
+      skip: rateLimitsOff,
       message: { error: { code: 'rate_limited', message: 'Too many requests' } },
     }),
   );

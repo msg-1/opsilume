@@ -13,7 +13,9 @@ import { fingerprint } from '../src/lib/logParsing';
 
 const prisma = new PrismaClient();
 const DEMO_SLUG = 'meridian-demo';
-export const DEMO_PASSWORD = 'Opsilume-demo-1';
+// The documented password of the local demo accounts. A public demonstration refuses it (src/lib/demo.ts).
+export { DEMO_PASSWORD } from '../src/lib/demo';
+import { DEMO_PASSWORD } from '../src/lib/demo';
 
 const now = Date.now();
 const MIN = 60_000;
@@ -37,6 +39,11 @@ const INCIDENT_AT = 52 * MIN;
 const ERRORS_FROM = 56 * MIN;
 
 async function main() {
+  // The public demonstration never gets the documented local accounts; it is set up by scripts/public-demo.ts.
+  if (process.env.PUBLIC_DEMO_MODE === 'true') {
+    console.log('PUBLIC_DEMO_MODE=true: the local demo seed is skipped (use scripts/public-demo.ts setup).');
+    return;
+  }
   const ifEmpty = process.argv.includes('--if-empty');
   if (ifEmpty && (await prisma.organization.count()) > 0) {
     console.log('Database already has data; skipping seed.');

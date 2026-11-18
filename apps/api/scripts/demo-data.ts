@@ -21,7 +21,7 @@ import type { LogLevel, Prisma } from '@prisma/client';
 import { fingerprint } from '../src/lib/logParsing';
 import { prisma } from '../src/lib/prisma';
 
-const SLUG = 'acme-commerce-demo';
+export const SLUG = 'acme-commerce-demo';
 const NAME = 'Acme Commerce';
 const MARKER = 'manual-demo-dataset';
 const MARK_STARTED = 'demo.seed.started';
@@ -42,7 +42,15 @@ const say = (line = '') => process.stdout.write(`${line}\n`);
 
 // ───────────────────────── Safety ─────────────────────────
 
-/** This script only ever runs against a database on this machine. */
+/**
+ * Where this script may run: a database on this machine, or (`publicDemo`) the public demonstration's
+ * own database on its Compose network, only while PUBLIC_DEMO_MODE=true (scripts/public-demo.ts).
+ */
+let publicDemo = false;
+export function forPublicDemo() {
+  if (process.env.PUBLIC_DEMO_MODE !== 'true') throw new Error('Refusing to run: the public demonstration dataset is set up only with PUBLIC_DEMO_MODE=true.');
+  publicDemo = true;
+}
 function assertLocal() {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error('DATABASE_URL is not set. Run this through npm (it reads the repository .env).');
@@ -50,11 +58,11 @@ function assertLocal() {
   if (!['localhost', '127.0.0.1', '::1', '[::1]', 'postgres', 'host.docker.internal'].includes(host)) {
     throw new Error(`Refusing to run: the database host "${host}" is not local. The manual-testing dataset is for a local database only.`);
   }
-  if (process.env.NODE_ENV === 'production') throw new Error('Refusing to run with NODE_ENV=production.');
+  if (process.env.NODE_ENV === 'production' && !publicDemo) throw new Error('Refusing to run with NODE_ENV=production.');
 }
 
 /** The demo organisation, and whether it carries the marker this script writes when creating it. */
-async function findDemo() {
+export async function findDemo() {
   const org = await prisma.organization.findUnique({ where: { slug: SLUG } });
   if (!org) return null;
   const marks = await prisma.auditLog.findMany({ where: { organizationId: org.id, action: { in: [MARK_STARTED, MARK_COMPLETED] }, resourceType: MARKER }, select: { action: true, metadata: true, createdAt: true } });
@@ -138,7 +146,7 @@ async function engineNote() {
 
 // ───────────────────────── status ─────────────────────────
 
-async function status() {
+export async function status() {
   const demo = await findDemo();
   if (!demo) return say(`No demo dataset: there is no organisation "${SLUG}". Create it with: npm run demo:seed`);
   if (!demo.marked) return say(REFUSE_UNMARKED);
@@ -158,7 +166,7 @@ async function status() {
 
 // ───────────────────────── reset ─────────────────────────
 
-async function reset(confirmed: boolean) {
+export async function reset(confirmed: boolean) {
   assertLocal();
   const demo = await findDemo();
   if (!demo) return say(`Nothing to remove: there is no organisation "${SLUG}".`);
@@ -222,7 +230,7 @@ async function reset(confirmed: boolean) {
 
 // ───────────────────────── seed ─────────────────────────
 
-async function seed() {
+export async function seed() {
   assertLocal();
   const existing = await findDemo();
   if (existing && !existing.marked) throw new Error(REFUSE_UNMARKED);
@@ -741,8 +749,10 @@ async function seed() {
     const fresh = await prisma.remediationAction.findUniqueOrThrow({ where: { id: a.id }, select: { title: true, effect: true, risk: true, status: true, requiredApprovals: true } });
     say(`  ${fresh.effect.padEnd(14)} ${fresh.risk.padEnd(6)} ${fresh.status.padEnd(16)} approvals required: ${fresh.requiredApprovals}  ${fresh.title}`);
   }
-  say(`\nOpen http://localhost:3000, sign in with the existing demo account (${owner.email}) and switch to "${NAME}" in the organisation menu.`);
-  say('What to try, and what to expect: docs/manual-demo-testing.md');
+  if (!publicDemo) {
+    say(`\nOpen http://localhost:3000, sign in with the existing demo account (${owner.email}) and switch to "${NAME}" in the organisation menu.`);
+    say('What to try, and what to expect: docs/manual-demo-testing.md');
+  }
   await engineNote();
 }
 
@@ -757,9 +767,12 @@ async function main() {
   process.exitCode = 2;
 }
 
-main()
-  .catch((err) => {
-    process.stderr.write(`${(err as Error).message}\n`);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+// Run as a command (npm run demo:data); imported by scripts/public-demo.ts, it does nothing by itself.
+if (require.main === module) {
+  main()
+    .catch((err) => {
+      process.stderr.write(`${(err as Error).message}\n`);
+      process.exitCode = 1;
+    })
+    .finally(() => prisma.$disconnect());
+}

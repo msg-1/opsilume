@@ -291,6 +291,11 @@ githubRouter.get('/pull-requests', requirePermission('read'), async (req, res) =
 // ───────────────────────── Webhook (unauthenticated; HMAC-verified) ─────────────────────────
 
 export const githubWebhookRouter = Router();
+// The public demonstration ingests nothing: its webhook entry does not exist.
+githubWebhookRouter.use((_req, _res, next) => {
+  if (env.PUBLIC_DEMO_MODE) throw notFound();
+  next();
+});
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 githubWebhookRouter.post('/:orgSlug', async (req: Request & { rawBody?: Buffer }, res) => {

@@ -25,6 +25,8 @@ import InvestigationReportPage from '@/app/(app)/investigations/[id]/report/page
 import InvestigationsPage from '@/app/(app)/investigations/page';
 import RemediationDetailPage from '@/app/(app)/remediation/[id]/page';
 import LoginPage from '@/app/(auth)/login/page';
+import RegisterPage from '@/app/(auth)/register/page';
+import { DemoBanner } from '@/components/demo';
 import { SessionProvider } from '@/lib/session';
 import { incident, investigation, investigationList, remediation, session } from './fixtures';
 
@@ -61,6 +63,45 @@ beforeEach(() => {
   nav.replace.mockClear();
 });
 
+describe('the public demo', () => {
+  it('offers a visitor entry without a password, hides self-registration, and goes to the incidents', async () => {
+    const api = fakeApi({ 'GET /auth/demo': { enabled: true }, 'POST /auth/demo': { ok: true } });
+    show(<LoginPage />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Explore the demo' }));
+    await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/incidents'));
+    expect(api.writes()).toEqual([{ method: 'POST', path: '/auth/demo', body: {} }]);
+    expect(screen.queryByText('Create an organisation')).toBeNull();
+    expect(screen.queryByText(/Opsilume-demo-1/)).toBeNull();
+    // No password form at all: the API refuses password sign-in in the public demo.
+    expect(screen.queryByLabelText('Password')).toBeNull();
+  });
+
+  it('outside the demo there is no visitor entry, and self-registration is offered', async () => {
+    fakeApi({ 'GET /auth/demo': { enabled: false } });
+    show(<LoginPage />);
+    expect(await screen.findByText('Create an organisation')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Explore the demo' })).toBeNull();
+  });
+
+  it('the registration page explains that registration is not available in the demo', async () => {
+    fakeApi({ 'GET /auth/demo': { enabled: true } });
+    show(<RegisterPage />);
+    expect(await screen.findByRole('heading', { name: 'Registration is not available' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Email')).toBeNull();
+  });
+
+  it('every page tells the visitor it is the public demo; an ordinary user sees no such notice', () => {
+    show(<DemoBanner />, { ...session('VIEWER'), demoVisitor: true });
+    expect(screen.getByRole('note')).toHaveTextContent('Public demo.');
+    expect(screen.getByRole('note')).toHaveTextContent('rule-based engine, not a language model');
+  });
+
+  it('shows no demo notice to an ordinary user', () => {
+    show(<DemoBanner />, session('ADMIN'));
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+});
+
 describe('signing in', () => {
   it('sends the credentials and continues to the page the person was heading for', async () => {
     nav.search = 'next=%2Fincidents%2Finc-1';
@@ -70,7 +111,11 @@ describe('signing in', () => {
     await userEvent.type(screen.getByLabelText('Password'), 'correct horse');
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     await waitFor(() => expect(nav.replace).toHaveBeenCalledWith('/incidents/inc-1'));
-    expect(api.calls).toEqual([{ method: 'POST', path: '/auth/login', body: { email: 'ada@example.com', password: 'correct horse' } }]);
+    // The page first asks whether this deployment is the public demo (a read, nothing sent), then signs in.
+    expect(api.calls).toEqual([
+      { method: 'GET', path: '/auth/demo', body: undefined },
+      { method: 'POST', path: '/auth/login', body: { email: 'ada@example.com', password: 'correct horse' } },
+    ]);
   });
 
   it('says why a sign-in was refused, stays on the page and lets the person try again', async () => {
@@ -84,10 +129,12 @@ describe('signing in', () => {
     expect(screen.getByRole('button', { name: 'Sign in' })).toBeEnabled();
   });
 
-  it('offers the seeded demo account outside production, with the password the seed really sets', () => {
+  it('offers the seeded demo account outside production, with the password the seed really sets', async () => {
+    // (shown once the page knows this is not the public demo, which never shows it)
+    fakeApi({ 'GET /auth/demo': { enabled: false } });
     show(<LoginPage />);
-    // The product was renamed; this credential was deliberately not (apps/api/prisma/seed.ts).
-    expect(screen.getByText(/Demo data/)).toHaveTextContent('demo@example.com / Opsilume-demo-1');
+    // The password the local seed sets (apps/api/src/lib/demo.ts); a public demo refuses it.
+    expect(await screen.findByText(/Demo data/)).toHaveTextContent('demo@example.com / Opsilume-demo-1');
   });
 
   it.each(['//evil.example/phish', 'https://evil.example', 'javascript:alert(1)'])('never follows a redirect that leaves the site (%s)', async (next) => {

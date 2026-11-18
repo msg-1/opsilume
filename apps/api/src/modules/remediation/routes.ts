@@ -2,10 +2,11 @@ import type { Prisma, RemediationAction } from '@prisma/client';
 import { type Request, Router } from 'express';
 import { z } from 'zod';
 import { audit, auditEntry, auditIn } from '../../lib/audit';
-import { badRequest, conflict, forbidden } from '../../lib/errors';
+import { badRequest, conflict, forbidden, notFound } from '../../lib/errors';
 import { csvEnum, paged, paginate, paginationQuery, param } from '../../lib/http';
 import { notifyRoles, notifyUsers } from '../../lib/notify';
 import { prisma } from '../../lib/prisma';
+import { visibleRemediations } from '../../lib/demo';
 import { type AuthContext, authOf, can, requirePermission, requireUser, userOf } from '../../middleware/auth';
 import { addIncidentEvent } from '../incidents';
 import { getSettings } from '../organization';
@@ -61,18 +62,20 @@ async function refuseStale(req: Request, auth: AuthContext, action: Detailed, se
 }
 
 remediationRouter.get('/', requirePermission('read'), async (req, res) => {
-  const { organizationId } = authOf(req);
+  const auth = authOf(req);
+  const { organizationId } = auth;
   const q = paginationQuery.extend({ status: csvEnum(['PROPOSED', 'PENDING_APPROVAL', 'APPROVED', 'REJECTED', 'EXECUTING', 'EXECUTED', 'FAILED', 'CANCELLED']), incidentId: z.string().optional(), investigationId: z.string().optional() }).parse(req.query);
   const where: Prisma.RemediationActionWhereInput = {
     organizationId,
     ...(q.status ? { status: { in: q.status } } : {}),
     ...(q.incidentId ? { incidentId: q.incidentId } : {}),
     ...(q.investigationId ? { investigationId: q.investigationId } : {}),
+    AND: [visibleRemediations(auth)],
   };
   const [rows, total, counts, settings] = await Promise.all([
     prisma.remediationAction.findMany({ where, orderBy: { createdAt: 'desc' }, ...paginate(q), include: detailInclude }),
     prisma.remediationAction.count({ where }),
-    prisma.remediationAction.groupBy({ by: ['status'], where: { organizationId }, _count: true }),
+    prisma.remediationAction.groupBy({ by: ['status'], where: { organizationId, AND: [visibleRemediations(auth)] }, _count: true }),
     getSettings(organizationId),
   ]);
   res.json({
@@ -92,7 +95,9 @@ remediationRouter.post('/', requirePermission('remediation:propose'), requireUse
 });
 
 remediationRouter.get('/:id', requirePermission('read'), async (req, res) => {
-  const { organizationId } = authOf(req);
+  const auth = authOf(req);
+  const { organizationId } = auth;
+  if (auth.demoVisitor && !(await prisma.remediationAction.count({ where: { id: param(req.params.id), organizationId, AND: [visibleRemediations(auth)] } }))) throw notFound('Remediation action');
   const [view] = await presentMany([await load(organizationId, param(req.params.id))]);
   const settings = await getSettings(organizationId);
   res.json({ ...view, executionMode: settings.remediationWebhookUrl ? 'webhook' : 'manual', allowSelfApproval: settings.allowSelfApproval });

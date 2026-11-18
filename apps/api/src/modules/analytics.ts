@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { audit } from '../lib/audit';
 import { assertRange, csvCell, param, timeParam } from '../lib/http';
 import { prisma } from '../lib/prisma';
+import { visibleInvestigations } from '../lib/demo';
 import { authOf, requirePermission } from '../middleware/auth';
 import { incidentKey, requireIncident } from './incidents';
 import { applyTimelineViews, applyViews, legacyViews, presentDetail } from './investigations/legacy';
@@ -163,7 +164,8 @@ analyticsRouter.get('/incidents.csv', requirePermission('read'), async (req, res
         .join(','),
     ),
   ];
-  await audit(req, 'report.export', 'report', null, { type: 'incidents', rows: incidents.length });
+  // Every visitor is one account: an audit row per anonymous download would only let it grow the log.
+  if (!authOf(req).demoVisitor) await audit(req, 'report.export', 'report', null, { type: 'incidents', rows: incidents.length });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="opsilume-incidents.csv"');
   res.send(lines.join('\n'));
@@ -174,7 +176,8 @@ analyticsRouter.get('/incidents.csv', requirePermission('read'), async (req, res
 export const dashboardRouter = Router();
 
 dashboardRouter.get('/', requirePermission('read'), async (req, res) => {
-  const { organizationId } = authOf(req);
+  const auth = authOf(req);
+  const { organizationId } = auth;
   const now = new Date();
   const dayAgo = new Date(now.getTime() - 86_400_000);
   const weekAgo = new Date(now.getTime() - 7 * 86_400_000);
@@ -188,7 +191,7 @@ dashboardRouter.get('/', requirePermission('read'), async (req, res) => {
     prisma.service.groupBy({ by: ['health'], where: { organizationId }, _count: true }),
     prisma.deployment.findMany({ where: { organizationId }, orderBy: { startedAt: 'desc' }, take: 6, include: { service: { select: { id: true, name: true, slug: true } } } }),
     prisma.investigation.findMany({
-      where: { organizationId },
+      where: { AND: [{ organizationId }, visibleInvestigations(auth)] },
       orderBy: { createdAt: 'desc' },
       take: 5,
       select: { id: true, question: true, status: true, confidence: true, createdAt: true, incident: { select: { number: true } } },

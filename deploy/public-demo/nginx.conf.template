@@ -1,0 +1,58 @@
+# OPSILUME public demonstration: TLS termination and basic abuse limits in front of the web app.
+# Rendered by the nginx image from /etc/nginx/templates (envsubst of ${DEMO_HOSTNAME}).
+
+limit_req_zone $binary_remote_addr zone=demo_api:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=demo_auth:10m rate=1r/s;
+limit_conn_zone $binary_remote_addr zone=demo_conn:10m;
+limit_req_status 429;
+limit_conn_status 429;
+server_tokens off;
+
+server {
+  listen 80;
+  server_name ${DEMO_HOSTNAME};
+  # ACME http-01 challenges for certificate issuance and renewal (certbot --webroot).
+  location /.well-known/acme-challenge/ { root /var/www/certbot; }
+  location / { return 301 https://$host$request_uri; }
+}
+
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name ${DEMO_HOSTNAME};
+
+  ssl_certificate     /etc/letsencrypt/live/${DEMO_HOSTNAME}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${DEMO_HOSTNAME}/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+  ssl_session_cache shared:SSL:10m;
+
+  add_header Strict-Transport-Security "max-age=31536000" always;
+  add_header X-Content-Type-Options nosniff always;
+
+  # Bounded requests: the demo accepts no uploads or ingestion from visitors.
+  client_max_body_size 256k;
+  client_body_timeout 10s;
+  limit_conn demo_conn 20;
+
+  # Case-insensitive: the web app routes /API/... like /api/..., so the limits must match it too.
+  location ~* ^/api/v1/auth/ {
+    limit_req zone=demo_auth burst=10 nodelay;
+    proxy_pass http://web:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+  location ~* ^/api/ {
+    limit_req zone=demo_api burst=40 nodelay;
+    proxy_pass http://web:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+  location / {
+    proxy_pass http://web:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+}

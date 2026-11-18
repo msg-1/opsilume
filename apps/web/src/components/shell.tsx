@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, useApi } from '@/lib/api';
 import { timeAgo } from '@/lib/format';
 import { useSession } from '@/lib/session';
+import { DemoBanner } from './demo';
 import { Avatar } from './ui';
 
 const NAV = [
@@ -239,6 +240,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="hidden lg:block" />
         <Notifications />
       </div>
+      <DemoBanner />
       <main id="main" className="mx-auto max-w-[1280px] px-4 py-6 lg:px-8 print:max-w-none print:p-0">
         {children}
       </main>

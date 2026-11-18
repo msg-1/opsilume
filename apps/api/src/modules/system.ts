@@ -116,12 +116,12 @@ healthRouter.get('/ready', async (_req, res) => {
 
 export const systemRouter = Router();
 
-systemRouter.get('/status', requirePermission('read'), async (_req, res) => {
+systemRouter.get('/status', requirePermission('read'), async (req, res) => {
   const [database, redis, queues, ai] = await Promise.all([
     prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false),
     redisPing(),
     queueStats().catch(() => []),
-    aiService.status().then((s) => ({ reachable: true as const, ...s })).catch((err: Error) => ({ reachable: false as const, detail: err.message })),
+    aiService.status().then((s) => ({ reachable: true as const, ...s })).catch((err: Error) => ({ reachable: false as const, detail: req.auth?.demoVisitor ? 'The analysis service is not reachable.' : err.message })),
   ]);
   res.json({ database, redis, queues, ai });
 });

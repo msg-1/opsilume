@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { ErrorRequestHandler, RequestHandler } from 'express';
 import { ZodError } from 'zod';
+import { env } from '../config/env';
 import { AppError } from '../lib/errors';
 import { logger } from '../lib/logger';
 
@@ -21,6 +22,13 @@ export const errorHandler: ErrorRequestHandler = (err, req, res, _next) => {
     return;
   }
   if (err instanceof AppError) {
+    // An unavailable dependency's message names it (an internal address, an upstream answer). In the public
+    // demonstration, whose only user is an anonymous visitor, it goes to the log and a plain sentence to the client.
+    if (env.PUBLIC_DEMO_MODE && err.code === 'service_unavailable') {
+      logger.warn({ path: req.path, detail: err.message }, 'dependency unavailable');
+      res.status(err.status).json({ error: { code: err.code, message: 'A service this request needs is not available right now. Try again in a minute.' } });
+      return;
+    }
     res.status(err.status).json({ error: { code: err.code, message: err.message, details: err.details } });
     return;
   }

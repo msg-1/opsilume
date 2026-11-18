@@ -44,6 +44,18 @@ sequenceDiagram
   API-->>U: report: outcome computed from evidence, hypotheses, uncertainty
 ```
 
+### Public demo mode
+
+With `PUBLIC_DEMO_MODE=true` the same application serves a public demonstration:
+- a passwordless visitor entry (`POST /api/v1/auth/demo`). Each entry is its own visitor session (`RefreshToken.demoSessionId`, kept across refresh rotation);
+- a visitor whose permissions are fixed to read and starting an investigation, with a method allowlist in the authentication middleware;
+- per-session isolation of visitors' investigations (`Investigation.demoSessionId`; `visibleInvestigations` and `visibleRemediations` in `lib/demo.ts`). A visitor's runs write no timeline entry or notification;
+- investigation quotas per session, per client address and for the whole demo, checked with the insert under an advisory lock;
+- nobody but the visitor signed in: no password sign-in, registration, invitations, API keys or webhook entry;
+- only the rule-based engine.
+
+The deployment (`deploy/public-demo`) publishes only an Nginx proxy, which overwrites `X-Forwarded-For`. The web app passes it through unchanged, and the API (`TRUST_PROXY=uniquelocal`) takes the right-most public address. Design, limits and evidence: [deployment/PUBLIC_DEMO_MODE.md](deployment/PUBLIC_DEMO_MODE.md).
+
 ### Prototypes outside the product
 
 `prototype/` holds isolated Milestone 16 experiments. They are not part of the application:

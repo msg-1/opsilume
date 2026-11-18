@@ -6,6 +6,7 @@ import { badRequest, notFound } from '../lib/errors';
 import { csvEnum, paged, paginate, paginationQuery, param, timeParam } from '../lib/http';
 import { notifyUsers } from '../lib/notify';
 import { prisma } from '../lib/prisma';
+import { visibleInvestigations, visibleRemediations } from '../lib/demo';
 import { type AuthContext, authOf, requirePermission } from '../middleware/auth';
 import { healthDuring, isPastWindow } from './healthHistory';
 import { applyTimelineViews, applyViews, legacyViews } from './investigations/legacy';
@@ -209,17 +210,18 @@ incidentsRouter.post('/', requirePermission('incident:write'), async (req, res) 
 });
 
 incidentsRouter.get('/:id', requirePermission('read'), async (req, res) => {
-  const { organizationId } = authOf(req);
+  const auth = authOf(req);
+  const { organizationId } = auth;
   const incident = await requireIncident(organizationId, param(req.params.id));
   const [events, investigations, remediations, alerts, postmortem] = await Promise.all([
     prisma.incidentEvent.findMany({ where: { incidentId: incident.id }, orderBy: { createdAt: 'asc' } }),
     prisma.investigation.findMany({
-      where: { incidentId: incident.id },
+      where: { AND: [{ incidentId: incident.id }, visibleInvestigations(auth)] },
       orderBy: { createdAt: 'desc' },
       select: { id: true, question: true, status: true, summary: true, confidence: true, provider: true, model: true, createdAt: true, completedAt: true },
     }),
     prisma.remediationAction.findMany({
-      where: { incidentId: incident.id },
+      where: { AND: [{ incidentId: incident.id }, visibleRemediations(auth)] },
       orderBy: { createdAt: 'desc' },
       select: { id: true, title: true, type: true, risk: true, status: true, proposedByType: true, createdAt: true },
     }),

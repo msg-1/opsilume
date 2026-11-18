@@ -156,6 +156,10 @@
             ],
             "additionalProperties": false
           }
+        },
+        "demoVisitor": {
+          "type": "boolean",
+          "description": "The public demonstration's shared visitor: read-only, plus bounded investigations"
         }
       },
       "required": [
@@ -163,7 +167,8 @@
         "organization",
         "role",
         "permissions",
-        "organizations"
+        "organizations",
+        "demoVisitor"
       ],
       "additionalProperties": false
     },

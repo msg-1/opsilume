@@ -4,6 +4,63 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Public demo mode: final bounded hardening (18 November 2026, branch `feature/opsilume-public-demo`)
+- **Time limit:** the demo's Compose file sets a 2-minute limit per investigation (`INVESTIGATION_TIMEOUT_MS=120000`), and `check-config.mjs` refuses more than 5 minutes. A timed-out run is FAILED with no conclusions.
+- **Cancellation:** a running investigation checks every 2 seconds whether it was cancelled or removed, and then lets go of the analysis request. A silent stream no longer holds a worker until the time limit. This applies outside demo mode too.
+- **Visitor-facing errors:**
+  - a visitor's failed run and failed steps show only the API's own messages, otherwise "The analysis could not be completed…";
+  - in demo mode, `503 service_unavailable` answers name no dependency.
+- **Analysis service, for everyone:** tool errors no longer repeat the API's address or a non-API error body. They reach report uncertainties. The detail goes to the service's log.
+- **Rate limiters:** they can be switched on in tests (`OPSILUME_TEST_RATE_LIMITS=on`, used by `rate-limits.test.ts` only). Their per-process, in-memory scope is documented (section 10b).
+- **Tests:**
+  - `public-demo-lifecycle.test.ts`: 5, with a real worker and queue;
+  - `rate-limits.test.ts`: 7;
+  - `services/ai/tests/test_tool_errors.py`: 3;
+  - API 508/508, web 74/74, AI 358.
+
+### Public demo mode: security review and remediation (18 November 2026, branch `feature/opsilume-public-demo`)
+- **Visitor isolation by session.**
+  - Each demo entry is its own session (`RefreshToken.demoSessionId`, kept across refresh rotation), and visitors' investigations record it (`Investigation.demoSessionId`; migrations `20261118143859_public_demo_sessions` and `20261118160000_public_demo_session_address`).
+  - A visitor sees only the seeded investigations and its own, and the remediation actions derived from them, and cancels only its own.
+  - Its runs write no timeline entry, proposal entry or notification, and knowledge attribution ignores them.
+  - A replayed visitor refresh token ends that session only.
+- **Quotas:** per session (3), per client address (1 at a time, 10 a day, counting the address a session was entered from) and demo-wide. The start's limit check and insert now run under an advisory lock, for every organisation.
+- **Sign-in:** in demo mode, nobody but the visitor can sign in. No password sign-in, invitations, API keys, other users' sessions or GitHub webhook entry. `PUBLIC_DEMO_OWNER_PASSWORD` is retired, and the sign-in page shows only the visitor entry.
+- **Limits:**
+  - API bodies of at most 256 KB in demo mode;
+  - demo entry limited to 60 an hour per address, and refresh to 20 a minute;
+  - case-insensitive Nginx API locations, and `429` for proxy refusals.
+- **For the visitor:** generic analysis-status errors, and no audit row per CSV export.
+- **Reset:** closes the demo, cancels its runs, then removes it, with up to three attempts.
+- **Outside demo mode too:** the start's advisory lock, and the sign-in limiter on `/auth/refresh`.
+- **Configuration check:** `deploy/public-demo/check-config.mjs`.
+- **Tests:**
+  - `public-demo.test.ts`: 63;
+  - `client-address.test.ts`: 10 (new);
+  - API 496/496, web 74/74.
+- **Also exercised:** the Nginx template and the Next.js header pass-through, in throwaway processes.
+- **Not tested:** the containers together, TLS, a public host, an external review.
+
+### Public demo mode (18 November 2026, branch `feature/opsilume-public-demo`)
+- `PUBLIC_DEMO_MODE` (off by default; any value other than `true` or `false` stops the process). In demo mode:
+  - a passwordless visitor entry (`GET` and `POST /api/v1/auth/demo`);
+  - visitor permissions fixed to read and starting an investigation, and a method allowlist enforced in the API;
+  - registration refused, the documented local password refused, and the local seed skipped;
+  - investigations only with the rule-based engine.
+- `scripts/public-demo.ts`: an idempotent `setup` of the Acme Commerce demonstration organisation with a visitor membership and persona accounts with unknown passwords; a `reset` with a Redis lock that removes and rebuilds only that organisation, verified in its transaction; `status`.
+- Web:
+  - an "Explore the demo" entry on the sign-in page;
+  - registration explained as unavailable;
+  - a demo notice on every page;
+  - local credentials never shown in demo mode.
+- `deploy/public-demo/`: Compose with only an Nginx proxy published, memory limits, log rotation, health checks and required secrets; an Nginx template with TLS, HSTS, request-size and rate limits; an environment template; a reset script for cron.
+- Cookie options are read when a cookie is set (`COOKIE_SECURE` changes take effect without a restart in tests).
+- Tests:
+  - `apps/api/tests/public-demo.test.ts`: 45 tests;
+  - web: 5 new tests, plus one updated sign-in test, which now also expects the read-only demo probe;
+  - API 468/468, web 74/74.
+- **Not tested:** the containers together, TLS, the proxy limits, a public host.
+
 ### Renamed to OPSILUME (18 November 2026, branch `feature/rename-to-opsilume`)
 - **Every identifier now uses the product name:**
   - the repository (`msg-1/opsilume`);

@@ -83,10 +83,11 @@ async function sourcesFor(organizationId: string, incidentIds: string[]): Promis
     prisma.incident.findMany({ where: { id: { in: incidentIds }, organizationId }, select: { id: true, title: true, description: true, customerImpact: true, rootCause: true, resolution: true } }),
     prisma.$queryRaw<{ id: string; incidentId: string; summary: string | null; outcome: string | null; summarySource: string | null; reportSummary: string | null; narrative: string | null; completedAt: Date | null }[]>`
       SELECT id, "incidentId", summary, outcome, report->>'summarySource' AS "summarySource", report->>'summary' AS "reportSummary", report->>'narrative' AS narrative, "completedAt"
-      FROM "Investigation" WHERE "organizationId" = ${organizationId} AND "incidentId" IN (${Prisma.join(incidentIds)}) AND status = 'COMPLETED'
+      FROM "Investigation" WHERE "organizationId" = ${organizationId} AND "incidentId" IN (${Prisma.join(incidentIds)}) AND status = 'COMPLETED' AND "demoSessionId" IS NULL
       ORDER BY "completedAt" DESC`,
     prisma.incidentEvent.findMany({ where: { incidentId: { in: incidentIds }, incident: { organizationId } }, select: { incidentId: true, type: true, message: true } }),
-    prisma.remediationAction.findMany({ where: { incidentId: { in: incidentIds }, organizationId }, select: { incidentId: true, title: true, proposedByType: true } }),
+    // A public-demo visitor's runs, and what they proposed, belong to that visitor's session only (lib/demo.ts).
+    prisma.remediationAction.findMany({ where: { incidentId: { in: incidentIds }, organizationId, OR: [{ investigationId: null }, { investigation: { is: { demoSessionId: null } } }] }, select: { incidentId: true, title: true, proposedByType: true } }),
   ]);
   const hypotheses = investigations.length ? await prisma.hypothesis.findMany({ where: { investigationId: { in: investigations.map((i) => i.id) } }, select: { investigationId: true, title: true, description: true } }) : [];
   const views = await legacyViews(organizationId, investigations.map((i) => i.id));

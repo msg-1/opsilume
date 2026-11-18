@@ -40,6 +40,8 @@ export interface Session {
     slug: string;
     role: string;
   }[];
+  /** The public demonstration's shared visitor: read-only, plus bounded investigations */
+  demoVisitor: boolean;
 }
 
 export interface Incident {

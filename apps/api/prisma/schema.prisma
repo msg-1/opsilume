@@ -124,9 +124,13 @@ model RefreshToken {
   expiresAt      DateTime
   revokedAt      DateTime?
   createdAt      DateTime  @default(now())
+  /// Public demo only: one visitor's session, kept across refresh rotation (docs/deployment/PUBLIC_DEMO_MODE.md)
+  demoSessionId  String?
   user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([demoSessionId])
+  @@index([ip, createdAt])
 }
 
 model ApiKey {
@@ -730,6 +734,8 @@ model Investigation {
   startedAt      DateTime?
   completedAt    DateTime?
   createdAt      DateTime            @default(now())
+  /// Public demo only: the visitor session that started it; null for everything else
+  demoSessionId  String?
 
   organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   incident     Incident?           @relation(fields: [incidentId], references: [id], onDelete: SetNull)
@@ -740,6 +746,7 @@ model Investigation {
 
   @@index([organizationId, createdAt(sort: Desc)])
   @@index([incidentId])
+  @@index([organizationId, demoSessionId])
 }
 
 model InvestigationStep {

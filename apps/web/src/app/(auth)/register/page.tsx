@@ -3,7 +3,8 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { Button, Field, FormError, Input } from '@/components/ui';
+import { useDemoMode } from '@/components/demo';
+import { Button, Field, FormError, Input, Notice } from '@/components/ui';
 import { api } from '@/lib/api';
 
 export default function RegisterPage() {
@@ -11,6 +12,7 @@ export default function RegisterPage() {
   const [form, setForm] = useState({ organizationName: '', name: '', email: '', password: '' });
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const demo = useDemoMode();
   const set = (key: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
   async function submit(e: React.FormEvent) {
@@ -25,6 +27,16 @@ export default function RegisterPage() {
       setBusy(false);
     }
   }
+
+  // The API refuses registration in the public demo whatever this page does; it only explains why.
+  if (demo)
+    return (
+      <div className="space-y-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Registration is not available</h1>
+        <Notice>This is the public demo of OPSILUME. Nobody creates accounts or organisations here; you can explore the demo without one.</Notice>
+        <Link href="/login" className="font-medium text-accent hover:underline">Back to the demo</Link>
+      </div>
+    );
 
   return (
     <form onSubmit={submit} className="space-y-4">

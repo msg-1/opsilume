@@ -19,6 +19,7 @@ export function session(role: Session['role'] = 'ADMIN', user: { id: string; nam
     role,
     permissions: ROLE_PERMISSIONS[role],
     organizations: [{ id: 'org-1', name: 'Acme Shop', slug: 'acme-shop', role }],
+    demoVisitor: false,
   };
 }
 

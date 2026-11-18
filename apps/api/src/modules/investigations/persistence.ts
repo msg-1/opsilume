@@ -81,13 +81,13 @@ export async function markInterrupted(investigationId: string, now = new Date())
   const inv = await prisma.$transaction(async (tx) => {
     const claimed = await tx.investigation.updateMany({ where: { id: investigationId, status: { in: ['RUNNING', 'QUEUED'] } }, data: { status: 'FAILED', error: INTERRUPTED, completedAt: now } });
     if (!claimed.count) return null;
-    const found = await tx.investigation.findUniqueOrThrow({ where: { id: investigationId }, select: { organizationId: true, createdById: true, steps: { orderBy: { index: 'desc' }, take: 1, select: { index: true } } } });
+    const found = await tx.investigation.findUniqueOrThrow({ where: { id: investigationId }, select: { organizationId: true, createdById: true, demoSessionId: true, steps: { orderBy: { index: 'desc' }, take: 1, select: { index: true } } } });
     await tx.investigationStep.create({ data: { investigationId, index: (found.steps[0]?.index ?? -1) + 1, type: 'error', title: 'Investigation interrupted', detail: INTERRUPTED, status: 'failed' } });
     return found;
   });
   if (!inv) return false;
   await writeAudit({ organizationId: inv.organizationId, actorType: 'system', actorLabel: 'OPSILUME worker', action: 'investigation.interrupted', resourceType: 'investigation', resourceId: investigationId });
-  await notifyUsers([inv.createdById], { organizationId: inv.organizationId, type: 'investigation.failed', title: 'Investigation interrupted', body: INTERRUPTED, link: `/investigations/${investigationId}` });
+  await notifyUsers([inv.demoSessionId ? null : inv.createdById], { organizationId: inv.organizationId, type: 'investigation.failed', title: 'Investigation interrupted', body: INTERRUPTED, link: `/investigations/${investigationId}` });
   return true;
 }
 
@@ -155,6 +155,9 @@ export async function persistFinal(
     return false;
   }
   const { organizationId, incidentId } = investigation;
+  // A public-demo visitor's run is seen only by its own session (lib/demo.ts): it leaves no timeline
+  // entry and no notification, which every visitor would share.
+  const visitorRun = investigation.demoSessionId != null;
   // Recommendations become PROPOSED remediation actions. They do nothing until a human
   // submits them for approval, another human approves, and a human executes.
   for (const action of report.recommendedActions) {
@@ -174,15 +177,16 @@ export async function persistFinal(
           parameters: action.parameters ?? undefined,
         },
         { type: 'ai_agent', label: 'OPSILUME AI' },
+        { timeline: !visitorRun },
       );
     } catch (err) {
       logger.warn({ err, investigationId }, 'could not create proposed remediation from report');
     }
   }
-  if (incidentId) {
+  if (incidentId && !visitorRun) {
     await addIncidentEvent(incidentId, 'investigation', `AI investigation completed: ${report.summary.slice(0, 280)}`, { kind: 'ai_agent', label: 'OPSILUME AI' }, { investigationId });
   }
   await writeAudit({ organizationId, actorType: 'ai_agent', actorLabel: 'OPSILUME AI', action: 'investigation.complete', resourceType: 'investigation', resourceId: investigationId, metadata: { confidence: report.confidence, hypotheses: report.hypotheses.length, proposedActions: report.recommendedActions.length, mode: report.analysisMode } });
-  await notifyUsers([investigation.createdById], { organizationId, type: 'investigation.completed', title: 'Investigation completed', body: report.summary.slice(0, 200), link: `/investigations/${investigationId}` });
+  await notifyUsers([visitorRun ? null : investigation.createdById], { organizationId, type: 'investigation.completed', title: 'Investigation completed', body: report.summary.slice(0, 200), link: `/investigations/${investigationId}` });
   return true;
 }

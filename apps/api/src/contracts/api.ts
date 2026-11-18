@@ -32,6 +32,7 @@ export const Session = z.object({
   role: z.enum(['OWNER', 'ADMIN', 'ENGINEER', 'VIEWER']),
   permissions: z.array(z.string()),
   organizations: z.array(z.object({ id: z.string(), name: z.string(), slug: z.string(), role: z.string() })),
+  demoVisitor: z.boolean().describe('The public demonstration\'s shared visitor: read-only, plus bounded investigations'),
 });
 
 export const Incident = z.object({

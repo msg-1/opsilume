@@ -8,6 +8,7 @@ identical data and none of them can reach the database directly.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -16,6 +17,8 @@ from opentelemetry.trace import SpanKind, StatusCode
 from pydantic import BaseModel, Field
 
 from .tracing import trace_headers, tracer
+
+_log = logging.getLogger(__name__)
 
 
 class ToolError(Exception):
@@ -292,14 +295,19 @@ class ToolClient:
                 res = await self._http.request(spec.method, path, params=params, json=body, headers=trace_headers())
             except httpx.HTTPError as exc:
                 span.set_status(StatusCode.ERROR, type(exc).__name__)
-                raise ToolError(f"OPSILUME API is not reachable: {exc}") from exc
+                # The exception's text names the internal address; it goes to this service's log only. What the
+                # tool error says ends up in the report (its uncertainties), which people read.
+                _log.warning("tool %s: the API could not be reached: %s", name, exc)
+                raise ToolError(f"OPSILUME API is not reachable ({type(exc).__name__})") from exc
             span.set_attribute("http.response.status_code", res.status_code)
             if res.status_code >= 400:
                 span.set_status(StatusCode.ERROR, f"HTTP {res.status_code}")
                 try:
                     message = res.json()["error"]["message"]
                 except Exception:
-                    message = res.text[:300]
+                    # Not the API's own error answer (a proxy page, for example): its body is not repeated.
+                    _log.warning("tool %s: HTTP %s without an API error body", name, res.status_code)
+                    message = "unexpected response"
                 raise ToolError(f"{name} failed ({res.status_code}): {message}")
             return res.json()
 

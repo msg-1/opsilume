@@ -116,3 +116,48 @@ GitFlow-style: `main` for releases, `develop` for integration, `feature/*` and `
 
 Decision 26's note that earlier commits contain the former instruction file remains true. **Current:** yes.
 
+### 28. Public demo: one flag, a passwordless visitor, enforcement in the API (18 November 2026)
+**Context:** a public portfolio demonstration must not expose owner or administrator capabilities, or spend money. **Decision:**
+- One explicit flag, `PUBLIC_DEMO_MODE`: off by default, and anything other than `true` or `false` stops the process.
+- Visitors enter through a passwordless endpoint as one shared account. It is a VIEWER of a dedicated demonstration organisation (the existing marked Acme Commerce dataset), and its permissions are fixed to read and investigation.
+- A method allowlist refuses every other non-read request before routing.
+- Registration and the documented local password are refused.
+- The persona accounts get passwords nobody knows.
+- Investigations require the rule-based engine.
+- Reset is a host command with a Redis lock, not an in-application scheduler.
+
+**Alternatives considered:**
+- A published visitor password: rejected, because nothing needs publishing.
+- A new role, or a parallel authentication system: rejected, because the existing roles, sessions and tenancy suffice.
+- A frontend-only restriction: never a boundary.
+
+**Consequences:**
+- Visitors share data and quota.
+- The operator may keep a private sign-in, or none.
+- The containers and TLS still need validation on a real host.
+
+**Current:** yes, as amended by decision 29: visitors are isolated by session and bounded by quotas, and the operator sign-in is withdrawn.
+
+### 29. Public demo: visitor sessions isolated, no sign-in but the visitor's (18 November 2026)
+**Context:** a security review of the public demo mode found three problems:
+- one visitor could cancel another visitor's investigation and read its question;
+- one visitor could use up the whole day's quota;
+- an optional owner password made the public endpoint an administrator login.
+
+**Decision:**
+- Each visitor entry gets a random session id, carried through refresh rotation. Investigations started by a visitor record it. A visitor sees only the seeded investigations and its own session's, and the remediation actions derived from them; it cancels only its own. Its runs write no timeline entry or notification.
+- Quotas per session (3), per client address (1 at a time, 10 a day) and for the whole demo (2 at once, 200 a day), counted from the investigations and checked with the insert under an advisory lock.
+- In demo mode nobody but the visitor can be signed in: no password sign-in, invitations, API keys or webhook entry. `PUBLIC_DEMO_OWNER_PASSWORD` is retired. Operators use SSH and the setup and reset script.
+
+**Alternatives considered:**
+- Per-visitor accounts: a larger authentication change that is not needed when the session can own the run.
+- Disabling visitor cancellation and documenting shared visibility: the fallback, not needed because ownership could be isolated safely.
+- A private operator sign-in with a strong password: rejected, because it would be the only administrator login on a public address, protected only by a password.
+
+**Consequences:**
+- Aggregate analytics, the knowledge base and the seeded data stay shared.
+- Per-address limits depend on Nginx seeing real client addresses on the host.
+- A replayed refresh token of the visitor ends that session only.
+
+**Current:** yes.
+

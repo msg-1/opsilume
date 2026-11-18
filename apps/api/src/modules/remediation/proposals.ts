@@ -56,6 +56,7 @@ export async function proposeRemediation(
   organizationId: string,
   input: z.infer<typeof remediationInput>,
   proposer: { type: 'user'; userId: string; label: string } | { type: 'ai_agent'; label: string },
+  options: { timeline?: boolean } = {},
 ) {
   if (input.incidentId && !(await prisma.incident.findFirst({ where: { id: input.incidentId, organizationId }, select: { id: true } }))) throw badRequest('Incident does not exist');
   if (input.serviceId && !(await prisma.service.findFirst({ where: { id: input.serviceId, organizationId }, select: { id: true } }))) throw badRequest('Service does not exist');
@@ -76,7 +77,7 @@ export async function proposeRemediation(
       requiredApprovals: requiredApprovals(settings, risk, effect),
     },
   });
-  if (action.incidentId) {
+  if (action.incidentId && options.timeline !== false) {
     await addIncidentEvent(action.incidentId, 'remediation', `Remediation proposed: ${action.title}`, proposer.type === 'user' ? { kind: 'user', actorId: proposer.userId, label: proposer.label } : { kind: 'ai_agent', label: proposer.label }, { actionId: action.id, risk: action.risk });
   }
   return action;

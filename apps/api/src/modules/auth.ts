@@ -1,11 +1,13 @@
+import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import { type Request, type Response, Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
-import { env, isTest } from '../config/env';
+import { env, rateLimitsOff } from '../config/env';
 import { writeAudit } from '../lib/audit';
 import { randomToken, sha256 } from '../lib/crypto';
-import { badRequest, conflict, forbidden, unauthorized } from '../lib/errors';
+import { DEMO_VISITOR_EMAIL, VISITOR_PERMISSIONS } from '../lib/demo';
+import { AppError, badRequest, conflict, forbidden, notFound, unauthorized } from '../lib/errors';
 import { permissionsFor } from '../lib/permissions';
 import { prisma } from '../lib/prisma';
 import { slugify } from '../lib/slug';
@@ -43,14 +45,16 @@ const acceptInviteBody = z.object({
 // Compared against when the email is unknown, so both paths cost one hash at the configured cost.
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', env.BCRYPT_ROUNDS);
 
-const cookieBase = { httpOnly: true, sameSite: 'lax' as const, secure: env.COOKIE_SECURE, path: '/' };
+// Read when a cookie is set, so the configuration in force is the one applied.
+const cookieBase = () => ({ httpOnly: true, sameSite: 'lax' as const, secure: env.COOKIE_SECURE, path: '/' });
 
-async function startSession(req: Request, res: Response, userId: string, organizationId: string) {
+async function startSession(req: Request, res: Response, userId: string, organizationId: string, demoSessionId?: string | null) {
   const refresh = randomToken(48);
   const session = await prisma.refreshToken.create({
     data: {
       userId,
       organizationId,
+      demoSessionId,
       tokenHash: sha256(refresh),
       userAgent: req.header('user-agent')?.slice(0, 300),
       ip: req.ip,
@@ -58,15 +62,15 @@ async function startSession(req: Request, res: Response, userId: string, organiz
     },
   });
   const access = signAccessToken(userId, organizationId, session.id);
-  res.cookie(ACCESS_COOKIE, access, { ...cookieBase, maxAge: accessCookieMaxAgeMs });
+  res.cookie(ACCESS_COOKIE, access, { ...cookieBase(), maxAge: accessCookieMaxAgeMs });
   // The refresh cookie is only ever sent to the auth endpoints.
-  res.cookie(REFRESH_COOKIE, refresh, { ...cookieBase, maxAge: REFRESH_TTL_MS, path: '/api/v1/auth' });
+  res.cookie(REFRESH_COOKIE, refresh, { ...cookieBase(), maxAge: REFRESH_TTL_MS, path: '/api/v1/auth' });
   return access;
 }
 
 function clearSession(res: Response) {
-  res.clearCookie(ACCESS_COOKIE, cookieBase);
-  res.clearCookie(REFRESH_COOKIE, { ...cookieBase, path: '/api/v1/auth' });
+  res.clearCookie(ACCESS_COOKIE, cookieBase());
+  res.clearCookie(REFRESH_COOKIE, { ...cookieBase(), path: '/api/v1/auth' });
 }
 
 async function uniqueOrgSlug(name: string) {
@@ -91,12 +95,15 @@ async function sessionPayload(userId: string, organizationId: string) {
   });
   const current = user.memberships.find((m) => m.organization.id === organizationId);
   if (!current) throw unauthorized();
+  const demoVisitor = env.PUBLIC_DEMO_MODE && user.email === DEMO_VISITOR_EMAIL;
   return {
     user: { id: user.id, email: user.email, name: user.name, title: user.title },
     organization: current.organization,
     role: current.role,
-    permissions: permissionsFor(current.role),
+    // What the API will actually allow (the visitor's permissions are fixed; see lib/demo.ts).
+    permissions: demoVisitor ? [...VISITOR_PERMISSIONS] : permissionsFor(current.role),
     organizations: user.memberships.map((m) => ({ ...m.organization, role: m.role })),
+    demoVisitor,
   };
 }
 
@@ -107,11 +114,15 @@ const limiter = rateLimit({
   limit: 20,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
-  skip: () => isTest,
+  skip: rateLimitsOff,
   message: { error: { code: 'rate_limited', message: 'Too many attempts. Try again in a minute.' } },
 });
 
+/** Refused in the public demonstration: nobody creates accounts or organisations there. */
+const demoDisabled = () => new AppError(403, 'demo_restricted', 'This action is not available in the public demo.');
+
 authRouter.post('/register', limiter, async (req, res) => {
+  if (env.PUBLIC_DEMO_MODE) throw demoDisabled();
   const body = registerBody.parse(req.body);
   if (await prisma.user.findUnique({ where: { email: body.email } })) {
     throw conflict('An account with this email already exists');
@@ -163,6 +174,9 @@ const accountLimiter = rateLimit({
 });
 
 authRouter.post('/login', limiter, accountLimiter, async (req, res) => {
+  // The public demonstration has no password sign-in at all: visitors enter through POST /auth/demo and
+  // operators work on the server (docs/deployment/PUBLIC_DEMO_MODE.md). No password is ever checked here.
+  if (env.PUBLIC_DEMO_MODE) throw demoDisabled();
   const body = loginBody.parse(req.body);
   const user = await prisma.user.findUnique({
     where: { email: body.email },
@@ -196,7 +210,41 @@ authRouter.post('/login', limiter, accountLimiter, async (req, res) => {
   res.json({ ...(await sessionPayload(user.id, membership.organizationId)), accessToken });
 });
 
-authRouter.post('/refresh', async (req, res) => {
+/** Whether this deployment is the public demonstration (the sign-in page asks; nothing secret is returned). */
+authRouter.get('/demo', (_req, res) => {
+  res.json({ enabled: env.PUBLIC_DEMO_MODE });
+});
+
+/**
+ * Starts a session as the shared demo visitor, without a password. Exists only in the public
+ * demonstration; elsewhere it is "not found". The visitor's membership (VIEWER of the demonstration
+ * organisation) is created by the demo setup (scripts/public-demo.ts), never here.
+ */
+/** Each entry writes a session and an audit row: an address may enter the demo 60 times an hour (in memory, per API process). */
+const demoEntryLimiter = rateLimit({
+  windowMs: 60 * 60_000,
+  limit: 60,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: rateLimitsOff,
+  message: { error: { code: 'rate_limited', message: 'Too many demo entries from your address. Try again later.' } },
+});
+
+authRouter.post('/demo', limiter, demoEntryLimiter, async (req, res) => {
+  if (!env.PUBLIC_DEMO_MODE) throw notFound();
+  const visitor = await prisma.user.findUnique({
+    where: { email: DEMO_VISITOR_EMAIL },
+    include: { memberships: { where: { role: 'VIEWER' }, orderBy: { createdAt: 'asc' }, take: 1 } },
+  });
+  const membership = visitor?.isActive ? visitor.memberships[0] : undefined;
+  if (!visitor || !membership) throw new AppError(503, 'demo_unavailable', 'The demo is being prepared. Try again in a minute.');
+  await writeAudit({ organizationId: membership.organizationId, actorType: 'user', actorId: visitor.id, actorLabel: visitor.name, action: 'auth.demo_login', resourceType: 'user', resourceId: visitor.id, ip: req.ip });
+  // Each entry is its own visitor session, kept across refreshes; it owns the investigations started in it.
+  const accessToken = await startSession(req, res, visitor.id, membership.organizationId, randomUUID());
+  res.json({ ...(await sessionPayload(visitor.id, membership.organizationId)), accessToken });
+});
+
+authRouter.post('/refresh', limiter, async (req, res) => {
   const presented = (req.cookies?.[REFRESH_COOKIE] as string | undefined) ?? (req.body?.refreshToken as string | undefined);
   if (!presented) throw unauthorized('No refresh token');
   const record = await prisma.refreshToken.findUnique({ where: { tokenHash: sha256(presented) } });
@@ -205,8 +253,10 @@ authRouter.post('/refresh', async (req, res) => {
     throw unauthorized('Session expired');
   }
   if (record.revokedAt) {
-    // A rotated token was replayed: treat as theft and end every session for this user.
-    await prisma.refreshToken.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } });
+    // A rotated token was replayed: treat as theft and end every session for this user. The demo visitor
+    // account is shared by every visitor, so there only that visitor's own session ends.
+    const family = record.demoSessionId ? { demoSessionId: record.demoSessionId } : { userId: record.userId };
+    await prisma.refreshToken.updateMany({ where: { ...family, revokedAt: null }, data: { revokedAt: new Date() } });
     clearSession(res);
     throw unauthorized('Session expired');
   }
@@ -219,7 +269,7 @@ authRouter.post('/refresh', async (req, res) => {
     throw unauthorized('Session expired');
   }
   await prisma.refreshToken.update({ where: { id: record.id }, data: { revokedAt: new Date() } });
-  const accessToken = await startSession(req, res, record.userId, record.organizationId);
+  const accessToken = await startSession(req, res, record.userId, record.organizationId, record.demoSessionId);
   res.json({ accessToken });
 });
 
@@ -281,6 +331,7 @@ authRouter.patch('/profile', authenticate, async (req, res) => {
 
 /** Invitation preview so the accept screen can show who invited whom. */
 authRouter.get('/invitations/:token', async (req, res) => {
+  if (env.PUBLIC_DEMO_MODE) throw demoDisabled();
   const invite = await prisma.invitation.findUnique({
     where: { tokenHash: sha256(String(req.params.token)) },
     include: { organization: { select: { name: true } } },
@@ -291,6 +342,7 @@ authRouter.get('/invitations/:token', async (req, res) => {
 });
 
 authRouter.post('/accept-invitation', limiter, async (req, res) => {
+  if (env.PUBLIC_DEMO_MODE) throw demoDisabled();
   const body = acceptInviteBody.parse(req.body);
   const invite = await prisma.invitation.findUnique({ where: { tokenHash: sha256(body.token) } });
   if (!invite || invite.acceptedAt || invite.expiresAt < new Date()) throw badRequest('This invitation is invalid or has expired');

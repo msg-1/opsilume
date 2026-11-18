@@ -1,4 +1,6 @@
 import type { InvestigationEvent } from '../../integrations/aiService';
+import { env } from '../../config/env';
+import { VISITOR_FAILURE, forVisitor } from '../../lib/demo';
 import { prisma } from '../../lib/prisma';
 import { annotate, withSpan } from '../../lib/tracing';
 import { applyGuardrails } from './guardrails';
@@ -17,7 +19,7 @@ export class Superseded extends Error {}
  * Before every event it checks whether the investigation was cancelled, and aborts the request
  * to the AI service if so.
  */
-export function eventConsumer(investigationId: string, abort: AbortController) {
+export function eventConsumer(investigationId: string, abort: AbortController, { visitorRun = false }: { visitorRun?: boolean } = {}) {
   const state = { provider: 'unknown', finished: false };
   const evidenceRefs = new Set<string>();
   // Reference of each deployment evidence item by the deployment's id, to tell what a rollback acts on.
@@ -38,12 +40,19 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
     await assertNotCancelled();
     switch (event.type) {
       case 'meta':
+        // The public demonstration runs the rule-based engine only (a second line of defence after the
+        // check when the investigation is started): a model provider ends the run before it does anything.
+        if (env.PUBLIC_DEMO_MODE && event.provider !== 'heuristic') {
+          abort.abort();
+          throw new Error('The public demo runs the rule-based engine only; the analysis service reported a model provider, so the run was stopped.');
+        }
         state.provider = event.provider;
         await saveEngine(investigationId, event.provider, event.model);
         break;
       case 'step':
         if (event.step.type === 'plan') await savePlan(investigationId, event.step.output);
-        await addStep(event.step);
+        // A public-demo visitor's failed step keeps what failed, not the error text (lib/demo.ts, forVisitor).
+        await addStep(visitorRun && event.step.status === 'failed' ? { ...event.step, detail: event.step.detail == null ? event.step.detail : forVisitor(event.step.detail), output: event.step.output == null ? event.step.output : { error: VISITOR_FAILURE } } : event.step);
         break;
       case 'evidence': {
         const e = event.evidence;

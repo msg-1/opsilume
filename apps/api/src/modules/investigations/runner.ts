@@ -7,6 +7,7 @@ import { prisma } from '../../lib/prisma';
 import { withSpan } from '../../lib/tracing';
 import { signToolToken } from '../../middleware/auth';
 import { enqueue, onWorkerShutdown, registerProcessor } from '../../queues';
+import { forVisitor } from '../../lib/demo';
 import { incidentKey } from '../incidents';
 import { markFailed, markInterrupted, persistently } from './persistence';
 import { Cancelled, Superseded, eventConsumer } from './stream';
@@ -17,6 +18,9 @@ import { Cancelled, Superseded, eventConsumer } from './stream';
  * database was away for longer than the retries) is removed, so that the sweep can put it back.
  */
 export const enqueueInvestigation = (investigationId: string) => enqueue('investigation', { investigationId }, { jobId: investigationId, removeOnFail: true });
+
+/** How often a running investigation checks whether it was cancelled. */
+const CANCEL_POLL_MS = 2000;
 
 /** The reason a run is aborted when its worker is shutting down. */
 class ShuttingDown extends Error {}
@@ -68,7 +72,7 @@ async function execute(investigationId: string, abort: AbortController) {
   }));
   const { organizationId } = investigation;
 
-  const { onEvent, addStep, state } = eventConsumer(investigationId, abort);
+  const { onEvent, addStep, state } = eventConsumer(investigationId, abort, { visitorRun: investigation.demoSessionId != null });
   const request: InvestigationRequest = {
     investigationId,
     question: investigation.question,
@@ -94,6 +98,14 @@ async function execute(investigationId: string, abort: AbortController) {
         : undefined,
   };
 
+  // A cancelled run, or one whose record is gone (a demo reset removed it), stops within a couple of seconds,
+  // not only at its next event: a stalled stream must not keep a worker busy until the time limit.
+  const watch = setInterval(() => {
+    void prisma.investigation
+      .findUnique({ where: { id: investigationId }, select: { status: true } })
+      .then((row) => (!row || row.status === 'CANCELLED') && abort.abort(new Cancelled()))
+      .catch(() => undefined);
+  }, CANCEL_POLL_MS);
   try {
     // The request to the AI service, and everything done with what it streams back.
     await withSpan('investigation.run', { attributes: { 'opsilume.investigation.id': investigationId } }, () => aiService.runInvestigation(request, onEvent, abort.signal));
@@ -117,14 +129,17 @@ async function execute(investigationId: string, abort: AbortController) {
       investigationsTotal.inc({ status: 'interrupted', provider: state.provider });
       return;
     }
-    const message = describeFailure(err);
+    // A public-demo visitor sees only failures this codebase words itself; the full error goes to the log.
+    const message = investigation.demoSessionId ? forVisitor(describeFailure(err)) : describeFailure(err);
     logger.error({ err, investigationId }, 'investigation failed');
     await addStep({ type: 'error', title: 'Investigation failed', detail: message, status: 'failed' }).catch(() => undefined);
     // If this cannot be written either, the job fails, the row stays RUNNING and the periodic sweep ends it.
     const recorded = await persistently(() => markFailed(investigationId, message));
     if (!recorded.count) return;
     investigationsTotal.inc({ status: 'failed', provider: state.provider });
-    await notifyUsers([investigation.createdById], { organizationId, type: 'investigation.failed', title: 'Investigation failed', body: message.slice(0, 200), link: `/investigations/${investigationId}` }).catch(() => undefined);
+    await notifyUsers([investigation.demoSessionId ? null : investigation.createdById], { organizationId, type: 'investigation.failed', title: 'Investigation failed', body: message.slice(0, 200), link: `/investigations/${investigationId}` }).catch(() => undefined);
+  } finally {
+    clearInterval(watch);
   }
 }
 

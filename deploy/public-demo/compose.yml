@@ -1,0 +1,174 @@
+# OPSILUME public demonstration: one ARM64 or AMD64 host, nothing published except the reverse proxy.
+# See docs/deployment/PUBLIC_DEMO_MODE.md. Run from this directory:
+#   cp env.example .env    # then fill in every value (never commit .env)
+#   docker compose build
+#   docker compose up -d
+#
+# Docker-published ports bypass a host firewall such as UFW, so the protection here is that no service
+# other than `proxy` has a `ports:` entry at all. PostgreSQL, Redis, the API and the AI service are
+# reachable only on the internal Compose network.
+name: opsilume-demo
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+x-app-env: &app-env
+  NODE_ENV: production
+  PUBLIC_DEMO_MODE: "true"
+  DATABASE_URL: postgresql://opsilume:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/opsilume?schema=public
+  REDIS_URL: redis://redis:6379
+  API_URL: http://api:4000
+  AI_SERVICE_URL: http://ai:8000
+  WEB_ORIGIN: https://${DEMO_HOSTNAME:?set DEMO_HOSTNAME in .env}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set ENCRYPTION_KEY in .env}
+  COOKIE_SECURE: "true"
+  # The web container is the only client of the API on this network.
+  TRUST_PROXY: uniquelocal
+  LOG_LEVEL: info
+  # The local demo seed (documented passwords) never runs here; scripts/public-demo.ts sets the demo up.
+  SEED_DEMO_DATA: "false"
+  # Bounded analysis: per organisation and day, and at once.
+  INVESTIGATION_DAILY_LIMIT: ${INVESTIGATION_DAILY_LIMIT:-200}
+  INVESTIGATION_MAX_CONCURRENT: "2"
+  # The longest one investigation may run before it is stopped and recorded as failed (rule-based runs take
+  # seconds). A run whose worker died is swept up at this plus 5 minutes.
+  INVESTIGATION_TIMEOUT_MS: ${INVESTIGATION_TIMEOUT_MS:-120000}
+  # Per visitor session, and per client address and day (docs/deployment/PUBLIC_DEMO_MODE.md, section 6).
+  DEMO_SESSION_INVESTIGATION_LIMIT: ${DEMO_SESSION_INVESTIGATION_LIMIT:-3}
+  DEMO_ADDRESS_DAILY_INVESTIGATION_LIMIT: ${DEMO_ADDRESS_DAILY_INVESTIGATION_LIMIT:-10}
+  AI_DAILY_COST_LIMIT_USD: "0"
+  GITHUB_TOKEN: ""
+  GITHUB_WEBHOOK_SECRET: ""
+  TRACES_URL: ""
+  OTEL_ENABLED: "false"
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: opsilume
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: opsilume
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../../infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U opsilume -d opsilume"], interval: 5s, timeout: 3s, retries: 20 }
+    mem_limit: 768m
+    logging: *logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Holds the job queue: never an eviction policy that would drop accepted work.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes: [redisdata:/data]
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 5s, timeout: 3s, retries: 20 }
+    mem_limit: 128m
+    logging: *logging
+
+  # Applies migrations, then creates whatever the demonstration is missing (idempotent).
+  migrate:
+    build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    command: ["sh", "-c", "npx prisma migrate deploy && node dist/scripts/public-demo.js setup"]
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    mem_limit: 512m
+    logging: *logging
+
+  api:
+    build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/src/server.js"]
+    restart: unless-stopped
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+    logging: *logging
+
+  worker:
+    build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    command: ["node", "dist/src/worker.js"]
+    restart: unless-stopped
+    environment: *app-env
+    stop_grace_period: 30s
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9464/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    mem_limit: 512m
+    logging: *logging
+
+  # The rule-based engine only: no model provider and no key is configured, and the API refuses to
+  # start an investigation if the service reports anything else.
+  ai:
+    build: { context: ../../services/ai }
+    restart: unless-stopped
+    environment:
+      API_URL: http://api:4000
+      INTERNAL_SERVICE_TOKEN: ${INTERNAL_SERVICE_TOKEN:?set INTERNAL_SERVICE_TOKEN in .env}
+      AI_PROVIDER: deterministic
+      ANTHROPIC_API_KEY: ""
+      OPENAI_API_KEY: ""
+      EMBEDDING_PROVIDER: local
+      OTEL_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=2).status == 200 else 1)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    mem_limit: 768m
+    logging: *logging
+
+  web:
+    build: { context: ../.., dockerfile: apps/web/Dockerfile }
+    restart: unless-stopped
+    environment:
+      API_PROXY_TARGET: http://api:4000
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    mem_limit: 512m
+    logging: *logging
+
+  # The only published service. TLS with a certificate obtained on the host (see the document).
+  proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DEMO_HOSTNAME: ${DEMO_HOSTNAME:?set DEMO_HOSTNAME in .env}
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
+    depends_on:
+      web: { condition: service_healthy }
+    mem_limit: 128m
+    logging: *logging
+
+volumes:
+  pgdata:
+  redisdata:

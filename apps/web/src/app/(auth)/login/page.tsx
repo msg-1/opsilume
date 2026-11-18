@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Suspense, useState } from 'react';
+import { DemoEntry, useDemoMode } from '@/components/demo';
 import { Button, Field, FormError, Input } from '@/components/ui';
 import { api } from '@/lib/api';
 
@@ -13,6 +14,7 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+  const demo = useDemoMode();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -28,6 +30,17 @@ function LoginForm() {
     }
   }
 
+  // The public demonstration has no password sign-in (the API refuses it); visitors need no account.
+  if (demo) {
+    return (
+      <div className="space-y-4">
+        <h1 className="sr-only">OPSILUME public demo</h1>
+        <DemoEntry />
+        <p className="text-center text-[12px] text-ink-2">There is no account sign-in on the public demo.</p>
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <div>
@@ -40,13 +53,13 @@ function LoginForm() {
       <Button type="submit" variant="primary" loading={busy} className="w-full">
         Sign in
       </Button>
-      <p className="text-center text-[13px] text-ink-2">
+      {demo === false && <p className="text-center text-[13px] text-ink-2">
         New here?{' '}
         <Link href="/register" className="font-medium text-accent hover:underline">
           Create an organisation
         </Link>
-      </p>
-      {process.env.NODE_ENV !== 'production' && (
+      </p>}
+      {process.env.NODE_ENV !== 'production' && demo === false && (
         <div className="rounded-md border border-line bg-sunken px-3 py-2 text-[12px] text-ink-2">
           Demo data (after <code className="font-mono">npm run db:seed</code>): <span className="font-mono text-ink">demo@example.com</span> / <span className="font-mono text-ink">Opsilume-demo-1</span>
         </div>
