@@ -6,7 +6,7 @@ import type { InvestigationEvent } from '../src/integrations/aiService';
 // Redis. Only the Python AI service is replaced by a scripted double, so no model is ever called.
 // A private key prefix keeps these queues apart from any worker already using the same Redis.
 const settings = vi.hoisted(() => {
-  const prefix = `opspilot-test-${process.pid}-${Date.now()}`;
+  const prefix = `opsilume-test-${process.pid}-${Date.now()}`;
   process.env.QUEUE_INLINE = 'false';
   process.env.QUEUE_PREFIX = prefix;
   process.env.QUEUE_BACKOFF_MS = '40';

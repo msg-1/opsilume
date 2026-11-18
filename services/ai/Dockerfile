@@ -5,7 +5,7 @@ ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy PYTHONUNBUFFERED=1
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 COPY app ./app
-RUN useradd --system --uid 10001 opspilot
-USER opspilot
+RUN useradd --system --uid 10001 opsilume
+USER opsilume
 EXPOSE 8000
 CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

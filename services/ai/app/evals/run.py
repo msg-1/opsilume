@@ -11,7 +11,7 @@ Every run writes the complete report, steps, evidence and usage of each scenario
 services/ai/eval-runs/<timestamp>-<engine>/ (git-ignored), so a result can be studied afterwards
 without running, or paying for, the scenario again. Use --no-save to skip that.
 
-Each scenario is a small fake of the OpsPilot tool API with a known answer, so the whole agent
+Each scenario is a small fake of the OPSILUME tool API with a known answer, so the whole agent
 runs unchanged against it. With a real model, --max-cost is a hard ceiling: every scenario's
 provider is limited to what is left of the budget, and a scenario is not started if it could
 exceed the remainder.
@@ -169,8 +169,8 @@ async def evaluate(scenario: Scenario, provider: LLMProvider | None, settings: S
     async def emit(event: dict[str, Any]) -> None:
         events.append(event)
 
-    tools = ToolClient("http://opspilot.test", "eval-token", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id=f"eval-{scenario.name}", question=scenario.question, organization_name="Eval Org", api_url="http://opspilot.test", tool_token="eval-token", time_window=scenario.time_window(),
+    tools = ToolClient("http://opsilume.test", "eval-token", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id=f"eval-{scenario.name}", question=scenario.question, organization_name="Eval Org", api_url="http://opsilume.test", tool_token="eval-token", time_window=scenario.time_window(),
         # The scenario data is recorded at a fixed moment; the agent investigates as of that moment.
         current_time=t(0),
     )

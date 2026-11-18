@@ -8,7 +8,7 @@
 // are then set beside what was happening at that moment. Used for docs/performance-investigation.md.
 import { PROJECT, URLS, compose, composeAsync } from './isolated-stack.mjs';
 
-if (PROJECT === 'opspilot') throw new Error('Refusing to run against the default Compose project.');
+if (PROJECT === 'opsilume') throw new Error('Refusing to run against the default Compose project.');
 const arg = (name, fallback) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : fallback;
@@ -39,8 +39,8 @@ async function call(method, path, body, headers = {}) {
   return { status, data, at: began, ms: performance.now() - began };
 }
 // Sampling while requests are in flight must not block this process (see isolated-stack.mjs).
-const psqlAsync = async (q) => (await composeAsync(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-AtF', '\t', '-c', q])).stdout.trim();
-const psql = (q) => compose(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-AtF', '\t', '-c', q], { capture: true }).stdout.trim();
+const psqlAsync = async (q) => (await composeAsync(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'opsilume', '-AtF', '\t', '-c', q])).stdout.trim();
+const psql = (q) => compose(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'opsilume', '-AtF', '\t', '-c', q], { capture: true }).stdout.trim();
 const q = (sorted, p) => Math.round(sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] ?? 0);
 const stats = (all) => {
   // Only answered requests have a latency worth reporting; the rest are counted beside it.
@@ -49,7 +49,7 @@ const stats = (all) => {
   return { n: ms.length, p50: q(ms, 0.5), p95: q(ms, 0.95), p99: q(ms, 0.99), max: Math.round(ms.at(-1) ?? 0), errors: all.filter((s) => s.status === 0 || s.status >= 500).length, refused: all.filter((s) => s.status === 429).length };
 };
 
-await call('POST', '/auth/login', { email: 'demo@example.com', password: 'OpsPilot-demo-1' });
+await call('POST', '/auth/login', { email: 'demo@example.com', password: 'Opsilume-demo-1' });
 const services = (await call('GET', '/services?pageSize=50')).data.data.map((s) => s.slug);
 const incident = (await call('GET', '/incidents?pageSize=1')).data.data[0];
 const key = (await call('POST', '/api-keys', { name: `probe ${Date.now()}`, scopes: ['ingest:logs'] })).data.secret;
@@ -77,7 +77,7 @@ async function serverSide() {
   const text = await fetch(`${URLS.api}/metrics`).then((r) => r.text(), () => '');
   const out = {};
   for (const line of text.split('\n')) {
-    const m = line.match(/^opspilot_http_request_duration_seconds_bucket\{le="([^"]+)",method="(GET|POST)",route="(\/api\/v1\/[^"]*)",status="2\d\d"\} (\S+)/);
+    const m = line.match(/^opsilume_http_request_duration_seconds_bucket\{le="([^"]+)",method="(GET|POST)",route="(\/api\/v1\/[^"]*)",status="2\d\d"\} (\S+)/);
     if (!m || m[3].includes('/auth/') || m[3].includes('/api-keys')) continue;
     const kind = m[2] === 'POST' ? 'writes' : 'reads';
     (out[kind] ??= {})[m[1]] = (out[kind][m[1]] ?? 0) + Number(m[4]);
@@ -123,9 +123,9 @@ const sampler = async () => {
     const at = performance.now();
     const [metrics, activity] = await Promise.all([
       fetch(`${URLS.api}/metrics`).then((r) => r.text(), () => ''),
-      psqlAsync(`SELECT state, coalesce(wait_event_type, '-'), coalesce(wait_event, '-'), round(extract(epoch FROM now() - query_start) * 1000), left(regexp_replace(query, '\\s+', ' ', 'g'), 60) FROM pg_stat_activity WHERE datname = 'opspilot' AND pid <> pg_backend_pid() AND application_name <> 'psql'`),
+      psqlAsync(`SELECT state, coalesce(wait_event_type, '-'), coalesce(wait_event, '-'), round(extract(epoch FROM now() - query_start) * 1000), left(regexp_replace(query, '\\s+', ' ', 'g'), 60) FROM pg_stat_activity WHERE datname = 'opsilume' AND pid <> pg_backend_pid() AND application_name <> 'psql'`),
     ]);
-    const lag = (name) => (Number(metrics.match(new RegExp(`opspilot_api_nodejs_eventloop_lag_${name}seconds (\\S+)`))?.[1]) || 0) * 1000;
+    const lag = (name) => (Number(metrics.match(new RegExp(`opsilume_api_nodejs_eventloop_lag_${name}seconds (\\S+)`))?.[1]) || 0) * 1000;
     const rows = activity.split('\n').filter(Boolean).map((l) => l.split('\t'));
     samples.push({ at, sampleMs: performance.now() - at, lagMs: lag(''), lagP99Ms: lag('p99_'), lagMaxMs: lag('max_'), connections: rows.length, active: rows.filter((r) => r[0] === 'active'), waiting: rows.filter((r) => r[0] === 'active' && r[1] !== '-') });
     await pause(250);

@@ -64,8 +64,8 @@ async def run(scenario_name: str, provider: LLMProvider | None, question: str | 
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv1", question=question or scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window=scenario.time_window())
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id="inv1", question=question or scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window=scenario.time_window())
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=provider, emit=emit)
     report = await run_investigation(ctx)
     await tools.aclose()
@@ -322,14 +322,14 @@ def _shape(value, prefix=""):
 async def test_report_wire_format_matches_the_contract_shared_with_the_api():
     """The API parses this exact JSON (apps/api/tests/contract.test.ts reads the same file).
     If a field is added or renamed here, regenerate the fixture and update the API schema:
-        OPSPILOT_WRITE_CONTRACT=1 uv run pytest tests/test_agent.py -k contract
+        OPSILUME_WRITE_CONTRACT=1 uv run pytest tests/test_agent.py -k contract
     """
     import json
     import os
 
     report, _events, _ctx = await run("bad_deploy_matching_change", None)
     wire = report.wire()
-    if os.environ.get("OPSPILOT_WRITE_CONTRACT"):
+    if os.environ.get("OPSILUME_WRITE_CONTRACT"):
         CONTRACT.write_text(json.dumps(wire, indent=2) + "\n")
     expected = json.loads(CONTRACT.read_text())
     assert _shape(wire) == _shape(expected), "report shape changed: regenerate the contract fixture and update the API's reportSchema"
@@ -349,8 +349,8 @@ async def test_investigation_runs_as_of_the_requested_time_not_the_wall_clock():
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", current_time=t(0))
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", current_time=t(0))
     await run_investigation(Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=provider, emit=emit))
     await tools.aclose()
     briefing = provider.seen[0][1].content
@@ -433,7 +433,7 @@ async def test_deployment_context_tool_yields_the_rollback_target_and_impact_as_
         seen.append(request)
         return scenario.handler()(request)
 
-    client = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(handler))
+    client = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(handler))
     result = await client.call("get_deployment_context", {"service": "orders-api", "deployment_id": "d1"})
     assert seen[0].url.path == "/api/v1/tools/deployment-context" and dict(seen[0].url.params) == {"service": "orders-api", "deploymentId": "d1"}
     # The previous version is found however long ago it was deployed (here 30 hours earlier).

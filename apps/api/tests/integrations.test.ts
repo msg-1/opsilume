@@ -334,8 +334,8 @@ describe('remediation webhook: an address is not a receiver', () => {
     // What was sent: a ping, signed, carrying no action and nothing that could be executed.
     expect(hook.received).toHaveLength(1);
     expect(hook.received[0]!.body).toEqual({ event: 'ping', organization: org.slug, sentAt: expect.any(String) });
-    expect(hook.received[0]!.headers['x-opspilot-signature']).toMatch(/^sha256=[0-9a-f]{64}$/);
-    expect(hook.received[0]!.headers['x-opspilot-event']).toBe('ping');
+    expect(hook.received[0]!.headers['x-opsilume-signature']).toMatch(/^sha256=[0-9a-f]{64}$/);
+    expect(hook.received[0]!.headers['x-opsilume-event']).toBe('ping');
 
     for (const [arrange, expected] of [
       [() => (hook.status = 500), 'The receiver refused the test request (HTTP 500).'],

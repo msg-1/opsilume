@@ -6,7 +6,7 @@ import { type Page, expect, test } from '@playwright/test';
 // stop and start containers, so they run only against the isolated stack
 // (`npm run isolated:up`, then `npm run isolated:e2e`), never against a stack someone is using.
 const ISOLATED = process.env.E2E_ISOLATED === '1';
-const PASSWORD = 'OpsPilot-demo-1';
+const PASSWORD = 'Opsilume-demo-1';
 const ROOT = join(__dirname, '..', '..', '..');
 
 function stack(...args: string[]) {

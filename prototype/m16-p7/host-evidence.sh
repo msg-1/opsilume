@@ -8,7 +8,7 @@
 set -u
 run="${1:?run id}"; label="${2:?label}"; probe="${3:-}"
 [[ "$run" =~ ^[A-Za-z0-9_-]{1,64}$ && "$label" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || { echo "bad run or label"; exit 1; }
-project="${P7_PROJECT:-opspilot-m16-p7}"
+project="${P7_PROJECT:-opsilume-m16-p7}"
 [[ "$project" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] || { echo "bad P7_PROJECT"; exit 1; }
 out="${P7_EVIDENCE_HOST:-$(dirname "$0")/evidence}/$run/host/$label"
 mkdir -p "$(dirname "$out")" && mkdir "$out" || { echo "refused: $out exists"; exit 1; }
@@ -24,7 +24,7 @@ cap lsblk lsblk -o NAME,MODEL,SERIAL,ROTA,TRAN,SIZE,FSTYPE,MOUNTPOINTS
 # Smoke volumes are named per generation (compose.smoke.yml): pass P7_SMOKE_GENERATION with the smoke project.
 # Only the smoke project has generations: with any other project the variable is ignored, so it can't misname a
 # qualifying volume if it is still set in the operator's shell.
-gen=""; [ "$project" != opspilot-m16-p7-smoke ] || gen="${P7_SMOKE_GENERATION:-}"
+gen=""; [ "$project" != opsilume-m16-p7-smoke ] || gen="${P7_SMOKE_GENERATION:-}"
 [[ "$gen" =~ ^[a-z0-9]{0,24}$ ]] || { echo "bad P7_SMOKE_GENERATION"; exit 1; }
 for v in pgdata state; do
   mp="$(docker volume inspect -f '{{.Mountpoint}}' "${project}_${v}${gen:+_$gen}" 2>/dev/null)"
@@ -69,7 +69,7 @@ cap containers docker ps -a --filter "label=com.docker.compose.project=$project"
 # Which image each container of the project was created from (the image id), and the two images as they are now.
 # Compare with the image id declared at create-run: nothing inside a container can observe it.
 cap container-images sh -c "docker inspect -f '{{.Name}} {{.Image}} {{.Config.Image}}' \$(docker ps -aq --filter label=com.docker.compose.project=$project)"
-cap images docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}} {{.RepoTags}}' opspilot-isolated-api:latest postgres:16-alpine
+cap images docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}} {{.RepoTags}}' opsilume-isolated-api:latest postgres:16-alpine
 (cd "$out" && sha256sum ./*.txt >SHA256SUMS) 2>/dev/null || (cd "$out" && shasum -a 256 ./*.txt >SHA256SUMS)
 sync
 echo "host evidence written to $out"

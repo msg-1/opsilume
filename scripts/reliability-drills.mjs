@@ -8,13 +8,13 @@
 //   npm run drills -- worker-killed redis-down       some of them
 //
 // Every docker command goes through the isolated Compose project. The default project
-// ("opspilot"), its containers and its database are never addressed.
+// ("opsilume"), its containers and its database are never addressed.
 import { spawnSync } from 'node:child_process';
 import { PROJECT, URLS, compose, secrets } from './isolated-stack.mjs';
 
-if (PROJECT === 'opspilot') throw new Error('Refusing to run failure drills against the default Compose project.');
+if (PROJECT === 'opsilume') throw new Error('Refusing to run failure drills against the default Compose project.');
 
-const DEMO = { email: 'demo@example.com', password: 'OpsPilot-demo-1' }; // the documented demo account of a freshly seeded stack
+const DEMO = { email: 'demo@example.com', password: 'Opsilume-demo-1' }; // the documented demo account of a freshly seeded stack
 const API = `${URLS.api}/api/v1`;
 const INTERRUPTED = 'the worker stopped before this investigation finished';
 

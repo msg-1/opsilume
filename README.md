@@ -13,7 +13,7 @@ What that means in practice:
 
 Everything runs on your machine. No cloud account is needed, and no data leaves it unless you configure an LLM provider. It is a working system for local use and evaluation; it has not been hardened or validated for production.
 
-> **About the name.** OPSILUME is the working name of the product developed as OpsPilot. The repository, packages, API and configuration keep their `opspilot` identifiers. The name has not been cleared as a trademark. See [docs/branding/opsilume-branding.md](docs/branding/opsilume-branding.md).
+> **About the name.** OPSILUME is the product's name, used in the interface and in every identifier: repository, packages and configuration. The name has not been cleared as a trademark. See [docs/branding/opsilume-branding.md](docs/branding/opsilume-branding.md).
 
 ## Quick start (Docker)
 
@@ -25,7 +25,7 @@ cp .env.example .env          # then replace the three secrets (see comments in 
 docker compose --profile app up -d --build
 ```
 
-Open <http://localhost:3000> and sign in with `demo@example.com` / `OpsPilot-demo-1`. The first start migrates the database and loads a demo organisation with an active incident. Other demo users (admin, engineers, viewer) are listed in [docs/setup-guide.md](docs/setup-guide.md).
+Open <http://localhost:3000> and sign in with `demo@example.com` / `Opsilume-demo-1`. The first start migrates the database and loads a demo organisation with an active incident. Other demo users (admin, engineers, viewer) are listed in [docs/setup-guide.md](docs/setup-guide.md).
 
 Try it: open incident **INC-10**, click **Investigate with AI**, read the hypotheses and evidence, then open the proposed rollback under **Approvals** and walk it through approval as a second user.
 

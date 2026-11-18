@@ -18,11 +18,11 @@ function startOpsServer() {
       res.writeHead(200, { 'content-type': registry.contentType }).end(await registry.metrics());
     } else if (req.url === '/health') {
       // Liveness: the process is up. It says nothing about whether it can do its work.
-      res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok","service":"opspilot-worker"}');
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"status":"ok","service":"opsilume-worker"}');
     } else if (req.url === '/ready') {
       // Readiness: it can reach what it needs to take and finish a job.
       const [database, redis] = await Promise.all([prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false), redisPing()]);
-      res.writeHead(database && redis ? 200 : 503, { 'content-type': 'application/json' }).end(JSON.stringify({ status: database && redis ? 'ready' : 'not_ready', service: 'opspilot-worker', database, redis }));
+      res.writeHead(database && redis ? 200 : 503, { 'content-type': 'application/json' }).end(JSON.stringify({ status: database && redis ? 'ready' : 'not_ready', service: 'opsilume-worker', database, redis }));
     } else {
       res.writeHead(404).end();
     }

@@ -1,4 +1,4 @@
-# Contributing to OpsPilot
+# Contributing to OPSILUME
 
 ## Before you start
 
@@ -24,10 +24,10 @@ gh pr create --base develop --fill
 
   | You changed | Run |
   |---|---|
-  | `apps/api` | `npm test -w @opspilot/api` |
-  | `apps/web` | `npm test -w @opspilot/web`, and `npm run test:e2e` for flows |
+  | `apps/api` | `npm test -w @opsilume/api` |
+  | `apps/web` | `npm test -w @opsilume/web`, and `npm run test:e2e` for flows |
   | `services/ai` | `npm run test:ai`, `npm run evals -- --heuristic`, `cd services/ai && uv run ruff check .` |
-  | `prisma/schema.prisma` | Create the migration with `npm run db:migrate:new -w @opspilot/api -- --name <name>`, delete the generated `DROP INDEX "KnowledgeChunk_embedding_hnsw_idx"` line, then `npm run db:migrate` |
+  | `prisma/schema.prisma` | Create the migration with `npm run db:migrate:new -w @opsilume/api -- --name <name>`, delete the generated `DROP INDEX "KnowledgeChunk_embedding_hnsw_idx"` line, then `npm run db:migrate` |
 
 - **Documented.** Update `docs/` when behaviour, configuration or the API changes, and add a line to `CHANGELOG.md` under Unreleased.
 

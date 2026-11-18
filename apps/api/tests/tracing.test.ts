@@ -11,7 +11,7 @@ import type { InvestigationEvent } from '../src/integrations/aiService';
 // spans must join the trace of the request that enqueued the job, and nothing sensitive may
 // be exported. Spans are collected in memory; nothing is sent anywhere.
 const settings = vi.hoisted(() => {
-  const prefix = `opspilot-trace-test-${process.pid}-${Date.now()}`;
+  const prefix = `opsilume-trace-test-${process.pid}-${Date.now()}`;
   process.env.QUEUE_INLINE = 'false';
   process.env.QUEUE_PREFIX = prefix;
   return { prefix, redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379' };
@@ -35,7 +35,7 @@ import { closeQueues, startWorkers } from '../src/queues';
 import { createOrg } from './helpers';
 
 const memory = new InMemorySpanExporter();
-const sdk = new NodeSDK({ serviceName: 'opspilot-test', autoDetectResources: false, instrumentations: [], spanProcessors: [new SimpleSpanProcessor({ exporter: scrubbingExporter(memory) })] });
+const sdk = new NodeSDK({ serviceName: 'opsilume-test', autoDetectResources: false, instrumentations: [], spanProcessors: [new SimpleSpanProcessor({ exporter: scrubbingExporter(memory) })] });
 
 const redisAvailable = await (async () => {
   const probe = new IORedis(settings.redisUrl, { lazyConnect: true, maxRetriesPerRequest: 0, connectTimeout: 1500, retryStrategy: () => null });
@@ -72,11 +72,11 @@ describe('span scrubbing', () => {
 
   it('is applied to every exported span and its events, whoever created them', async () => {
     memory.reset();
-    await withSpan('lookup', { attributes: { 'http.request.header.authorization': 'Bearer abc', 'url.full': 'http://api:4000/api/v1/logs?q=secret+words', 'opspilot.tool.name': 'search_logs' } }, async (span) => {
+    await withSpan('lookup', { attributes: { 'http.request.header.authorization': 'Bearer abc', 'url.full': 'http://api:4000/api/v1/logs?q=secret+words', 'opsilume.tool.name': 'search_logs' } }, async (span) => {
       span.addEvent('exception', { 'exception.message': 'rejected ada@example.com' });
     });
     const [span] = memory.getFinishedSpans();
-    expect(span!.attributes).toEqual({ 'url.full': 'http://api:4000/api/v1/logs', 'opspilot.tool.name': 'search_logs' });
+    expect(span!.attributes).toEqual({ 'url.full': 'http://api:4000/api/v1/logs', 'opsilume.tool.name': 'search_logs' });
     expect(span!.events[0]!.attributes).toEqual({ 'exception.message': `rejected ${REDACTED}` });
     // Identity of the span survives the wrapping.
     expect(span!.name).toBe('lookup');
@@ -128,9 +128,9 @@ describe.skipIf(!redisAvailable)('one investigation, one trace (BullMQ on Redis)
     expect(persist.parentSpanContext?.spanId).toBe(run.spanContext().spanId);
 
     // Found by the investigation's id, which is all a span says about the work.
-    expect(enqueue.attributes['opspilot.investigation.id']).toBe(id);
-    expect(job.attributes).toMatchObject({ 'opspilot.investigation.id': id, 'messaging.destination.name': 'investigation', 'messaging.system': 'bullmq' });
-    expect(run.attributes).toMatchObject({ 'opspilot.engine.mode': 'heuristic' });
+    expect(enqueue.attributes['opsilume.investigation.id']).toBe(id);
+    expect(job.attributes).toMatchObject({ 'opsilume.investigation.id': id, 'messaging.destination.name': 'investigation', 'messaging.system': 'bullmq' });
+    expect(run.attributes).toMatchObject({ 'opsilume.engine.mode': 'heuristic' });
 
     // Neither the question, nor who asked, nor any credential is in what was exported.
     const exported = JSON.stringify(spans.map((s) => ({ name: s.name, attributes: s.attributes, events: s.events, status: s.status })));

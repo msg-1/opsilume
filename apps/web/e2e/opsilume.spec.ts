@@ -1,6 +1,6 @@
 import { type Browser, type Page, expect, test } from '@playwright/test';
 
-const PASSWORD = 'OpsPilot-demo-1';
+const PASSWORD = 'Opsilume-demo-1';
 const stamp = Date.now().toString(36);
 
 async function signIn(page: Page, email: string) {

@@ -37,8 +37,8 @@ function jobAttributes(name: JobName, data: Record<string, unknown>) {
   return {
     'messaging.system': 'bullmq',
     'messaging.destination.name': name,
-    ...(typeof data.investigationId === 'string' ? { 'opspilot.investigation.id': data.investigationId } : {}),
-    ...(typeof data.documentId === 'string' ? { 'opspilot.document.id': data.documentId } : {}),
+    ...(typeof data.investigationId === 'string' ? { 'opsilume.investigation.id': data.investigationId } : {}),
+    ...(typeof data.documentId === 'string' ? { 'opsilume.document.id': data.documentId } : {}),
   };
 }
 

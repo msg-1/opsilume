@@ -197,7 +197,7 @@ Not done, and why:
 
 1. ~~An Anthropic API key~~ — configured; live verification done.
 2. **A GitHub token**, to verify the integration against real repositories.
-3. ~~A decision on a remote repository~~ — published at https://github.com/msg-1/opspilot (public); `main` and `develop` are protected.
+3. ~~A decision on a remote repository~~ — published at https://github.com/msg-1/opsilume (public); `main` and `develop` are protected.
 4. ~~A licence~~ — MIT (`LICENSE`).
 5. **Promotion of `develop` to `main`** (release 0.1.0) once you have reviewed the result.
 6. **A budget for a live model run** of the eleven evaluation scenarios and of the demo environment, if you want the Milestone 4 changes validated with a model.

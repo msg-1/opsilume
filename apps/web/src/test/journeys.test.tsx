@@ -87,7 +87,7 @@ describe('signing in', () => {
   it('offers the seeded demo account outside production, with the password the seed really sets', () => {
     show(<LoginPage />);
     // The product was renamed; this credential was deliberately not (apps/api/prisma/seed.ts).
-    expect(screen.getByText(/Demo data/)).toHaveTextContent('demo@example.com / OpsPilot-demo-1');
+    expect(screen.getByText(/Demo data/)).toHaveTextContent('demo@example.com / Opsilume-demo-1');
   });
 
   it.each(['//evil.example/phish', 'https://evil.example', 'javascript:alert(1)'])('never follows a redirect that leaves the site (%s)', async (next) => {

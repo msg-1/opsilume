@@ -13,7 +13,7 @@ import { fingerprint } from '../src/lib/logParsing';
 
 const prisma = new PrismaClient();
 const DEMO_SLUG = 'meridian-demo';
-export const DEMO_PASSWORD = 'OpsPilot-demo-1';
+export const DEMO_PASSWORD = 'Opsilume-demo-1';
 
 const now = Date.now();
 const MIN = 60_000;
@@ -430,7 +430,7 @@ Roll back first, investigate second, when an incident started within an hour of 
 
 ## Procedure
 1. Identify the last known-good version on the Deployments page.
-2. Request approval for a "Rollback deployment" remediation in OpsPilot. SEV1/SEV2 rollbacks need one approver who is not the requester.
+2. Request approval for a "Rollback deployment" remediation in OPSILUME. SEV1/SEV2 rollbacks need one approver who is not the requester.
 3. Run \`deployctl rollback <service> --to <version>\` or trigger the "Rollback" pipeline with the version.
 4. Watch error rate and latency for 15 minutes.
 

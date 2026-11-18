@@ -7,7 +7,7 @@
 //   1. creates some state through the API (ingested telemetry, an investigation, a remediation
 //      action submitted for approval), so the backup holds more than the seed;
 //   2. takes a backup of the isolated database with pg_dump (custom format);
-//   3. restores it into a SECOND database, opspilot_restore, next to the first;
+//   3. restores it into a SECOND database, opsilume_restore, next to the first;
 //   4. compares the two: every table's row count, every foreign key, the indexes, the
 //      extensions and the migration history;
 //   5. starts a second API and worker against the restored database, signs in, reads the
@@ -22,12 +22,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PROJECT, ROOT, URLS, compose } from './isolated-stack.mjs';
 
-if (PROJECT === 'opspilot') throw new Error('Refusing to run against the default Compose project.');
+if (PROJECT === 'opsilume') throw new Error('Refusing to run against the default Compose project.');
 
-const SOURCE = 'opspilot';
-const RESTORED = 'opspilot_restore';
+const SOURCE = 'opsilume';
+const RESTORED = 'opsilume_restore';
 const RESTORED_API_PORT = 14100;
-const DEMO = { email: 'demo@example.com', password: 'OpsPilot-demo-1' };
+const DEMO = { email: 'demo@example.com', password: 'Opsilume-demo-1' };
 const log = (line = '') => console.log(line);
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 function assert(condition, message) {
@@ -42,7 +42,7 @@ const dc = (args, { input, allowFail = false } = {}) => {
 };
 /** SQL against one database of the isolated PostgreSQL. Returns rows as arrays of strings. */
 const sql = (database, query) =>
-  dc(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', database, '-AtF', '\t', '-v', 'ON_ERROR_STOP=1', '-c', query])
+  dc(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', database, '-AtF', '\t', '-v', 'ON_ERROR_STOP=1', '-c', query])
     .split('\n')
     .filter(Boolean)
     .map((line) => line.split('\t'));
@@ -121,8 +121,8 @@ function fingerprint(database) {
 }
 
 function cleanup() {
-  for (const name of ['opspilot-restored-api', 'opspilot-restored-worker']) spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
-  dc(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${RESTORED} WITH (FORCE)`], { allowFail: true });
+  for (const name of ['opsilume-restored-api', 'opsilume-restored-worker']) spawnSync('docker', ['rm', '-f', name], { stdio: 'ignore' });
+  dc(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'postgres', '-c', `DROP DATABASE IF EXISTS ${RESTORED} WITH (FORCE)`], { allowFail: true });
 }
 
 const results = [];
@@ -158,15 +158,15 @@ try {
   });
 
   let before;
-  const dir = mkdtempSync(join(tmpdir(), 'opspilot-backup-'));
-  const file = join(dir, 'opspilot.dump');
+  const dir = mkdtempSync(join(tmpdir(), 'opsilume-backup-'));
+  const file = join(dir, 'opsilume.dump');
   await step('Back up with pg_dump (custom format)', async () => {
     // Quiet the writers that would change counts between the dump and the comparison.
     dc(['stop', 'worker']);
     before = fingerprint(SOURCE);
-    dc(['exec', '-T', 'postgres', 'sh', '-c', `pg_dump -U opspilot -d ${SOURCE} --format=custom --file=/tmp/opspilot.dump`]);
+    dc(['exec', '-T', 'postgres', 'sh', '-c', `pg_dump -U opsilume -d ${SOURCE} --format=custom --file=/tmp/opsilume.dump`]);
     const id = dc(['ps', '-q', 'postgres']);
-    const copy = spawnSync('docker', ['cp', `${id}:/tmp/opspilot.dump`, file], { encoding: 'utf8' });
+    const copy = spawnSync('docker', ['cp', `${id}:/tmp/opsilume.dump`, file], { encoding: 'utf8' });
     assert(copy.status === 0, `could not copy the backup out of the container: ${copy.stderr}`);
     dc(['start', 'worker']);
     return `${(statSync(file).size / 1024 / 1024).toFixed(1)} MB, ${before.tables} tables, ${Object.values(before.counts).reduce((a, b) => a + b, 0).toLocaleString('en-GB')} rows`;
@@ -175,8 +175,8 @@ try {
   await step('Restore into a separate database', async () => {
     const id = dc(['ps', '-q', 'postgres']);
     assert(spawnSync('docker', ['cp', file, `${id}:/tmp/restore.dump`]).status === 0, 'could not copy the backup into the container');
-    dc(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-c', `CREATE DATABASE ${RESTORED}`]);
-    dc(['exec', '-T', 'postgres', 'sh', '-c', `pg_restore -U opspilot -d ${RESTORED} --no-owner --exit-on-error /tmp/restore.dump`]);
+    dc(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-c', `CREATE DATABASE ${RESTORED}`]);
+    dc(['exec', '-T', 'postgres', 'sh', '-c', `pg_restore -U opsilume -d ${RESTORED} --no-owner --exit-on-error /tmp/restore.dump`]);
     return `database ${RESTORED}; the source database was not touched`;
   });
 
@@ -197,11 +197,11 @@ try {
   });
 
   await step('Run the application against the restored copy', async () => {
-    const url = `postgresql://opspilot:opspilot@postgres:5432/${RESTORED}?schema=public`;
+    const url = `postgresql://opsilume:opsilume@postgres:5432/${RESTORED}?schema=public`;
     // Its own queue prefix, so the two installations share Redis without sharing work.
-    const env = ['-e', `DATABASE_URL=${url}`, '-e', 'QUEUE_PREFIX=restored', '-e', 'API_URL=http://opspilot-restored-api:4000', '-e', 'SEED_DEMO_DATA=false'];
-    dc(['run', '-d', '--no-deps', '--name', 'opspilot-restored-api', '-p', `127.0.0.1:${RESTORED_API_PORT}:4000`, ...env, 'api']);
-    dc(['run', '-d', '--no-deps', '--name', 'opspilot-restored-worker', ...env, 'worker']);
+    const env = ['-e', `DATABASE_URL=${url}`, '-e', 'QUEUE_PREFIX=restored', '-e', 'API_URL=http://opsilume-restored-api:4000', '-e', 'SEED_DEMO_DATA=false'];
+    dc(['run', '-d', '--no-deps', '--name', 'opsilume-restored-api', '-p', `127.0.0.1:${RESTORED_API_PORT}:4000`, ...env, 'api']);
+    dc(['run', '-d', '--no-deps', '--name', 'opsilume-restored-worker', ...env, 'worker']);
     const base = `http://localhost:${RESTORED_API_PORT}`;
     await until(() => fetch(`${base}/ready`).then((r) => r.status, () => 0), (s) => s === 200, 'the restored API to be ready');
     const restored = new Session(base);
@@ -232,7 +232,7 @@ try {
     const res = spawnSync('node', [join(ROOT, 'scripts', 'backup.mjs'), ...args], { encoding: 'utf8' });
     return { status: res.status, out: `${res.stdout}${res.stderr}` };
   };
-  const vault = mkdtempSync(join(tmpdir(), 'opspilot-vault-'));
+  const vault = mkdtempSync(join(tmpdir(), 'opsilume-vault-'));
   const dumps = () => readdirSync(vault).filter((f) => f.endsWith('.dump')).sort();
 
   await step('Operator tool: a backup is checked before it is given its name', async () => {
@@ -276,8 +276,8 @@ try {
 
   await step('Operator tool: rotation removes only its own oldest backups', async () => {
     writeFileSync(join(vault, 'operators-notes.txt'), 'do not delete');
-    writeFileSync(join(vault, 'opspilot-20200101-000000.dump'), 'an older backup made some other way'); // looks like one of ours, is not in the manifest
-    const first = dumps().find((f) => /^opspilot-2\d{7}-\d{6}\.dump$/.test(f) && f !== 'opspilot-20200101-000000.dump');
+    writeFileSync(join(vault, 'opsilume-20200101-000000.dump'), 'an older backup made some other way'); // looks like one of ours, is not in the manifest
+    const first = dumps().find((f) => /^opsilume-2\d{7}-\d{6}\.dump$/.test(f) && f !== 'opsilume-20200101-000000.dump');
     for (let i = 0; i < 2; i++) {
       await pause(1100); // names carry the second they were taken
       assert(tool('create', '--project', PROJECT, '--dir', vault, '--keep', '2').status === 0, 'backup with rotation failed');
@@ -285,7 +285,7 @@ try {
     const manifest = JSON.parse(readFileSync(join(vault, 'backups.json'), 'utf8'));
     assert(manifest.backups.length === 2 && !manifest.backups.some((b) => b.file === first), `expected the two newest in the manifest: ${manifest.backups.map((b) => b.file)}`);
     assert(!existsSync(join(vault, first)), 'the oldest backup of the tool should have been removed');
-    for (const kept of ['operators-notes.txt', 'opspilot-20200101-000000.dump', 'cut-short.dump', 'not-a-backup.dump']) assert(existsSync(join(vault, kept)), `${kept} was not made by the tool and must not be touched`);
+    for (const kept of ['operators-notes.txt', 'opsilume-20200101-000000.dump', 'cut-short.dump', 'not-a-backup.dump']) assert(existsSync(join(vault, kept)), `${kept} was not made by the tool and must not be touched`);
     assert(tool('create', '--project', PROJECT, '--dir', vault, '--keep', '0').status === 1, '--keep 0 must be refused: it would delete every backup');
     return 'three backups taken with --keep 2: the oldest was removed, the two newest remain, and four files the tool did not make are untouched';
   });

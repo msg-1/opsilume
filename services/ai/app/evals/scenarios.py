@@ -1,6 +1,6 @@
 """Synthetic incident scenarios with known answers, used to evaluate the investigation agent.
 
-Each scenario is a small fake of the OpsPilot tool API (served through httpx.MockTransport), so
+Each scenario is a small fake of the OPSILUME tool API (served through httpx.MockTransport), so
 the full agent runs unchanged: same tools, same evidence extraction, same guardrails. Only the
 data source is replaced. Ground truth is known because we wrote the scenario.
 """

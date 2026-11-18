@@ -228,7 +228,7 @@ None of this has been implemented. Section 11 lists it as work items.
 ## 9. Security assessment
 
 **Critical blockers before any public exposure:**
-1. **Published privileged credentials.** The seed creates all demo users with the documented password `OpsPilot-demo-1` (`apps/api/prisma/seed.ts`), including the OWNER `demo@example.com` and an ADMIN. The README publishes it. On a public instance, anyone could sign in as OWNER and manage members, API keys, integrations, settings and webhooks.
+1. **Published privileged credentials.** The seed creates all demo users with the documented password `Opsilume-demo-1` (`apps/api/prisma/seed.ts`), including the OWNER `demo@example.com` and an ADMIN. The README publishes it. On a public instance, anyone could sign in as OWNER and manage members, API keys, integrations, settings and webhooks.
 2. **Open self-registration.** `POST /api/v1/auth/register` (rate-limited) creates accounts and organisations without bound.
 3. **Outbound requests from the server.** An ADMIN, which anyone is under blocker 1, can configure webhook destinations, and approved actions are then dispatched to them. `safeRequest` refuses private addresses, but the server would still send requests to arbitrary public hosts.
 4. **Published internal ports.** Postgres, Redis, the API and the AI service are published on loopback in the current Compose file. They must not be published at all on the VM.

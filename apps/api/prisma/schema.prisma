@@ -1,4 +1,4 @@
-// OpsPilot data model. Every tenant-owned table carries organizationId and every
+// OPSILUME data model. Every tenant-owned table carries organizationId and every
 // query in the API filters on it (see docs/database-design.md).
 
 generator client {
@@ -63,7 +63,7 @@ model OrganizationSettings {
   // When true, secrets/PII patterns are masked in logs before storage
   redactLogs           Boolean      @default(true)
   // Optional outbound webhook that performs approved remediation actions (e.g. a CI/CD
-  // pipeline). When unset, execution is recorded inside OpsPilot only ("simulated").
+  // pipeline). When unset, execution is recorded inside OPSILUME only ("simulated").
   remediationWebhookUrl             String?
   remediationWebhookSecretEncrypted String?
   updatedAt            DateTime     @updatedAt
@@ -531,7 +531,7 @@ model GithubIntegration {
 
 // What is known about whether a data source of an organisation is working: when data was last
 // accepted, the last rejection, and the result of the last explicit check. One row per source.
-// Messages are written by OpsPilot and never contain payload content or credentials.
+// Messages are written by OPSILUME and never contain payload content or credentials.
 model IntegrationState {
   organizationId  String
   // logs | metrics | deployments | events | github | remediation_webhook

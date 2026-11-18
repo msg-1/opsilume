@@ -14,7 +14,7 @@ if (!name || name === 'list') {
   console.log('\nbaseline\n  Healthy baseline: every fault off, every container running.\n  Activate:       npm run demo:scenario -- baseline\n');
 } else if (name === 'status') {
   for (const service of ['shop-orders', 'shop-payments']) console.log(service, JSON.stringify(await admin(service, '/state').catch((e) => ({ unreachable: e.message }))));
-  for (const c of ['demo-redis', 'demo-payments', 'demo-postgres']) console.log(c, dockerRunning(`opspilot-${c}-1`) ? 'running' : 'STOPPED');
+  for (const c of ['demo-redis', 'demo-payments', 'demo-postgres']) console.log(c, dockerRunning(`opsilume-${c}-1`) ? 'running' : 'STOPPED');
   console.log('probe through the gateway:', JSON.stringify(await probe(24)));
 } else if (name === 'baseline') {
   await baseline();

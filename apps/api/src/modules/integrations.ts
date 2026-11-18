@@ -288,7 +288,7 @@ async function webhookView(organizationId: string, state: State | undefined): Pr
     provides: 'A way to carry out approved actions. OPSILUME never changes a system itself: after the required approvals it sends the action, signed, to an endpoint you run (a pipeline, a runbook automation), which performs it.',
     requires: [
       'An HTTPS endpoint reachable from this installation, at a public address. Private, loopback and link-local addresses are refused.',
-      'A shared secret, so the receiver can verify the signature (header X-OpsPilot-Signature, HMAC-SHA256 of the body).',
+      'A shared secret, so the receiver can verify the signature (header X-OPSILUME-Signature, HMAC-SHA256 of the body).',
       'The receiver should honour the Idempotency-Key header: every attempt at one action carries the same key.',
     ],
     status,
@@ -453,7 +453,7 @@ integrationsRouter.post('/remediation-webhook/check', requirePermission('setting
     const secret = settings.remediationWebhookSecretEncrypted ? decrypt(settings.remediationWebhookSecretEncrypted) : null;
     const response = await safeRequest(settings.remediationWebhookUrl, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': 'opspilot', 'x-opspilot-event': 'ping', ...(secret ? { 'x-opspilot-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
+      headers: { 'content-type': 'application/json', 'user-agent': 'opsilume', 'x-opsilume-event': 'ping', ...(secret ? { 'x-opsilume-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
       body,
       timeoutMs: Math.min(env.REMEDIATION_WEBHOOK_TIMEOUT_MS, 10_000),
     });

@@ -1,6 +1,6 @@
 """Investigation tools.
 
-Each tool is a thin, read-only call to the OpsPilot API's /api/v1/tools endpoints. The same
+Each tool is a thin, read-only call to the OPSILUME API's /api/v1/tools endpoints. The same
 registry backs the LangGraph agent, the heuristic pipeline and the MCP server, so all three see
 identical data and none of them can reach the database directly.
 """
@@ -267,7 +267,7 @@ def _request_for(spec: ToolSpec, args: BaseModel) -> tuple[str, dict[str, Any] |
 
 
 class ToolClient:
-    """Executes tools against the OpsPilot API with a bearer credential (tool token or API key)."""
+    """Executes tools against the OPSILUME API with a bearer credential (tool token or API key)."""
 
     def __init__(self, api_url: str, token: str, *, api_key: bool = False, transport: httpx.AsyncBaseTransport | None = None):
         headers = {"x-api-key": token} if api_key else {"authorization": f"Bearer {token}"}
@@ -287,12 +287,12 @@ class ToolClient:
         path, params, body = _request_for(spec, args)
         # One span per tool call, named by the tool. Arguments stay out of it: they hold search
         # text. The trace context travels in the request, so the API's span becomes its child.
-        with tracer.start_as_current_span(f"tool {name}", kind=SpanKind.CLIENT, attributes={"opspilot.tool.name": name}, record_exception=False, set_status_on_exception=False) as span:
+        with tracer.start_as_current_span(f"tool {name}", kind=SpanKind.CLIENT, attributes={"opsilume.tool.name": name}, record_exception=False, set_status_on_exception=False) as span:
             try:
                 res = await self._http.request(spec.method, path, params=params, json=body, headers=trace_headers())
             except httpx.HTTPError as exc:
                 span.set_status(StatusCode.ERROR, type(exc).__name__)
-                raise ToolError(f"OpsPilot API is not reachable: {exc}") from exc
+                raise ToolError(f"OPSILUME API is not reachable: {exc}") from exc
             span.set_attribute("http.response.status_code", res.status_code)
             if res.status_code >= 400:
                 span.set_status(StatusCode.ERROR, f"HTTP {res.status_code}")

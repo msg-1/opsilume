@@ -7,14 +7,14 @@
 #   with a killed worker process; the journal one claim ahead with a torn line (quarantine, clearance by digest); an
 #   invalid complete final line (FAIL, never repaired).
 # It removes nothing: it ends by stopping its containers, and leaves them and its two volumes (labelled
-# opspilot.p7.data=disposable-harness-smoke) in place. It needs volumes of its own: P7_SMOKE_GENERATION names them, and
+# opsilume.p7.data=disposable-harness-smoke) in place. It needs volumes of its own: P7_SMOKE_GENERATION names them, and
 # a generation that was used before is refused. Volumes of earlier smokes are never attached, started or removed.
 #   P7_SMOKE_GENERATION=<new generation> ./smoke-docker-desktop.sh <work dir outside the repository>
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 work="${1:?work directory (outside the repository)}"
 port="${P7_SMOKE_PORT:-8797}"
-proj=opspilot-m16-p7-smoke
+proj=opsilume-m16-p7-smoke
 stamp="$(date +%Y%m%dT%H%M%S)"
 runA="harness-smoke-$stamp-a"; runB="harness-smoke-$stamp-b"
 mkdir -p "$work/recorder" "$work/evidence"
@@ -102,10 +102,10 @@ db_unique() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) = co
 db_head() { dc exec -T db psql -qtA -U proto -d proto -c "SELECT journal_seq FROM installation_state"; }
 
 dc up -d --wait
-for v in pgdata state; do [ "$(docker volume inspect -f '{{ index .Labels "opspilot.p7.data" }} {{ index .Labels "opspilot.p7.smoke-generation" }}' "$(vol $v)")" = "disposable-harness-smoke $gen" ] || { echo "SMOKE FAILED: volume $(vol $v) is not labelled disposable smoke data of generation $gen"; exit 1; }; done
+for v in pgdata state; do [ "$(docker volume inspect -f '{{ index .Labels "opsilume.p7.data" }} {{ index .Labels "opsilume.p7.smoke-generation" }}' "$(vol $v)")" = "disposable-harness-smoke $gen" ] || { echo "SMOKE FAILED: volume $(vol $v) is not labelled disposable smoke data of generation $gen"; exit 1; }; done
 # The containers must be on this generation's volumes and on no other.
 [ "$(docker inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}} {{end}}{{end}}' "$(dc ps -q db)" "$(dc ps -q harness)" | tr -d '\n')" = "$(vol pgdata) $(vol state) " ] || { echo "SMOKE FAILED: the containers are not on the volumes of generation $gen"; exit 1; }
-echo "ok: both volumes are labelled opspilot.p7.data=disposable-harness-smoke"
+echo "ok: both volumes are labelled opsilume.p7.data=disposable-harness-smoke"
 
 echo "== isolation: topology"
 nets() { docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(dc ps -q "$1")"; }

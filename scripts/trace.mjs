@@ -35,8 +35,8 @@ const tagsOf = (span) => Object.fromEntries(span.tags.map((t) => [t.key, t.value
 
 async function findTrace() {
   // The worker's span for the job always carries the investigation's id.
-  const query = new URLSearchParams({ service: 'opspilot-worker', operation: 'process investigation', lookback: '6h', limit: latest ? '1' : '5' });
-  if (id) query.set('tags', JSON.stringify({ 'opspilot.investigation.id': id }));
+  const query = new URLSearchParams({ service: 'opsilume-worker', operation: 'process investigation', lookback: '6h', limit: latest ? '1' : '5' });
+  if (id) query.set('tags', JSON.stringify({ 'opsilume.investigation.id': id }));
   const traces = await get(`/api/traces?${query}`);
   if (!traces?.length) return null;
   // More than one only if the job was retried; the newest is the one that finished.
@@ -78,7 +78,7 @@ function print(span, depth) {
   const shown = showAll || !isDetail(span);
   if (shown) {
     const status = span.tags['http.response.status_code'] ?? span.tags['http.status_code'];
-    lines.push(`${'  '.repeat(depth)}${span.service.replace('opspilot-', '').padEnd(6)} ${span.operationName}${status ? ` → ${status}` : ''}${failed(span) ? '  [failed]' : ''}  (${ms(span.duration)})`);
+    lines.push(`${'  '.repeat(depth)}${span.service.replace('opsilume-', '').padEnd(6)} ${span.operationName}${status ? ` → ${status}` : ''}${failed(span) ? '  [failed]' : ''}  (${ms(span.duration)})`);
   } else {
     hidden += 1;
   }
@@ -88,14 +88,14 @@ for (const root of children.get(null) ?? []) print(root, 0);
 
 const start = Math.min(...spans.map((s) => s.startTime));
 const end = Math.max(...spans.map((s) => s.startTime + s.duration));
-const investigationId = spans.find((s) => s.tags['opspilot.investigation.id'])?.tags['opspilot.investigation.id'];
+const investigationId = spans.find((s) => s.tags['opsilume.investigation.id'])?.tags['opsilume.investigation.id'];
 const run = spans.find((s) => s.operationName === 'investigation.run');
-const tools = spans.filter((s) => s.service === 'opspilot-ai' && s.operationName.startsWith('tool '));
-const servedTools = spans.filter((s) => s.service === 'opspilot-api' && s.tags['opspilot.tool.path']);
+const tools = spans.filter((s) => s.service === 'opsilume-ai' && s.operationName.startsWith('tool '));
+const servedTools = spans.filter((s) => s.service === 'opsilume-api' && s.tags['opsilume.tool.path']);
 
 console.log(`Investigation ${investigationId}`);
 console.log(`Trace ${trace.traceID}: ${spans.length} spans across ${[...new Set(spans.map((s) => s.service))].sort().join(', ')}; ${ms(end - start)} from request to stored report`);
-if (run?.tags['opspilot.engine.mode']) console.log(`Engine: ${run.tags['opspilot.engine.mode']}; outcome: ${run.tags['opspilot.investigation.outcome']}; evidence items: ${run.tags['opspilot.investigation.evidence_count']}`);
+if (run?.tags['opsilume.engine.mode']) console.log(`Engine: ${run.tags['opsilume.engine.mode']}; outcome: ${run.tags['opsilume.investigation.outcome']}; evidence items: ${run.tags['opsilume.investigation.evidence_count']}`);
 console.log('');
 console.log(lines.join('\n'));
 if (hidden) console.log(`\n(${hidden} framework, Redis and connection spans hidden; add --all to see them)`);
@@ -103,10 +103,10 @@ if (hidden) console.log(`\n(${hidden} framework, Redis and connection spans hidd
 // The lifecycle the trace must cover. Each line is a hop where context has to be handed on.
 const has = (predicate) => spans.some(predicate);
 const hops = [
-  ['API request that started it', has((s) => s.service === 'opspilot-api' && /POST/.test(s.operationName) && s.tags['opspilot.investigation.id'])],
-  ['job put on the queue', has((s) => s.service === 'opspilot-api' && s.operationName === 'enqueue investigation')],
-  ['job picked up by the worker', has((s) => s.service === 'opspilot-worker' && s.operationName === 'process investigation' && byId.get(s.parent)?.operationName === 'enqueue investigation')],
-  ['request to the AI service', has((s) => s.service === 'opspilot-ai' && s.operationName === 'investigation')],
+  ['API request that started it', has((s) => s.service === 'opsilume-api' && /POST/.test(s.operationName) && s.tags['opsilume.investigation.id'])],
+  ['job put on the queue', has((s) => s.service === 'opsilume-api' && s.operationName === 'enqueue investigation')],
+  ['job picked up by the worker', has((s) => s.service === 'opsilume-worker' && s.operationName === 'process investigation' && byId.get(s.parent)?.operationName === 'enqueue investigation')],
+  ['request to the AI service', has((s) => s.service === 'opsilume-ai' && s.operationName === 'investigation')],
   [`tool calls made by the AI service (${tools.length})`, tools.length > 0],
   [`tool calls served by the API (${servedTools.length})`, servedTools.length > 0 && servedTools.length >= tools.filter((t) => !failed(t)).length],
   ['guardrails and persistence in the worker', has((s) => s.operationName === 'investigation.guardrails') && has((s) => s.operationName === 'investigation.persist')],

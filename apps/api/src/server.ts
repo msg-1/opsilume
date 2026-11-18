@@ -7,7 +7,7 @@ import { closeQueues } from './queues';
 
 const app = createApp();
 const server = app.listen(env.API_PORT, () => {
-  logger.info({ port: env.API_PORT, env: env.NODE_ENV }, 'OpsPilot API listening');
+  logger.info({ port: env.API_PORT, env: env.NODE_ENV }, 'OPSILUME API listening');
 });
 
 async function shutdown(signal: string) {

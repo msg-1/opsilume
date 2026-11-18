@@ -39,7 +39,7 @@ The product logic held up well: tenant isolation, SQL handling, webhook verifica
 ### C1. PostgreSQL and Redis are reachable from the network with default or no credentials
 - **Problem:** `docker-compose.yml` publishes every port on all interfaces. PostgreSQL uses the password committed in the compose file; Redis has no authentication.
 - **Evidence:** `docker ps` shows `0.0.0.0:5432->5432` and `0.0.0.0:6379->6379` (also 3000, 3001, 4000, 8000, 9090).
-- **Impact:** Anyone on the same Wi-Fi or LAN can read and modify every tenant's data, password hashes and encrypted tokens, and can inject or delete background jobs. No OpsPilot account is needed.
+- **Impact:** Anyone on the same Wi-Fi or LAN can read and modify every tenant's data, password hashes and encrypted tokens, and can inject or delete background jobs. No OPSILUME account is needed.
 - **Recommendation:** Bind published ports to `127.0.0.1`. Take the database password from `.env`. Document that a real deployment must not publish the data stores at all.
 
 ## High
@@ -76,7 +76,7 @@ The product logic held up well: tenant isolation, SQL handling, webhook verifica
 
 ### H6. Containers do not restart after a crash
 - **Problem:** No service has a restart policy; only the API has a health check.
-- **Evidence:** `docker kill opspilot-api-1` → still `Exited (137)` 8 s later; `RestartPolicy.Name` is `no`; health checks: api yes, worker/web/ai none.
+- **Evidence:** `docker kill opsilume-api-1` → still `Exited (137)` 8 s later; `RestartPolicy.Name` is `no`; health checks: api yes, worker/web/ai none.
 - **Impact:** One crash, or a Docker or machine restart, takes the product down until someone starts it by hand.
 - **Recommendation:** `restart: unless-stopped` on long-running services and health checks for web, AI and worker.
 
@@ -100,7 +100,7 @@ The product logic held up well: tenant isolation, SQL handling, webhook verifica
 | M2 | Invalid filter values cause 500 instead of 400 | `?status=BOGUS`, `?tier=X` → 500 (enum filters are cast with `as never`) | Validate list filters with enums |
 | M3 | URL fields accept any scheme | A service was stored with `repoUrl: "javascript:alert(1)"`; same for a document's `sourceUrl`. The UI is protected because React 19 refuses such links, but other API consumers are not | Accept only `http` and `https` |
 | M4 | CSV exports allow formula injection | `esc()` in `analytics.ts` and `organization.ts` quotes but does not neutralise cells beginning with `=`, `+`, `-`, `@` | Prefix such cells with `'` |
-| M5 | Worker metrics are never scraped | `count(opspilot_jobs_processed_total)` and `count(opspilot_investigations_total)` are 0 in Prometheus; the worker has no HTTP endpoint. Three Grafana panels are permanently empty | Expose `/metrics` from the worker |
+| M5 | Worker metrics are never scraped | `count(opsilume_jobs_processed_total)` and `count(opsilume_investigations_total)` are 0 in Prometheus; the worker has no HTTP endpoint. Three Grafana panels are permanently empty | Expose `/metrics` from the worker |
 | M6 | AI service logs are not valid JSON | 0 of 22 log lines parse; the hand-built format breaks on quotes. `httpx` logs every tool URL at INFO | Use a JSON formatter; lower `httpx` to WARNING |
 | M7 | The proposer chooses the risk level, which sets the number of approvals | `remediationInput.risk` is free input, for people and for the model | Derive a minimum risk from action type and service tier; let approvers raise it |
 | M8 | Text returned by tools reaches the model unmarked and unscreened | `graph.py` wraps the question and incident as untrusted data but passes tool JSON as-is; `screen_text` runs only on the question | Wrap tool output as data, flag instruction-like content in it, and show approvers when a proposal's text came from a model |

@@ -11,7 +11,7 @@ export const API = process.env.OPSILUME_API_URL ?? 'http://localhost:4000';
 export const JAEGER = process.env.DEMO_JAEGER_URL ?? 'http://localhost:16686';
 export const SERVICE_URLS = { 'shop-gateway': 'http://localhost:8088', 'shop-orders': 'http://localhost:8089', 'shop-payments': 'http://localhost:8090' };
 export const ADMIN_TOKEN = process.env.DEMO_ADMIN_TOKEN ?? 'local-demo';
-export const ACCOUNT = { email: process.env.DEMO_EMAIL ?? 'shop-demo@example.com', password: process.env.DEMO_PASSWORD ?? 'OpsPilot-demo-1', name: 'Shop Demo Owner', organizationName: 'Shop Demo' };
+export const ACCOUNT = { email: process.env.DEMO_EMAIL ?? 'shop-demo@example.com', password: process.env.DEMO_PASSWORD ?? 'Opsilume-demo-1', name: 'Shop Demo Owner', organizationName: 'Shop Demo' };
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const iso = (d = new Date()) => d.toISOString();
@@ -34,9 +34,9 @@ export function state() {
 
 export function ingestKey() {
   if (!existsSync(ENV_FILE)) throw new Error('demo/.env.demo not found. Run `npm run demo:setup` first.');
-  const line = readFileSync(ENV_FILE, 'utf8').split('\n').find((l) => l.startsWith('OPSPILOT_API_KEY='));
-  if (!line) throw new Error('demo/.env.demo has no OPSPILOT_API_KEY');
-  return line.slice('OPSPILOT_API_KEY='.length).trim();
+  const line = readFileSync(ENV_FILE, 'utf8').split('\n').find((l) => l.startsWith('OPSILUME_API_KEY='));
+  if (!line) throw new Error('demo/.env.demo has no OPSILUME_API_KEY');
+  return line.slice('OPSILUME_API_KEY='.length).trim();
 }
 
 /** A signed-in session against the OPSILUME API (cookies kept in memory). */

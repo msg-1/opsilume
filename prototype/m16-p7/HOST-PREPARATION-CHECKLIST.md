@@ -29,10 +29,10 @@
   ```bash
   cd <harness>
   export P7_SMOKE_GENERATION=<generation>     # lower-case letters and digits, for example h1; the same for the whole rehearsal
-  smoke() { docker compose -p opspilot-m16-p7-smoke -f compose.yml -f compose.smoke.yml "$@"; }
+  smoke() { docker compose -p opsilume-m16-p7-smoke -f compose.yml -f compose.smoke.yml "$@"; }
   ```
-  The smoke volumes are named with the generation (`opspilot-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`), so a smoke environment always has volumes of its own; Compose refuses a smoke command without `P7_SMOKE_GENERATION`.
-  A bare `docker compose` in `<harness>` is the **qualifying** project `opspilot-m16-p7`. Using it before step 13 creates the qualifying volumes early.
+  The smoke volumes are named with the generation (`opsilume-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`), so a smoke environment always has volumes of its own; Compose refuses a smoke command without `P7_SMOKE_GENERATION`.
+  A bare `docker compose` in `<harness>` is the **qualifying** project `opsilume-m16-p7`. Using it before step 13 creates the qualifying volumes early.
 - Every Compose command needs `P7_RUN`, `P7_RECORDER_TARGET` and `P7_KEY_FILE_HOST` exported in that shell, or Compose refuses.
 - `sudo` drops the environment: write `sudo VAR=value ./script`, as shown.
 - The run key is never printed, pasted, logged or copied into evidence.
@@ -48,9 +48,9 @@ The steps are numbered by subject. Three are done in two parts, because of how t
 | A. Before touching the machine | 0, 1, 1a (package) |
 | B. Machine and storage | 2, 1a (verify, build), 3, 5 (read the Compose file), 7a (new recorder directory) |
 | C. Firewall before any stack runs | 8, 9a (checks 1, 2, 8) |
-| D. Smoke rehearsal, project `opspilot-m16-p7-smoke` | 11 (start), 6 and 4 (flush probe, storage evidence), 9a (checks 3 to 7), **12 (first capture, before any reboot)**, 10, 11 (reboot, recovery), 12 (second capture, comparison, cycle 2) |
+| D. Smoke rehearsal, project `opsilume-m16-p7-smoke` | 11 (start), 6 and 4 (flush probe, storage evidence), 9a (checks 3 to 7), **12 (first capture, before any reboot)**, 10, 11 (reboot, recovery), 12 (second capture, comparison, cycle 2) |
 | E. Between the projects | 7b (backup, verify), final smoke host evidence, smoke containers and networks removed with `smoke-containers-down.sh` (volumes kept) |
-| F. Qualifying project `opspilot-m16-p7`, before `init` | 13, 5 (as read), 6 (baseline), 9b (all nine checks, strict), 14 |
+| F. Qualifying project `opsilume-m16-p7`, before `init` | 13, 5 (as read), 6 (baseline), 9b (all nine checks, strict), 14 |
 | G. Readiness | 15, then 16 and stop |
 
 ## 0. Decisions of 17 November 2026, and what is still open
@@ -96,12 +96,12 @@ The steps are numbered by subject. Three are done in two parts, because of how t
   ```bash
   C=$(git rev-parse HEAD); OUT=<a new directory outside every repository>
   mkdir -p "$OUT/operator-docs"
-  git archive --format=tar.gz --prefix=opspilot-p7-${C:0:12}/ -o "$OUT/opspilot-p7-${C:0:12}.tar.gz" "$C" \
+  git archive --format=tar.gz --prefix=opsilume-p7-${C:0:12}/ -o "$OUT/opsilume-p7-${C:0:12}.tar.gz" "$C" \
     .dockerignore package.json package-lock.json apps/api apps/web/package.json prototype
   cp <main checkout>/docs/p7-physical-linux-test-plan.md "$OUT/operator-docs/"      # uncommitted by decision
   cd "$OUT" && echo "$C" > SOURCE-COMMIT
-  shasum -a 256 opspilot-p7-*.tar.gz SOURCE-COMMIT operator-docs/* > SHA256SUMS && shasum -a 256 -c SHA256SUMS
-  tar -tzf opspilot-p7-*.tar.gz | grep -Ei '(^|/)\.env|\.key$|\.pem$|(^|/)keys/|recorder-id\.json|volumes\.jsonl|/evidence/'
+  shasum -a 256 opsilume-p7-*.tar.gz SOURCE-COMMIT operator-docs/* > SHA256SUMS && shasum -a 256 -c SHA256SUMS
+  tar -tzf opsilume-p7-*.tar.gz | grep -Ei '(^|/)\.env|\.key$|\.pem$|(^|/)keys/|recorder-id\.json|volumes\.jsonl|/evidence/'
   ```
 - **Expected:** every line of the check says `OK`; the last command prints **nothing**. `git archive` takes tracked files of that commit only, so no key, environment file, recorder directory or evidence can be in it.
 - **Evidence:** `SHA256SUMS` and `SOURCE-COMMIT`, kept on the Mac as well.
@@ -112,16 +112,16 @@ The steps are numbered by subject. Three are done in two parts, because of how t
 - **Action:**
   ```bash
   cd <where the package was copied> && sha256sum -c SHA256SUMS
-  tar -xzf opspilot-p7-*.tar.gz && cd opspilot-p7-*/              # this directory is <pkg>
-  docker build -t opspilot-isolated-api:latest -f apps/api/Dockerfile .
+  tar -xzf opsilume-p7-*.tar.gz && cd opsilume-p7-*/              # this directory is <pkg>
+  docker build -t opsilume-isolated-api:latest -f apps/api/Dockerfile .
   docker pull postgres:16-alpine
-  docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}}' opspilot-isolated-api:latest
+  docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}}' opsilume-isolated-api:latest
   docker image inspect -f '{{.Os}}/{{.Architecture}} {{.Id}} {{index .RepoDigests 0}}' postgres:16-alpine
   uname -m
   ```
 - **Expected:** every checksum line says `OK`. The build is the one the repository's Compose file defines for the API (context: the repository root; `apps/api/Dockerfile`). Both images report the machine's own architecture (`linux/amd64` on an `x86_64` machine).
 - **Evidence:** the source commit, the package checksum, and for each image its architecture and id (and the PostgreSQL image's repository digest), under `<evidence>/host-preparation/`. **Four of these are given to `create-run` in step 13:** the commit in `SOURCE-COMMIT`, the checksum of the `.tar.gz` in `SHA256SUMS`, the harness image's id (`sha256:...`) and its architecture (`amd64` or `arm64`).
-- **Stop if:** a checksum fails; the build fails; an image's architecture differs from the machine's; an image named `opspilot-isolated-api` was loaded or copied in from another machine.
+- **Stop if:** a checksum fails; the build fails; an image's architecture differs from the machine's; an image named `opsilume-isolated-api` was loaded or copied in from another machine.
 - **What the recorder enforces from here on (qualifying run):** the harness source on the test machine must equal the recorder's own copy, file by file (one digest over every file the harness executes); the container's architecture must be the declared one; the declared commit, package checksum and image id are fixed in the run's record. A changed source file, on either host, refuses every start.
 - **What it cannot enforce:** the image id (O4). Do not rebuild, pull, retag or edit anything after this step, and keep the package directory and both images until the independent review is complete.
 - **Never done:** the package commands were tried on the Mac; the build from the package has not been run anywhere.
@@ -156,8 +156,8 @@ The steps are numbered by subject. Three are done in two parts, because of how t
   lsblk -o NAME,MODEL,SERIAL,ROTA,TRAN,SIZE,FSTYPE,MOUNTPOINTS
   lsblk -s -o NAME,TYPE,TRAN,MODEL
   findmnt -T "$(docker info -f '{{.DockerRootDir}}')" -o TARGET,SOURCE,FSTYPE,OPTIONS
-  docker volume ls --filter label=com.docker.compose.project=opspilot-m16-p7
-  docker volume ls --filter label=com.docker.compose.project=opspilot-m16-p7-smoke
+  docker volume ls --filter label=com.docker.compose.project=opsilume-m16-p7
+  docker volume ls --filter label=com.docker.compose.project=opsilume-m16-p7-smoke
   ```
 - **Expected:**
   - Docker's data root is on the dedicated local SSD (`ROTA` 0), on local **ext4**. Both named volumes of each project live under it, so PostgreSQL's data and the journal are on ext4-backed storage, not on the container's overlay layer.
@@ -200,9 +200,9 @@ The steps are numbered by subject. Three are done in two parts, because of how t
 - **Action:**
   ```bash
   # Phase D, under the smoke project (the storage JSON is filled from this one):
-  sudo P7_PROJECT=opspilot-m16-p7-smoke P7_SMOKE_GENERATION=$P7_SMOKE_GENERATION P7_EVIDENCE_HOST=<evidence> ./host-evidence.sh <smoke-run> baseline --flush-probe
+  sudo P7_PROJECT=opsilume-m16-p7-smoke P7_SMOKE_GENERATION=$P7_SMOKE_GENERATION P7_EVIDENCE_HOST=<evidence> ./host-evidence.sh <smoke-run> baseline --flush-probe
   # Phase E, before the smoke project is taken down (its database log goes with its containers):
-  sudo P7_PROJECT=opspilot-m16-p7-smoke P7_SMOKE_GENERATION=$P7_SMOKE_GENERATION P7_EVIDENCE_HOST=<evidence> ./host-evidence.sh <smoke-run> final
+  sudo P7_PROJECT=opsilume-m16-p7-smoke P7_SMOKE_GENERATION=$P7_SMOKE_GENERATION P7_EVIDENCE_HOST=<evidence> ./host-evidence.sh <smoke-run> final
   # Phase F, after the qualifying stack is up and before init:
   sudo P7_EVIDENCE_HOST=<evidence> ./host-evidence.sh <run> baseline --flush-probe
   ```
@@ -343,11 +343,11 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
 - **Action, startup:**
   ```bash
   export P7_RUN=<smoke-run> P7_RECORDER_TARGET=<recorder-ip>:8787 P7_KEY_FILE_HOST=<key> P7_EVIDENCE_HOST=<evidence>
-  docker volume ls -q --filter name=opspilot-m16-p7-smoke_     # must print nothing for this generation
+  docker volume ls -q --filter name=opsilume-m16-p7-smoke_     # must print nothing for this generation
   smoke up -d --wait
-  docker volume inspect -f '{{.Name}} {{.CreatedAt}} {{ index .Labels "opspilot.p7.data" }} {{ index .Labels "opspilot.p7.smoke-generation" }}' \
-    opspilot-m16-p7-smoke_pgdata_$P7_SMOKE_GENERATION opspilot-m16-p7-smoke_state_$P7_SMOKE_GENERATION
-  docker volume ls --filter label=com.docker.compose.project=opspilot-m16-p7
+  docker volume inspect -f '{{.Name}} {{.CreatedAt}} {{ index .Labels "opsilume.p7.data" }} {{ index .Labels "opsilume.p7.smoke-generation" }}' \
+    opsilume-m16-p7-smoke_pgdata_$P7_SMOKE_GENERATION opsilume-m16-p7-smoke_state_$P7_SMOKE_GENERATION
+  docker volume ls --filter label=com.docker.compose.project=opsilume-m16-p7
   smoke exec -T harness node p7.mjs netcheck
   smoke exec -T harness node p7.mjs init
   # Where the gateway really listens (its own sockets, read inside the running container), and its two addresses:
@@ -370,7 +370,7 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
   ```
   Then step 12 (second capture), step 10's cycle 2, and `check` and `recover` for cycle 2.
 - **Expected:**
-  - Both smoke volumes were created by this `up`, at this time, and print `disposable-harness-smoke` and the generation; the listing for `opspilot-m16-p7` is **empty**.
+  - Both smoke volumes were created by this `up`, at this time, and print `disposable-harness-smoke` and the generation; the listing for `opsilume-m16-p7` is **empty**.
   - `netcheck` exits 0 with `"strict": false`; `init` prints `{"initialised": ...}`.
   - The gateway log says `forwarding <address>:8787` and `egress self-check on <address>:8788`; the listeners line shows both ports on that same address; that address is the one `docker inspect` gives for the `..._p7gw` network, not the `..._egress` one. `docker port` prints nothing (no port is published). The last command prints `closed`: nothing listens on the egress side.
   - After the reboot the three containers are running without any command from the operator, and the harness log shows `boot probe:` and `boot reported`.
@@ -378,7 +378,7 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
   - `recover` exits 0. Exit 4 means a claim was left one ahead: run it again with the `--clear-digest <digest>` it printed. Exit 8 means the torn final line cannot be repaired by this harness (it is not valid UTF-8): `check` has already made that cycle INCONCLUSIVE (`TORN_TAIL_NOT_REPAIRABLE`), nothing was changed, no repair was written, and the recorder accepts no recovery for it. Stop and report.
   - `result.json` under `<evidence>/<smoke-run>/cycle-0001*/` has `measuredRate`; the fuller report is `recorder.mjs measure` (step 10). With one unpaced worker (cycle 1) it is what this machine reaches: the figure the product owner needs to decide the maximum burst rate and the quiet rate (O3).
 - **Evidence:** all output; `<evidence>/<smoke-run>/` whole.
-- **Stop if:** a smoke volume of this generation existed before the `up`, or a container is on any other volume; the gateway container keeps restarting (its log then says it could not identify the internal interface: report it; the gateway never falls back to listening on every address); a listener is on `0.0.0.0` or on the egress address; the last command prints `OPEN`; a volume of `opspilot-m16-p7` exists; a smoke volume lacks the label; Compose offers to recreate a volume; `init` is refused; the stack does not return by itself; `check` exits 2 or 1; `recover` exits anything but 0 or 4.
+- **Stop if:** a smoke volume of this generation existed before the `up`, or a container is on any other volume; the gateway container keeps restarting (its log then says it could not identify the internal interface: report it; the gateway never falls back to listening on every address); a listener is on `0.0.0.0` or on the egress address; the last command prints `OPEN`; a volume of `opsilume-m16-p7` exists; a smoke volume lacks the label; Compose offers to recreate a volume; `init` is refused; the stack does not return by itself; `check` exits 2 or 1; `recover` exits anything but 0 or 4.
 - **Note:** `smoke-docker-desktop.sh` is not used on the host. It is written for Docker Desktop (`host.docker.internal`, container kills, a deliberate FAIL at the end).
 
 ## 12. Verification that readiness bindings survive reboot
@@ -411,7 +411,7 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
   node recorder.mjs create-run --dir <recorder-dir> --run <run> --failure-model POWER-CUT \
     --storage-json <filled storage JSON> --machine "<model, disk>" \
     --source-commit <40 hex, from SOURCE-COMMIT> --package-sha256 <64 hex, the .tar.gz line of SHA256SUMS> \
-    --package <the opspilot-p7-....tar.gz itself, on the recorder host> \
+    --package <the opsilume-p7-....tar.gz itself, on the recorder host> \
     --image-id <sha256:..., from step 1a> --image-arch <amd64|arm64>
   # copy <recorder-dir>/keys/<run>.key to the test machine, mode 0600
 
@@ -419,16 +419,16 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
   # The script removes the stopped smoke containers and the smoke networks only. It cannot remove a volume.
   smoke stop
   ./smoke-containers-down.sh                                   # dry run: read what it lists
-  ./smoke-containers-down.sh --confirm opspilot-m16-p7-smoke
-  docker volume ls --filter label=com.docker.compose.project=opspilot-m16-p7-smoke     # both of this generation still listed
-  docker volume ls --filter label=com.docker.compose.project=opspilot-m16-p7           # must be empty
+  ./smoke-containers-down.sh --confirm opsilume-m16-p7-smoke
+  docker volume ls --filter label=com.docker.compose.project=opsilume-m16-p7-smoke     # both of this generation still listed
+  docker volume ls --filter label=com.docker.compose.project=opsilume-m16-p7           # must be empty
   export P7_RUN=<run> P7_KEY_FILE_HOST=<key of the qualifying run>      # RECORDER_TARGET and EVIDENCE_HOST as before
-  docker compose up -d --wait                                           # in <harness>: the project opspilot-m16-p7
-  docker volume inspect -f '{{.Name}} {{.CreatedAt}} {{ index .Labels "opspilot.p7.data" }}' opspilot-m16-p7_pgdata opspilot-m16-p7_state
+  docker compose up -d --wait                                           # in <harness>: the project opsilume-m16-p7
+  docker volume inspect -f '{{.Name}} {{.CreatedAt}} {{ index .Labels "opsilume.p7.data" }}' opsilume-m16-p7_pgdata opsilume-m16-p7_state
   docker compose exec -T db psql -qtA -U proto -d proto -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public'"
   docker compose exec -T harness ls -A /state
   ```
-- **Expected:** `git status --short` prints nothing for `prototype/`, and the commit is the packaged one. `create-run` reads the package itself: it refuses, and creates nothing, unless the file's SHA-256 is the declared one, the commit `git archive` embedded in it is the declared one, and the harness source in it is exactly the source this recorder host is running. Then it prints the run id and the key file's path. `smoke-containers-down.sh` lists three containers and three networks, removes exactly those, and ends with every smoke volume "still present, unchanged". The two qualifying volumes are created by this `up`, at this time, with **no** `opspilot.p7.data` label, so `smoke-teardown.sh` can never accept them. The relation count is `0`, and `/state` is empty.
+- **Expected:** `git status --short` prints nothing for `prototype/`, and the commit is the packaged one. `create-run` reads the package itself: it refuses, and creates nothing, unless the file's SHA-256 is the declared one, the commit `git archive` embedded in it is the declared one, and the harness source in it is exactly the source this recorder host is running. Then it prints the run id and the key file's path. `smoke-containers-down.sh` lists three containers and three networks, removes exactly those, and ends with every smoke volume "still present, unchanged". The two qualifying volumes are created by this `up`, at this time, with **no** `opsilume.p7.data` label, so `smoke-teardown.sh` can never accept them. The relation count is `0`, and `/state` is empty.
 - **Evidence:** all output; then step 6's phase F baseline.
 - **Stop if:** `smoke-containers-down.sh` refuses, or ends with `STOP` (exit 3); `create-run` is refused (it lists every reason); a qualifying volume existed before the `up`; either volume carries the disposable label; the database or `/state` is not empty; Compose offers to recreate a volume; a smoke volume is gone.
 - **From here on:** the qualifying volumes are never removed or recreated. Do not run `docker compose down` on this project: recreated networks may get other addresses, which the readiness record binds. No other run may claim volumes on this recorder, and the smoke project is not started again.
@@ -492,7 +492,7 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
 
 **Stop at once, whatever the step, if:**
 - a command would remove or recreate a volume, or Compose offers to;
-- a volume of `opspilot-m16-p7` appears before step 13, or anything touches the default `opspilot` project;
+- a volume of `opsilume-m16-p7` appears before step 13, or anything touches the default `opsilume` project;
 - the recorder directory is missing, empty, damaged, replaced or inconsistent;
 - a key appears in a terminal, a log or a file under `<evidence>`;
 - a firewall check gives any result other than the expected one;
@@ -512,7 +512,7 @@ Check 3 is strict only in a `POWER-CUT` run, so the nine are run twice: **9a** d
 **Preserve, unchanged, until the independent review is complete:**
 - `<recorder-dir>` and every backup of it (they contain the run keys: local media only);
 - `<evidence>` whole, including `host-preparation/` and the rehearsal's evidence;
-- every volume: the smoke volumes of this generation (`opspilot-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`) and the qualifying volumes `opspilot-m16-p7_pgdata`, `_state`;
+- every volume: the smoke volumes of this generation (`opsilume-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`) and the qualifying volumes `opsilume-m16-p7_pgdata`, `_state`;
 - the filled storage JSON, the vendor document, the written permission;
 - the source package with its `SHA256SUMS` and `SOURCE-COMMIT`, and the recorded image ids.
 

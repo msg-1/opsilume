@@ -1,21 +1,21 @@
 # Claude integration
 
-How OpsPilot uses Anthropic's Claude for incident investigation, how to turn it on, what it costs, and what stops it spending more than you intend.
+How OPSILUME uses Anthropic's Claude for incident investigation, how to turn it on, what it costs, and what stops it spending more than you intend.
 
 ## What Claude does and does not do
 
-Claude does the reasoning. OpsPilot does everything else.
+Claude does the reasoning. OPSILUME does everything else.
 
 | Step | Who does it |
 |---|---|
-| Load the incident and service catalogue | OpsPilot |
+| Load the incident and service catalogue | OPSILUME |
 | Write the investigation plan | Claude (structured output) |
 | Choose which tools to call, and with what arguments | Claude (tool use) |
-| Run the tools: logs, deployments, commits, pull requests, service events, metrics, past incidents, knowledge base | OpsPilot's read-only tool API |
-| Turn each returned record into a numbered evidence item (E1, E2, …) | OpsPilot code. Claude cannot create evidence |
+| Run the tools: logs, deployments, commits, pull requests, service events, metrics, past incidents, knowledge base | OPSILUME's read-only tool API |
+| Turn each returned record into a numbered evidence item (E1, E2, …) | OPSILUME code. Claude cannot create evidence |
 | Analyse the evidence, rank hypotheses, state what supports and contradicts each, what is missing, and what to check next | Claude (structured output) |
-| Check every citation, cap unsupported confidence, forbid "confirmed" claims | OpsPilot guardrails, in the AI service and again in the API |
-| Store the report; create remediation **proposals** | OpsPilot |
+| Check every citation, cap unsupported confidence, forbid "confirmed" claims | OPSILUME guardrails, in the AI service and again in the API |
+| Store the report; create remediation **proposals** | OPSILUME |
 | Approve and execute remediation | People only |
 
 Claude never approves or executes anything, never writes to your data, and can only read one organisation's records through a token that is valid while its investigation is running.
@@ -41,8 +41,8 @@ If Claude is configured but fails during an investigation (bad key, no credit, l
 You need an Anthropic API key. **Never paste it into a chat, a ticket or a commit.**
 
 1. **Get API credit.** Sign in at <https://console.anthropic.com>. If your Claude plan includes monthly API credits, claim them in the Console's billing section. API credit is separate from Claude subscription usage: using Claude Code or claude.ai does not spend it, and it does not top up your subscription.
-2. **Leave auto-reload off.** In Console → Billing, make sure automatic credit purchase / auto-reload is disabled, so nothing is charged when the credit runs out. Optionally set a monthly spend limit there as well. OpsPilot cannot buy credit and never tries to.
-3. **Create a key.** Console → API keys → Create key. Name it `opspilot-local`. Copy it once.
+2. **Leave auto-reload off.** In Console → Billing, make sure automatic credit purchase / auto-reload is disabled, so nothing is charged when the credit runs out. Optionally set a monthly spend limit there as well. OPSILUME cannot buy credit and never tries to.
+3. **Create a key.** Console → API keys → Create key. Name it `opsilume-local`. Copy it once.
 4. **Put it in your local `.env`** (the file is git-ignored). Open `.env` in your editor and set:
 
    ```bash
@@ -128,10 +128,10 @@ What keeps each call small:
 | An investigation's page | Engine, model, number of model calls, input and output tokens, latency, estimated cost |
 | Investigations page | Today's count and estimated spend against the limits |
 | Analytics | Estimated model spend and tokens for the period |
-| Prometheus / Grafana | `opspilot_ai_llm_tokens_total`, `opspilot_ai_llm_estimated_cost_usd_total` |
+| Prometheus / Grafana | `opsilume_ai_llm_tokens_total`, `opsilume_ai_llm_estimated_cost_usd_total` |
 | Anthropic Console → Usage | What was actually billed. **This is the source of truth** |
 
-Costs shown in OpsPilot are estimates from published list prices (table in `services/ai/app/config.py`). For a model that is not in the table, cost is shown as unknown rather than zero; set `AI_PRICE_INPUT_PER_MTOK` and `AI_PRICE_OUTPUT_PER_MTOK` to supply prices.
+Costs shown in OPSILUME are estimates from published list prices (table in `services/ai/app/config.py`). For a model that is not in the table, cost is shown as unknown rather than zero; set `AI_PRICE_INPUT_PER_MTOK` and `AI_PRICE_OUTPUT_PER_MTOK` to supply prices.
 
 ## Security
 

@@ -36,8 +36,8 @@ async def run(name: str, provider):
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(handle))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(handle))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=provider, emit=emit)
     report = await run_investigation(ctx)
     await tools.aclose()

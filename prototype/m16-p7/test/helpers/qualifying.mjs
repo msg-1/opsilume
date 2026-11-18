@@ -13,7 +13,7 @@ const PROTO = fileURLToPath(new URL('../../..', import.meta.url));
 export const SOURCE = sourceDigest(PROTO);
 const entries = SOURCE_SETS.flatMap(([d, pattern]) => fs.readdirSync(path.join(PROTO, d)).filter((n) => pattern.test(n) && fs.statSync(path.join(PROTO, d, n)).isFile()).sort().map((n) => [`prototype/${d}/${n}`, fs.readFileSync(path.join(PROTO, d, n))]));
 const COMMIT = 'c0'.repeat(20);
-export const PACKAGE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'p7-qualifying-')), 'opspilot-p7-test.tar.gz');
+export const PACKAGE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'p7-qualifying-')), 'opsilume-p7-test.tar.gz');
 fs.writeFileSync(PACKAGE, tarGz(entries, { commit: COMMIT }));
 export const IDENTITY = { sourceCommit: COMMIT, packageSha256: createHash('sha256').update(fs.readFileSync(PACKAGE)).digest('hex'), imageId: `sha256:${'e2'.repeat(32)}`, imageArch: 'amd64' };
 /** Decision B1's shape, planned for the 20 cycles: 10 burst seconds at 100/s in every 60, 20/s otherwise, 600 s. */

@@ -497,7 +497,7 @@ describe('remediation approvals', () => {
       // Only the status code is kept: the webhook's response body is never stored or returned.
       expect(executed.executionResult.detail).toEqual({ status: 200 });
       const last = received.at(-1)!;
-      expect(last.headers['x-opspilot-signature']).toBe(`sha256=${createHmac('sha256', 'webhook-secret-123456').update(last.body).digest('hex')}`);
+      expect(last.headers['x-opsilume-signature']).toBe(`sha256=${createHmac('sha256', 'webhook-secret-123456').update(last.body).digest('hex')}`);
       expect(JSON.parse(last.body)).toMatchObject({ event: 'remediation.execute', type: 'restart_service', parameters: { replicas: 3 }, idempotencyKey: action.id, attempt: 2, effect: 'state_changing', contentHash: executed.currentHash });
       // Both attempts carried the same idempotency key, so a receiver can refuse a repeat.
       expect(received.map((r) => r.headers['idempotency-key'])).toEqual([action.id, action.id]);

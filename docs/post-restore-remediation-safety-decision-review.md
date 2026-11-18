@@ -204,7 +204,7 @@ The decision wording is quoted exactly from the design's section 18. "Alternativ
   - **It only applies to clones that are quarantined.** A clone made by copying both volumes is never quarantined (section 6), so the operator must choose the path deliberately.
 - **Operational impact:** webhook addresses and secrets must be re-entered on the new installation.
 - **If wrong:** a clone left with production addresses can change production.
-- **Assessment:** Accept, and **modify:** document "never copy `opspilot-state` into a clone" as an operator rule, and say plainly that a copy-everything clone isn't detected (N8).
+- **Assessment:** Accept, and **modify:** document "never copy `opsilume-state` into a clone" as an operator rule, and say plainly that a copy-everything clone isn't detected (N8).
 - **Final decision:** **Approved in principle**, with operator rule N8.
 
 ### D9. "Auto-provision a truly fresh install (empty database, empty volume) in `migrate`; require an explicit step on upgrade"
@@ -372,7 +372,7 @@ The decision wording is quoted exactly from the design's section 18. "Alternativ
 |---|---|---|
 | N3 | Allowing a deliberate break-glass re-baseline when the journal is unreadable | Covered by N1's acknowledgement; separate only if the owner wants a stricter path |
 | N7 | A keyed integrity check for the journal (HMAC, with a key outside the volume) | Detects silent edits, not truncation; modest value without D3 |
-| N8 | Treating a copy-everything clone as an operator-policy matter | Document "never copy `opspilot-state` into a clone". Detection needs D3 |
+| N8 | Treating a copy-everything clone as an operator-policy matter | Document "never copy `opsilume-state` into a clone". Detection needs D3 |
 | N10 | Enforcing a single API host | A start-up check is impossible without shared state; document it |
 | N11 | Supported platforms for the durability claim | Linux with a local filesystem; Docker Desktop for development only, until measured |
 | — | Encrypting the journal | Not needed: no sensitive values (design §13) |
@@ -389,7 +389,7 @@ The design's phases are:
 [Assessment] Two dependency problems:
 
 - **Provisioning must come in phase 1, not phase 4.**
-  - [Repo] 11 API test files, the browser tests (`apps/web/e2e/opspilot.spec.ts:110-133`), the demo (`demo/scripts/e2e.mjs:271,344`) and both drills execute remediations on fresh databases.
+  - [Repo] 11 API test files, the browser tests (`apps/web/e2e/opsilume.spec.ts:110-133`), the demo (`demo/scripts/e2e.mjs:271,344`) and both drills execute remediations on fresh databases.
   - As soon as phase 1 adds the check, all of them fail unless `init` exists and they call it.
 - **Phases 1–3 must be released together.**
   - After phase 1, an upgraded installation is quarantined (D9), and nothing can clear it until phase 3.

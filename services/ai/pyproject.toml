@@ -1,7 +1,7 @@
 [project]
-name = "opspilot-ai"
+name = "opsilume-ai"
 version = "0.1.0"
-description = "OpsPilot AI service: investigation agent (LangGraph), embeddings, MCP server"
+description = "OPSILUME AI service: investigation agent (LangGraph), embeddings, MCP server"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",

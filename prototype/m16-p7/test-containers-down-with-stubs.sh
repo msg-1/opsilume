@@ -7,7 +7,7 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 script="$here/smoke-containers-down.sh"
 t="$(mktemp -d)"; mkdir "$t/bin"
-P=opspilot-m16-p7-smoke
+P=opsilume-m16-p7-smoke
 cat >"$t/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB/calls"
@@ -40,8 +40,8 @@ fail() { echo "CONTAINERS-DOWN STUB TEST FAILED: $*"; cat "$t/calls" 2>/dev/null
 good() {   # what a finished smoke run leaves: three stopped containers, three networks, two volumes
   rm -f "$t"/keep-* "$t"/fail-* "$t/volume-changes"; : >"$t/calls"
   echo "${P}_pgdata ${P}_state" >"$t/volumes"
-  { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opspilot.p7.data disposable-harness-smoke"; done; } >"$t/vlabels"
-  { for v in pgdata state; do echo "${P}_$v 2026-11-17T10:30:49Z /var/lib/docker/volumes/${P}_$v/_data {\"opspilot.p7.data\":\"disposable-harness-smoke\"}"; done; } >"$t/volident"
+  { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opsilume.p7.data disposable-harness-smoke"; done; } >"$t/vlabels"
+  { for v in pgdata state; do echo "${P}_$v 2026-11-17T10:30:49Z /var/lib/docker/volumes/${P}_$v/_data {\"opsilume.p7.data\":\"disposable-harness-smoke\"}"; done; } >"$t/volident"
   printf '%s\n' "c1|exited|$P|db|volume:${P}_pgdata " "c2|exited|$P|gateway|bind: " "c3|exited|$P|harness|volume:${P}_state bind: bind: bind: " >"$t/cinfo"
   cp "$t/cinfo" "$t/listed"
   printf 'c1\nc3\n' >"$t/uses-volume"; printf 'c1\nc2\nc3\n' >"$t/on-network"
@@ -74,11 +74,11 @@ echo "ok: dry run names the project, the exact containers and networks, the kept
 # A docker listing that fails must refuse, never skip the check it feeds (before: an empty loop, in silence).
 for f in uses-volume nets-named on-network; do good; touch "$t/fail-$f"; refused "docker cannot list ($f)"; done
 
-for bad in opspilot opspilot-m16-p7 opspilot-isolated "${P}-2" "" ; do
+for bad in opsilume opsilume-m16-p7 opsilume-isolated "${P}-2" "" ; do
   good; run 2 "must be exactly $P" --confirm "$bad"; [ ! -s "$t/calls" ] || fail "--confirm '$bad' reached docker"
 done
 good; run 2 "nothing else may follow" --confirm "$P" --volumes; [ ! -s "$t/calls" ] || fail "an extra argument reached docker"
-good; run 2 "usage" -p opspilot; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
+good; run 2 "usage" -p opsilume; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
 good; run 2 "usage" --volumes; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
 echo "ok: any other project name, an extra argument or an unknown option is refused before docker is called at all"
 
@@ -86,28 +86,28 @@ echo "ok: any other project name, an extra argument or an unknown option is refu
 good; : >"$t/volumes"; refused "both volumes are missing"
 good; echo "${P}_pgdata" >"$t/volumes"; refused "one volume is missing"
 good; echo "${P}_pgdata ${P}_state ${P}_extra" >"$t/volumes"; refused "an extra volume in the project"
-good; echo "opspilot-m16-p7_pgdata opspilot-m16-p7_state" >"$t/volumes"; refused "the listing returns the qualifying project's volumes"
-good; edit "/${P}_state opspilot.p7.data/d" vlabels; refused "the disposable-smoke label is missing on one volume"
+good; echo "opsilume-m16-p7_pgdata opsilume-m16-p7_state" >"$t/volumes"; refused "the listing returns the qualifying project's volumes"
+good; edit "/${P}_state opsilume.p7.data/d" vlabels; refused "the disposable-smoke label is missing on one volume"
 good; edit "s/disposable-harness-smoke/evidence-keep/" vlabels; refused "the volume label has another value"
-good; edit "s/${P}_pgdata com.docker.compose.project $P/${P}_pgdata com.docker.compose.project opspilot/" vlabels; refused "a volume's Compose project label names another project"
+good; edit "s/${P}_pgdata com.docker.compose.project $P/${P}_pgdata com.docker.compose.project opsilume/" vlabels; refused "a volume's Compose project label names another project"
 good; edit "s/${P}_state com.docker.compose.volume state/${P}_state com.docker.compose.volume pgdata/" vlabels; refused "a volume's Compose volume label does not match its name"
 good; edit "/${P}_state 2026/d" volident; refused "a volume's identity cannot be read"
 # Containers: this project's, a known service once, stopped, mounting only the two smoke volumes.
-good; edit "s/^c2|exited|$P|/c2|exited|opspilot|/" cinfo; refused "a listed container is labelled with the default opspilot project"
+good; edit "s/^c2|exited|$P|/c2|exited|opsilume|/" cinfo; refused "a listed container is labelled with the default opsilume project"
 good; edit "s/^c2|exited|$P|/c2|exited||/" cinfo; refused "a listed container has no project label"
 good; edit "s/^c2|exited|$P|gateway/c2|exited|$P|api/" cinfo; refused "a container of an unexpected service"
 good; edit "s/^c2|exited|$P|gateway/c2|exited|$P|/" cinfo; refused "a container with no service label"
 good; echo "c4|exited|$P|db|volume:${P}_pgdata " | tee -a "$t/cinfo" >>"$t/listed"; refused "two containers of the same service"
 for st in running restarting paused removing; do good; edit "s/^c1|exited/c1|$st/" cinfo; refused "a container is $st (the script stops nothing)"; done
 good; edit "s/^c2|exited|$P|gateway|bind: /c2|exited|$P|gateway|bind: volume:0a5a2a70c2b9 /" cinfo; refused "a container mounts an anonymous volume"
-good; edit "s/volume:${P}_pgdata/volume:opspilot-m16-p7_pgdata/" cinfo; refused "a container mounts a volume of the qualifying project"
-good; edit "s/volume:${P}_state/volume:opspilot_pgdata/" cinfo; refused "a container mounts a volume of the default project"
+good; edit "s/volume:${P}_pgdata/volume:opsilume-m16-p7_pgdata/" cinfo; refused "a container mounts a volume of the qualifying project"
+good; edit "s/volume:${P}_state/volume:opsilume_pgdata/" cinfo; refused "a container mounts a volume of the default project"
 good; echo foreign1 >>"$t/uses-volume"; refused "a container outside the project uses a smoke volume"
 good; echo foreign2 >>"$t/on-network"; refused "a container outside the project is attached to a project network"
 # Networks: this project's three, labelled; nothing unlabelled under the project's name.
 good; echo "${P}_extra" >>"$t/nets-labelled"; echo "${P}_extra|$P|extra" >>"$t/ninfo"; refused "an unexpected fourth network"
-good; echo "opspilot_default" >>"$t/nets-labelled"; refused "the listing returns a network of the default project"
-good; edit "s/^${P}_p7db|$P|/${P}_p7db|opspilot|/" ninfo; refused "a network's project label names another project"
+good; echo "opsilume_default" >>"$t/nets-labelled"; refused "the listing returns a network of the default project"
+good; edit "s/^${P}_p7db|$P|/${P}_p7db|opsilume|/" ninfo; refused "a network's project label names another project"
 good; edit "s/^${P}_p7db|$P|p7db/${P}_p7db|$P|p7gw/" ninfo; refused "a network's Compose network label does not match its name"
 good; edit "s/^${P}_egress|$P|egress/${P}_egress||/" ninfo; refused "a network with no labels"
 good; echo "${P}_stray" >>"$t/nets-named"; refused "an unlabelled network carries the project's name prefix"
@@ -128,7 +128,7 @@ echo "ok: no call in any case above removed, pruned or named a volume in a remov
 gens() {
   good
   echo "${P}_pgdata ${P}_pgdata_s2 ${P}_state ${P}_state_s2" >"$t/volumes"
-  { for v in pgdata state; do for g in "" _s2; do echo "${P}_$v$g com.docker.compose.project $P"; echo "${P}_$v$g com.docker.compose.volume $v"; echo "${P}_$v$g opspilot.p7.data disposable-harness-smoke"; done; done; } >"$t/vlabels"
+  { for v in pgdata state; do for g in "" _s2; do echo "${P}_$v$g com.docker.compose.project $P"; echo "${P}_$v$g com.docker.compose.volume $v"; echo "${P}_$v$g opsilume.p7.data disposable-harness-smoke"; done; done; } >"$t/vlabels"
   { for v in pgdata state; do for g in "" _s2; do echo "${P}_$v$g 2026-11-17T10:30:49Z /var/lib/docker/volumes/${P}_$v$g/_data {}"; done; done; } >"$t/volident"
   printf '%s\n' "c1|exited|$P|db|volume:${P}_pgdata_s2 " "c2|exited|$P|gateway|bind: " "c3|exited|$P|harness|volume:${P}_state_s2 bind: " >"$t/cinfo"; cp "$t/cinfo" "$t/listed"
 }
@@ -137,11 +137,11 @@ gens; run 0 "Every volume is still present, unchanged" --confirm "$P"
 grep -c "^volume inspect" "$t/calls" | grep -qx 20 || fail "generations: all four volumes must be checked before and compared after"
 gens; out="$("$script")"; grep -q "Volumes KEPT, never removed by this script: ${P}_pgdata ${P}_pgdata_s2 ${P}_state ${P}_state_s2" <<<"$out" || fail "generations: the dry run must name all four kept volumes: $out"
 echo "ok: volumes of several smoke generations are all kept, checked before and compared after"
-for bad in "${P}_pgdata_BAD" "${P}_pgdata_" "${P}_logs_s2" "${P}_pgdata_s2_x" "opspilot-m16-p7_pgdata_s2"; do
+for bad in "${P}_pgdata_BAD" "${P}_pgdata_" "${P}_logs_s2" "${P}_pgdata_s2_x" "opsilume-m16-p7_pgdata_s2"; do
   gens; echo "$bad" >>"$t/volumes"; refused "a volume named $bad is listed for the project"
 done
 gens; edit "s/${P}_pgdata_s2 com.docker.compose.volume pgdata/${P}_pgdata_s2 com.docker.compose.volume state/" vlabels; refused "a generation volume's Compose volume label does not match its name"
-gens; edit "/${P}_state_s2 opspilot.p7.data/d" vlabels; refused "a generation volume lacks the disposable label"
+gens; edit "/${P}_state_s2 opsilume.p7.data/d" vlabels; refused "a generation volume lacks the disposable label"
 gens; edit "s/volume:${P}_pgdata_s2/volume:${P}_pgdata_zz/" cinfo; refused "a container mounts a smoke-named volume that is not among the project's volumes"
 gens; echo "${P}_pgdata_s2" >"$t/volumes"; refused "only one kind of smoke volume exists"
 

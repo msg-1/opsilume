@@ -1,4 +1,4 @@
-"""OpsPilot AI service: embeddings and the investigation agent, called only by the OpsPilot API."""
+"""OPSILUME AI service: embeddings and the investigation agent, called only by the OPSILUME API."""
 
 from __future__ import annotations
 
@@ -41,29 +41,29 @@ logging.basicConfig(level=get_settings().log_level.upper(), handlers=[_handler],
 # HTTP client libraries log full request URLs at INFO; keep them quiet.
 for _noisy in ("httpx", "httpx2", "httpcore", "anthropic", "openai"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
-log = logging.getLogger("opspilot.ai")
+log = logging.getLogger("opsilume.ai")
 
-app = FastAPI(title="OpsPilot AI service", version="0.1.0")
+app = FastAPI(title="OPSILUME AI service", version="0.1.0")
 
-INVESTIGATIONS = Counter("opspilot_ai_investigations_total", "Investigations run", ["provider", "outcome"])
-INVESTIGATION_SECONDS = Histogram("opspilot_ai_investigation_seconds", "Investigation duration", ["provider"], buckets=(1, 2, 5, 10, 20, 40, 80, 160, 320, 640))
-EMBEDDED_TEXTS = Counter("opspilot_ai_embedded_texts_total", "Texts embedded", ["provider"])
-TOKENS = Counter("opspilot_ai_llm_tokens_total", "LLM tokens used", ["provider", "direction"])
-COST = Counter("opspilot_ai_llm_estimated_cost_usd_total", "Estimated model spend in USD (list prices)", ["provider", "model"])
+INVESTIGATIONS = Counter("opsilume_ai_investigations_total", "Investigations run", ["provider", "outcome"])
+INVESTIGATION_SECONDS = Histogram("opsilume_ai_investigation_seconds", "Investigation duration", ["provider"], buckets=(1, 2, 5, 10, 20, 40, 80, 160, 320, 640))
+EMBEDDED_TEXTS = Counter("opsilume_ai_embedded_texts_total", "Texts embedded", ["provider"])
+TOKENS = Counter("opsilume_ai_llm_tokens_total", "LLM tokens used", ["provider", "direction"])
+COST = Counter("opsilume_ai_llm_estimated_cost_usd_total", "Estimated model spend in USD (list prices)", ["provider", "model"])
 
 if get_settings().otel_enabled:  # pragma: no cover - optional
     tracing.setup(app, get_settings().otel_exporter_otlp_endpoint)
 
 
 def require_internal(x_internal_token: str = Header(default=""), settings: Settings = Depends(get_settings)) -> None:
-    """Only the OpsPilot API may call this service."""
+    """Only the OPSILUME API may call this service."""
     if not settings.internal_service_token or not hmac.compare_digest(x_internal_token, settings.internal_service_token):
         raise HTTPException(status_code=401, detail="Invalid internal token")
 
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "opspilot-ai"}
+    return {"status": "ok", "service": "opsilume-ai"}
 
 
 @app.get("/metrics")
@@ -119,7 +119,7 @@ async def run(body: InvestigationRequest, settings: Settings = Depends(get_setti
     parent = otel_context.get_current()
 
     async def worker() -> None:
-        with tracing.tracer.start_as_current_span("investigation", context=parent, attributes={"opspilot.investigation.id": body.investigation_id, "opspilot.engine.provider": label}, record_exception=False, set_status_on_exception=False) as span:
+        with tracing.tracer.start_as_current_span("investigation", context=parent, attributes={"opsilume.investigation.id": body.investigation_id, "opsilume.engine.provider": label}, record_exception=False, set_status_on_exception=False) as span:
             await investigate(span)
 
     async def investigate(span: Span) -> None:
@@ -147,7 +147,7 @@ async def run(body: InvestigationRequest, settings: Settings = Depends(get_setti
                 TOKENS.labels(label, "output").inc(provider.usage.output_tokens)
                 TOKENS.labels(label, "cache_read").inc(provider.usage.cache_read_tokens)
                 COST.labels(label, provider.model).inc(provider.usage.cost_usd)
-                span.set_attributes({"opspilot.llm.input_tokens": provider.usage.input_tokens, "opspilot.llm.output_tokens": provider.usage.output_tokens})
+                span.set_attributes({"opsilume.llm.input_tokens": provider.usage.input_tokens, "opsilume.llm.output_tokens": provider.usage.output_tokens})
             await tools.aclose()
             await queue.put(None)
 

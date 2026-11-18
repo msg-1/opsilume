@@ -64,7 +64,7 @@ A second reviewer read the complete diff of the four pre-existing test files, ev
 
 ### 3.2 Generation-named smoke volumes
 
-- **Both volumes carry the generation:** `opspilot-m16-p7-smoke_pgdata_<generation>` and `..._state_<generation>`, each labelled with it.
+- **Both volumes carry the generation:** `opsilume-m16-p7-smoke_pgdata_<generation>` and `..._state_<generation>`, each labelled with it.
 - **The smoke-39 volumes cannot be selected through the override.** Their names have no suffix; `${P7_SMOKE_GENERATION:?}` refuses an unset or empty value, so a name without a suffix cannot be produced. The start script accepts lower-case letters and digits only (1 to 24), looks each name up exactly, refuses a generation whose volumes exist, and checks after `up` that the containers are on exactly those two volumes.
 - **Still open (R13):** a Compose command typed by hand for the smoke project without `compose.smoke.yml` resolves to the old names. Nothing inside the harness can refuse that.
 - **Never rendered by Compose.** Rendering the file counts as running Docker and was not done.
@@ -84,7 +84,7 @@ Verified by the recorder: the package's SHA-256, the commit id inside it, and th
 ### 3.4 `smoke-containers-down.sh`
 
 - **It cannot remove a volume.** Its only removing commands are `docker rm <id>` and `docker network rm <name>`, without options. `docker rm` without `-v` leaves even anonymous volumes. The stub test fails if the script's text ever contains a volume, prune, force, Compose, run, start or stop command.
-- **It cannot reach another project.** Containers, volumes and networks are selected by the exact label value `com.docker.compose.project=opspilot-m16-p7-smoke`; the qualifying project's name is a prefix of that, and a label filter matches the whole value. Each object's label is then read back and compared. The one `name=` filter is used only to find something to refuse. The project name is fixed and `--confirm` must equal it.
+- **It cannot reach another project.** Containers, volumes and networks are selected by the exact label value `com.docker.compose.project=opsilume-m16-p7-smoke`; the qualifying project's name is a prefix of that, and a label filter matches the whole value. Each object's label is then read back and compared. The one `name=` filter is used only to find something to refuse. The project name is fixed and `--confirm` must equal it.
 - **It stops nothing:** a container that is not already stopped is a refusal.
 - **Limit:** the stub shows which commands the script sends, not how a real daemon matches a filter. The current version has never run against Docker.
 

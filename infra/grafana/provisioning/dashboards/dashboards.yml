@@ -1,7 +1,7 @@
 apiVersion: 1
 providers:
-  - name: OpsPilot
-    folder: OpsPilot
+  - name: OPSILUME
+    folder: OPSILUME
     type: file
     options:
       path: /var/lib/grafana/dashboards

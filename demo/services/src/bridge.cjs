@@ -4,8 +4,8 @@
 const net = require('node:net');
 
 const PROM = process.env.PROMETHEUS_URL;
-const API = process.env.OPSPILOT_API_URL;
-const KEY = process.env.OPSPILOT_API_KEY;
+const API = process.env.OPSILUME_API_URL;
+const KEY = process.env.OPSILUME_API_KEY;
 const EVERY_MS = Number(process.env.BRIDGE_INTERVAL_MS || 10_000);
 const WINDOW = '45s';
 const SERVICES = { 'shop-gateway': 'demo-gateway', 'shop-orders': 'demo-orders', 'shop-payments': 'demo-payments' };
@@ -59,6 +59,6 @@ async function tick() {
     console.log(JSON.stringify({ service: 'shop-bridge', level: 'warn', message: `metrics not forwarded: ${err.message}` }));
   }
 }
-if (!KEY) { console.error('OPSPILOT_API_KEY is not set: run `npm run demo:setup` first.'); process.exit(1); }
+if (!KEY) { console.error('OPSILUME_API_KEY is not set: run `npm run demo:setup` first.'); process.exit(1); }
 tick();
 setInterval(tick, EVERY_MS);

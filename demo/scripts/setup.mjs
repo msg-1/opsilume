@@ -74,7 +74,7 @@ if (!runbook) runbook = await s.post('/knowledge/documents', { title: 'Runbook: 
 
 // The key is written to a git-ignored file readable only by its owner, and is never printed.
 const key = await s.post('/api-keys', { name: `demo-telemetry-${Date.now()}`, scopes: ['ingest:logs', 'ingest:metrics', 'ingest:deployments', 'ingest:events', 'tools:read'] });
-writeFileSync(ENV_FILE, `# Written by demo/scripts/setup.mjs. Git-ignored. Ingestion key of the demo organisation.\nOPSPILOT_API_KEY=${key.secret}\n`, { mode: 0o600 });
+writeFileSync(ENV_FILE, `# Written by demo/scripts/setup.mjs. Git-ignored. Ingestion key of the demo organisation.\nOPSILUME_API_KEY=${key.secret}\n`, { mode: 0o600 });
 chmodSync(ENV_FILE, 0o600);
 writeFileSync(STATE_FILE, `${JSON.stringify({ email: ACCOUNT.email, organizationId: me.organization?.id ?? null, services: Object.fromEntries([...existing].filter(([k]) => k.startsWith('shop-')).map(([k, v]) => [k, v.id])), runbookId: runbook.id, createdAt: new Date().toISOString() }, null, 2)}\n`);
 log('demo organisation is ready: alert rules, deployment history, runbook and ingestion key written to demo/.env.demo');

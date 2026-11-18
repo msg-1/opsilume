@@ -3,7 +3,7 @@ import { env, isProd, isTest } from '../config/env';
 
 export const logger = pino({
   level: isTest ? 'silent' : env.LOG_LEVEL,
-  base: { service: 'opspilot-api' },
+  base: { service: 'opsilume-api' },
   // Never let credentials reach the logs.
   redact: {
     paths: [

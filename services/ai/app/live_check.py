@@ -40,7 +40,7 @@ async def run(verify_only: bool) -> int:
     if hasattr(provider, "_effort"):
         provider._effort = "low"  # type: ignore[attr-defined]
     try:
-        reply = await provider.invoke([HumanMessage("Reply with exactly: OPSPILOT LIVE CHECK OK")], [])
+        reply = await provider.invoke([HumanMessage("Reply with exactly: OPSILUME LIVE CHECK OK")], [])
     except LLMError as exc:
         print(f"Inference: FAILED ({exc.kind}) — {exc}")
         return 1

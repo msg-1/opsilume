@@ -32,7 +32,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => internal.listen(0, '127.0.0.1', resolve));
   port = (internal.address() as AddressInfo).port;
-  const dir = mkdtempSync(join(tmpdir(), 'opspilot-tls-'));
+  const dir = mkdtempSync(join(tmpdir(), 'opsilume-tls-'));
   execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem'), '-days', '1', '-subj', '/CN=not-the-host-you-asked-for.test'], { stdio: 'ignore' });
   secure = createTlsServer({ key: readFileSync(join(dir, 'key.pem')), cert: readFileSync(join(dir, 'cert.pem')) }, (_req, res) => {
     hits.push({ host: 'tls', url: _req.url });

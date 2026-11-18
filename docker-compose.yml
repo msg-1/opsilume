@@ -1,4 +1,4 @@
-# OpsPilot local stack.
+# OPSILUME local stack.
 # Every port is published on 127.0.0.1 only: nothing here is reachable from the network.
 # A shared or production deployment must not publish Postgres or Redis at all, must set
 # POSTGRES_PASSWORD, and must put TLS in front of the web app (COOKIE_SECURE=true).
@@ -10,11 +10,11 @@
 #   A second, throwaway copy for browser tests and failure drills: npm run isolated:up (docs/reliability-readiness-report.md)
 # The published ports can be moved with HOST_PORT_WEB, HOST_PORT_API, HOST_PORT_AI, HOST_PORT_POSTGRES and
 # HOST_PORT_REDIS; that, a different project name and its own volume are what keep the copy apart.
-name: opspilot
+name: opsilume
 
 x-app-env: &app-env
   NODE_ENV: production
-  DATABASE_URL: postgresql://opspilot:${POSTGRES_PASSWORD:-opspilot}@postgres:5432/opspilot?schema=public
+  DATABASE_URL: postgresql://opsilume:${POSTGRES_PASSWORD:-opsilume}@postgres:5432/opsilume?schema=public
   REDIS_URL: redis://redis:6379
   API_URL: http://api:4000
   AI_SERVICE_URL: http://ai:8000
@@ -44,16 +44,16 @@ services:
     restart: unless-stopped
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: opspilot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opspilot}
-      POSTGRES_DB: opspilot
+      POSTGRES_USER: opsilume
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opsilume}
+      POSTGRES_DB: opsilume
     ports:
       - "127.0.0.1:${HOST_PORT_POSTGRES:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opspilot -d opspilot"]
+      test: ["CMD-SHELL", "pg_isready -U opsilume -d opsilume"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -287,7 +287,7 @@ services:
       REDIS_URL: redis://demo-redis:6379
       PAYMENTS_URL: http://demo-payments:8080
       ORDERS_URL: http://demo-orders:8080
-      OPSPILOT_API_URL: http://api:4000
+      OPSILUME_API_URL: http://api:4000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://demo-jaeger:4318
       DEMO_ADMIN_TOKEN: ${DEMO_ADMIN_TOKEN:-local-demo}
     mem_limit: 256m
@@ -354,7 +354,7 @@ services:
         required: false
     environment:
       PROMETHEUS_URL: http://prometheus:9090
-      OPSPILOT_API_URL: http://api:4000
+      OPSILUME_API_URL: http://api:4000
     mem_limit: 128m
     depends_on:
       - prometheus

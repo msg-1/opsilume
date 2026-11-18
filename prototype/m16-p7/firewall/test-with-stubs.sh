@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exercises p7-firewall.sh (apply, rollback, confirm, status, remove, the boot path) against STUB iptables/ip6tables
 # that only keep their rules in a file. Run it in a throwaway Linux container as root; it changes no real firewall:
-#   docker run --rm -u 0 -v "$PWD/firewall":/fw:ro --entrypoint bash opspilot-isolated-api:latest /fw/test-with-stubs.sh
+#   docker run --rm -u 0 -v "$PWD/firewall":/fw:ro --entrypoint bash opsilume-isolated-api:latest /fw/test-with-stubs.sh
 set -euo pipefail
 [ "$(uname -s)" = Linux ] && [ "$(id -u)" = 0 ] || { echo "run in a Linux container as root"; exit 1; }
 t="$(mktemp -d)"; mkdir "$t/bin"; cp /fw/p7-firewall.sh "$t/fw.sh"

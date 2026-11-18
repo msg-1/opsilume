@@ -9,7 +9,7 @@ import { EMPTY_REPORT, aiStub, hostPort, pause, spawnWorker, tcpProxy, testPort,
 const settings = vi.hoisted(() => {
   const port = (offset: number) => 21_000 + ((process.pid * 7 + offset * 131) % 20_000);
   const realRedis = process.env.REDIS_URL ?? 'redis://localhost:6379';
-  const prefix = `opspilot-reliability-${process.pid}-${Date.now()}`;
+  const prefix = `opsilume-reliability-${process.pid}-${Date.now()}`;
   process.env.QUEUE_INLINE = 'false';
   process.env.QUEUE_PREFIX = prefix;
   process.env.REDIS_URL = `redis://127.0.0.1:${port(1)}`;

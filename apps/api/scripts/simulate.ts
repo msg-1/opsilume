@@ -2,15 +2,15 @@
  * Demo traffic generator: keeps the seeded organisation "alive" by sending metrics and logs
  * through the public ingestion API every 15 seconds, exactly as a real agent or pipeline would.
  *
- *   OPSPILOT_API_KEY=opk_... npm run simulate            (key needs ingest:logs + ingest:metrics)
- *   OPSPILOT_API_KEY=opk_... npm run simulate -- --heal  (checkout recovers: alerts resolve)
+ *   OPSILUME_API_KEY=opk_... npm run simulate            (key needs ingest:logs + ingest:metrics)
+ *   OPSILUME_API_KEY=opk_... npm run simulate -- --heal  (checkout recovers: alerts resolve)
  */
-const API = process.env.OPSPILOT_API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
-const KEY = process.env.OPSPILOT_API_KEY;
+const API = process.env.OPSILUME_API_URL ?? `http://localhost:${process.env.API_PORT ?? 4000}`;
+const KEY = process.env.OPSILUME_API_KEY;
 const healed = process.argv.includes('--heal');
 
 if (!KEY) {
-  console.error('Set OPSPILOT_API_KEY to an API key with the ingest:logs and ingest:metrics scopes (Settings → API keys).');
+  console.error('Set OPSILUME_API_KEY to an API key with the ingest:logs and ingest:metrics scopes (Settings → API keys).');
   process.exit(2);
 }
 

@@ -342,7 +342,7 @@ auditRouter.get('/', requirePermission('audit:read'), async (req, res) => {
       ),
     ];
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', 'attachment; filename="opspilot-audit-log.csv"');
+    res.setHeader('Content-Disposition', 'attachment; filename="opsilume-audit-log.csv"');
     res.send(lines.join('\n'));
     return;
   }

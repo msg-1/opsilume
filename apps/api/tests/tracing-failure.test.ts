@@ -32,7 +32,7 @@ const throwing: SpanExporter = {
 };
 const unreachable = new OTLPTraceExporter({ url: 'http://127.0.0.1:9/v1/traces', timeoutMillis: 500 });
 const sdk = new NodeSDK({
-  serviceName: 'opspilot-test',
+  serviceName: 'opsilume-test',
   autoDetectResources: false,
   instrumentations: [],
   spanProcessors: [new SimpleSpanProcessor({ exporter: scrubbingExporter(memory) }), new SimpleSpanProcessor({ exporter: scrubbingExporter(throwing) }), new SimpleSpanProcessor({ exporter: scrubbingExporter(unreachable) })],
@@ -102,7 +102,7 @@ describe('tracing of work that fails', () => {
 
       const run = spanNamed('investigation.run');
       expect(run.status).toEqual({ code: SpanStatusCode.ERROR, message: errorClass });
-      expect(run.attributes['opspilot.investigation.id']).toBe(started.body.id);
+      expect(run.attributes['opsilume.investigation.id']).toBe(started.body.id);
       // The run failed; the job that carried it did its work (it recorded the failure) and is not marked failed.
       const job = spanNamed('process investigation');
       expect(job.status.code).not.toBe(SpanStatusCode.ERROR);

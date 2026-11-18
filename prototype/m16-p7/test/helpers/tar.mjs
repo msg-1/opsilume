@@ -20,7 +20,7 @@ const padded = (b) => Buffer.concat([b, Buffer.alloc((512 - (b.length % 512)) % 
 const paxRecord = (k, v) => { const body = ` ${k}=${v}\n`; let len = body.length + 1; while (String(len).length + body.length !== len) len = String(len).length + body.length; return Buffer.from(`${len}${body}`); };
 
 /** entries: [path, content][]. commit: written as the archive's global `comment`, as git does (omit for none). */
-export function tarGz(entries, { commit, prefix = 'opspilot-p7-test' } = {}) {
+export function tarGz(entries, { commit, prefix = 'opsilume-p7-test' } = {}) {
   const parts = [];
   if (commit) { const g = paxRecord('comment', commit); parts.push(header('pax_global_header', g.length, 'g'), padded(g)); }
   for (const [name, content] of entries) {

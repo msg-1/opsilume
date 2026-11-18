@@ -1,7 +1,6 @@
 /**
- * Product-facing brand. OPSILUME is the working name of the product; the repository, packages,
- * API paths, headers, environment variables and database keep their original "opspilot"
- * identifiers on purpose (see docs/branding/opsilume-branding.md).
+ * Product-facing brand. The repository, packages, headers, environment variables and database
+ * use the same name in lower case, "opsilume" (see docs/branding/opsilume-branding.md).
  */
 export const BRAND = {
   name: 'OPSILUME',

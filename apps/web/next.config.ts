@@ -1,6 +1,6 @@
 import type { NextConfig } from 'next';
 
-// The browser only ever talks to this origin; /api/* is proxied to the OpsPilot API so the
+// The browser only ever talks to this origin; /api/* is proxied to the OPSILUME API so the
 // session cookies are first-party and no CORS configuration is needed.
 const target = process.env.API_PROXY_TARGET ?? 'http://localhost:4000';
 

@@ -1,7 +1,7 @@
 import { execSync } from 'node:child_process';
 import { PrismaClient } from '@prisma/client';
 
-const url = process.env.TEST_DATABASE_URL ?? 'postgresql://opspilot:opspilot@localhost:5432/opspilot_test?schema=public';
+const url = process.env.TEST_DATABASE_URL ?? 'postgresql://opsilume:opsilume@localhost:5432/opsilume_test?schema=public';
 
 export default async function setup() {
   if (!/test/.test(new URL(url).pathname)) throw new Error(`Refusing to run tests against a non-test database: ${url}`);

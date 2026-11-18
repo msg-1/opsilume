@@ -7,8 +7,8 @@ The Phase 0 prototype stays, unchanged, on the branch `prototype/m16-recovery-sa
 ## Isolation
 
 - **Not part of the build:** outside the npm workspaces; nothing under `apps/` or `services/` imports it.
-- **Its own Compose project:** `compose.yml` defines `opspilot-m16-p05`, with an **internal** network, its own volumes (`pgdata`, `state`) and no published host ports.
-- **A runtime image reused, unchanged:** `opspilot-isolated-api:latest` serves only as a Node 22 + Prisma 6.19.3 runtime. The database is `postgres:16-alpine`.
+- **Its own Compose project:** `compose.yml` defines `opsilume-m16-p05`, with an **internal** network, its own volumes (`pgdata`, `state`) and no published host ports.
+- **A runtime image reused, unchanged:** `opsilume-isolated-api:latest` serves only as a Node 22 + Prisma 6.19.3 runtime. The database is `postgres:16-alpine`.
 - **Fault injection:** `proxy.mjs` sits between the prototype and PostgreSQL, reads the PostgreSQL wire protocol, and cuts connections at `COMMIT` on command.
 - **No outside requests:** `receiver.mjs` is a local stand-in that only records requests.
 

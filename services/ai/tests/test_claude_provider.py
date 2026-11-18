@@ -84,8 +84,8 @@ async def investigate(provider) -> tuple[Any, list[dict], Context]:
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(SCENARIO.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=SCENARIO.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window={"from": t(120), "to": t(0)})
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(SCENARIO.handler()))
+    request = InvestigationRequest(investigation_id="inv", question=SCENARIO.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window={"from": t(120), "to": t(0)})
     ctx = Context(request=request, settings=provider.settings or Settings(_env_file=None), tools=tools, provider=provider, emit=emit)
     report = await run_investigation(ctx)
     await tools.aclose()
@@ -103,7 +103,7 @@ async def test_full_investigation_through_the_claude_provider_with_a_mocked_api(
     provider = api.provider()
     report, events, ctx = await investigate(provider)
 
-    # A model report, grounded in evidence that came from OpsPilot's tools.
+    # A model report, grounded in evidence that came from OPSILUME's tools.
     assert report.analysis_mode == "llm" and report.root_cause_confirmed is False
     assert report.hypotheses[0].evidence_refs == ["E1", "E2"] and report.hypotheses[0].contradictions
     assert {e["evidence"]["ref"] for e in events if e["type"] == "evidence"} >= {"E1", "E2"}

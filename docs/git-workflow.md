@@ -1,6 +1,6 @@
 # Git workflow
 
-OpsPilot uses a GitFlow-style model: two long-lived branches and four kinds of short-lived branch.
+OPSILUME uses a GitFlow-style model: two long-lived branches and four kinds of short-lived branch.
 
 ## Branches
 
@@ -125,7 +125,7 @@ Never rebase or force-push `main` or `develop`. Rebasing your own unpublished fe
 | `e2e.yml` | Pull requests into `develop` and `main`; pushes to `release/**`, `hotfix/**`; manual | Builds a throwaway copy of the whole stack (its own Compose project, generated secrets, rule-based engine, no provider key), runs the browser tests against it, then the failure drills, the backup and restore drill and a reduced load test. Uploads screenshots, Playwright traces and service logs when it fails. Not a required check |
 | `release.yml` | Push of a `vX.Y.Z` tag | Checks the tag is on `main` and matches `package.json`, then publishes a GitHub release |
 
-The repository is published at https://github.com/msg-1/opspilot. `ci.yml` runs on every pull request and has passed on `develop`; `e2e.yml` has passed on `release/0.1.0` and, since Milestone 6, runs on every pull request. `release.yml` has never run, because no version tag has been pushed.
+The repository is published at https://github.com/msg-1/opsilume. `ci.yml` runs on every pull request and has passed on `develop`; `e2e.yml` has passed on `release/0.1.0` and, since Milestone 6, runs on every pull request. `release.yml` has never run, because no version tag has been pushed.
 
 ### What CI verifies, and what it does not
 
@@ -183,7 +183,7 @@ To require it, the repository owner can either:
 - with the CLI:
 
   ```bash
-  gh api -X POST repos/msg-1/opspilot/branches/develop/protection/required_status_checks/contexts \
+  gh api -X POST repos/msg-1/opsilume/branches/develop/protection/required_status_checks/contexts \
     -f 'contexts[]=Browser end-to-end tests'
   ```
 

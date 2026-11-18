@@ -38,15 +38,15 @@ start the store alone with `docker compose --profile tracing up -d tracing`.
 
 | Service | Span | What it is |
 | --- | --- | --- |
-| `opspilot-api` | `POST /api/v1/investigations` | The request that started the investigation. Carries `opspilot.investigation.id`. |
-| `opspilot-api` | `enqueue investigation` | The job being put on the queue. |
-| `opspilot-worker` | `process investigation` | The worker running the job. Child of `enqueue investigation`. |
-| `opspilot-worker` | `investigation.run` | The request to the AI service and the handling of everything it streams back. Ends with the engine, the outcome and the number of evidence items. |
-| `opspilot-ai` | `POST /v1/investigations/run` | The AI service receiving the request. |
-| `opspilot-ai` | `investigation` | The investigation itself, whichever engine runs it. |
-| `opspilot-ai` | `tool <name>` | One read-only tool call. |
-| `opspilot-api` | `GET /api/v1/tools/...` | The API serving that tool call. Carries `opspilot.investigation.id` and `opspilot.tool.path`. |
-| `opspilot-worker` | `investigation.guardrails`, `investigation.persist` | The API's independent guardrail pass, and the storing of the report. |
+| `opsilume-api` | `POST /api/v1/investigations` | The request that started the investigation. Carries `opsilume.investigation.id`. |
+| `opsilume-api` | `enqueue investigation` | The job being put on the queue. |
+| `opsilume-worker` | `process investigation` | The worker running the job. Child of `enqueue investigation`. |
+| `opsilume-worker` | `investigation.run` | The request to the AI service and the handling of everything it streams back. Ends with the engine, the outcome and the number of evidence items. |
+| `opsilume-ai` | `POST /v1/investigations/run` | The AI service receiving the request. |
+| `opsilume-ai` | `investigation` | The investigation itself, whichever engine runs it. |
+| `opsilume-ai` | `tool <name>` | One read-only tool call. |
+| `opsilume-api` | `GET /api/v1/tools/...` | The API serving that tool call. Carries `opsilume.investigation.id` and `opsilume.tool.path`. |
+| `opsilume-worker` | `investigation.guardrails`, `investigation.persist` | The API's independent guardrail pass, and the storing of the report. |
 
 Other background jobs (`knowledge-index`, `github-sync`, the schedulers) get the same
 `enqueue` / `process` pair.

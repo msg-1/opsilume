@@ -3,7 +3,7 @@
 The working rules of this repository: its layout, the commands used daily, and the invariants that are easy to break. Every contributor follows them, and reviews check them. They are enforced in code and tests where the text names a test or a check.
 
 
-AI-assisted incident investigation platform. OPSILUME is the product's working name; the repository and all identifiers keep `opspilot`. npm workspaces monorepo plus one Python service.
+AI-assisted incident investigation platform. OPSILUME is the product's name; the repository and all identifiers use `opsilume`. npm workspaces monorepo plus one Python service.
 
 ## Layout
 
@@ -19,7 +19,7 @@ AI-assisted incident investigation platform. OPSILUME is the product's working n
 ```bash
 npm run infra:up            # Postgres + Redis
 npm run dev                 # api, worker, web, ai
-npm test                    # api + web tests (API tests need Postgres; they use opspilot_test)
+npm test                    # api + web tests (API tests need Postgres; they use opsilume_test)
 npm run test:ai             # pytest
 npm run evals -- --heuristic
 npm run demo:up && npm run demo:e2e   # local microservices demo, rule-based engine only (about 25 minutes)
@@ -38,7 +38,7 @@ cd services/ai && uv run ruff check .
 
 ## Rules that are easy to get wrong
 
-- **Migrations:** never run plain `prisma migrate dev`. Prisma cannot model the HNSW index on `KnowledgeChunk.embedding` and will generate `DROP INDEX "KnowledgeChunk_embedding_hnsw_idx"`. Use `npm run db:migrate:new -w @opspilot/api -- --name <name>` (create-only), delete that DROP line, then `npm run db:migrate`.
+- **Migrations:** never run plain `prisma migrate dev`. Prisma cannot model the HNSW index on `KnowledgeChunk.embedding` and will generate `DROP INDEX "KnowledgeChunk_embedding_hnsw_idx"`. Use `npm run db:migrate:new -w @opsilume/api -- --name <name>` (create-only), delete that DROP line, then `npm run db:migrate`.
 - **Tenancy:** every query filters by `organizationId` from `req.auth`. Use `authOf(req)`; never take an organisation id from the request body or path. Cross-tenant references must be validated (see `assertServices`, `assertMembers`).
 - **Permissions:** add new ones in `src/lib/permissions.ts`; guard routes with `requirePermission`. Approve/execute routes also use `requireUser` so API keys and the AI tool token can never reach them.
 - **The AI agent is read-only.** It gets a short-lived token valid only under `/api/v1/tools`. New agent capabilities are new GET tools there plus a `ToolSpec` in `services/ai/app/tools.py`. Do not add write tools.
@@ -50,13 +50,13 @@ cd services/ai && uv run ruff check .
 - **Approvals are bound to content** (`contentHash` in `modules/remediation/content.ts`). Anything that edits an action must supersede its approvals (`approvals.ts`). A webhook timeout or 5xx is outcome `unknown`, never success and never a clean failure (`execution.ts`).
 - **Figures are checked** by `services/ai/app/claims.py`. When it flags something wrong on real output, fix the validator and add the case to `tests/test_reliability.py`.
 - **The demo must never call a paid model.** `demo/scripts` start the AI service with `AI_PROVIDER=deterministic` and refuse to run otherwise. Keep it that way.
-- **Naming.** The product is OPSILUME in anything a person reads; identifiers (packages, headers, env vars, database, repository) stay `opspilot`. See `docs/branding/opsilume-branding.md`.
+- **Naming.** The product is OPSILUME in anything a person reads, and `opsilume` in identifiers (packages, headers, env vars, database, repository). See `docs/branding/opsilume-branding.md`.
 - **Shared contracts.** Closed value sets, guardrail limits and action-effect rules live in `contracts/*.json` and are generated into both languages; never edit `generated/` files or re-declare one of those values by hand. The report (`services/ai/app/schemas.py`) and the agent tools are exported from Python and the API is tested against the export (`apps/api/tests/contract.test.ts`). The API keeps its own, independent guardrail pass (`modules/investigations/guardrails.ts`); do not remove it.
 - **Frontend API types are generated.** `apps/web/src/lib/types.ts` only re-exports `lib/generated/api.ts`, which comes from `apps/api/src/contracts/api.ts`. To use a new response field in the web app, add it to the contract, run `npm run contracts`, and let `apps/api/tests/api-contract.test.ts` prove the API returns it.
-- **Rule-based engine.** Each rule in `services/ai/app/rules.py` has its own tests (`tests/test_rules.py`); `tests/test_heuristics_golden.py` pins every report the engine produces. Regenerate the snapshot (`OPSPILOT_WRITE_GOLDEN=1`) only for an intended change, and say so in the commit.
+- **Rule-based engine.** Each rule in `services/ai/app/rules.py` has its own tests (`tests/test_rules.py`); `tests/test_heuristics_golden.py` pins every report the engine produces. Regenerate the snapshot (`OPSILUME_WRITE_GOLDEN=1`) only for an intended change, and say so in the commit.
 - **Spans carry ids and counts only.** No question text, tool arguments, log lines, prompts, error messages, credentials or anything identifying a person. Both services scrub every span on export; the cases are in `contracts/fixtures/span-scrubbing.json`. See `docs/tracing.md`.
 - **An investigation runs at most once and reaches exactly one end.** Starting a run is a conditional update (`runner.ts`); everything that follows from a report happens only if `persistFinal` stored it; a run whose worker is gone is recorded as interrupted (`markInterrupted`), never restarted. Do not add queue retries to `investigation`, and do not write a terminal state unconditionally. The cases are in `apps/api/tests/reliability.test.ts` and `outage.test.ts`.
-- **Failure experiments use the isolated stack or the test proxies.** `scripts/isolated-stack.mjs` is a separate Compose project (`opspilot-isolated`) with its own volume, ports and generated secrets; `apps/api/tests/faults.ts` cuts Redis and PostgreSQL with a TCP proxy and never stops a server. Never stop, kill or reset containers of the default project for a test.
+- **Failure experiments use the isolated stack or the test proxies.** `scripts/isolated-stack.mjs` is a separate Compose project (`opsilume-isolated`) with its own volume, ports and generated secrets; `apps/api/tests/faults.ts` cuts Redis and PostgreSQL with a TCP proxy and never stops a server. Never stop, kill or reset containers of the default project for a test.
 - **Integration status is what happened, not what was saved.** `modules/integrations.ts` lists the sources that really exist and derives each status from accepted data, recorded rejections (`lib/integrationState.ts`) and explicit checks. Do not add a source there that the codebase cannot ingest, and do not mark anything `delivering` because a credential exists. Messages stored in `IntegrationState` are shown to users: compose them from field names and our own wording, never from payload values, upstream response bodies, URLs or credentials.
 - **Requests to tenant-supplied URLs go through `safeRequest`** (`apps/api/src/lib/netguard.ts`), never through `fetch`. It checks addresses in the lookup the connection itself uses, so the check cannot be answered differently from the connection (DNS rebinding); it does not follow redirects and returns the status only. `assertSafeOutboundUrl` is advice at save time, not the protection. A refused destination is `UnsafeDestinationError`: nothing was sent, so a remediation outcome is `not_applied`, not `unknown`. The cases are in `apps/api/tests/netguard.test.ts`, which makes real connections.
 - **Ingestion is idempotent only when asked.** With an `Idempotency-Key` header the key row and the data are written in one transaction (`lib/idempotency.ts`); every ingestion write must therefore go through the `db` client the route is handed, never through `prisma` directly. Never deduplicate telemetry by content: two identical batches without a key are two batches.

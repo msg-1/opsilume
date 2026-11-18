@@ -4,6 +4,20 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 
 ## [Unreleased]
 
+### Renamed to OPSILUME (18 November 2026, branch `feature/rename-to-opsilume`)
+- **Every identifier now uses the product name:**
+  - the repository (`msg-1/opsilume`);
+  - npm packages (`@opsilume/api`, `@opsilume/web`) and the Python package (`opsilume-ai`);
+  - environment variables (`OPSILUME_*`);
+  - webhook headers (`X-OPSILUME-Signature`, `X-OPSILUME-Attempt`);
+  - the database, role and test database (`opsilume`, `opsilume_test`);
+  - Compose project, image and container names, including the prototypes;
+  - the MCP server name;
+  - the demo password (`Opsilume-demo-1`);
+  - the remaining interface text.
+- **Breaking for existing local installations:** a stack started under the new names gets new, empty volumes, and the former containers, volumes and images keep their names. Re-seed or restore. Any webhook receiver must read the new signature header.
+- **Git history is not rewritten.** Commits before the rename keep the former identifiers.
+
 ### Milestones 15 and 16: recovery and post-restore remediation safety (branch `prototype/m16-p7-durability-harness`, not yet merged)
 - **Milestone 15, phase 1:** a recovery readiness audit ([docs/recovery-readiness-audit.md](docs/recovery-readiness-audit.md)).
 - **Milestone 16:** the post-restore remediation safety design, its decision review and the product-owner decisions of 17 November 2026; an isolated Phase 0 prototype and Phase 0.5 validation (`prototype/m16-phase05`).

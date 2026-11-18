@@ -76,7 +76,7 @@ describe('decision B1 and the declared identity (pure)', () => {
   test('the declared identity: a full commit, a SHA-256, an image id and a known architecture', () => {
     const ID = { sourceCommit: 'ab'.repeat(20), packageSha256: 'cd'.repeat(32), imageId: `sha256:${'ef'.repeat(32)}`, imageArch: 'amd64' };
     assert.deepEqual(identityProblems(ID), []);
-    for (const [k, v] of [['sourceCommit', 'abc1234'], ['sourceCommit', ''], ['packageSha256', 'cd'.repeat(31)], ['imageId', 'ef'.repeat(32)], ['imageId', 'opspilot-isolated-api:latest'], ['imageArch', 'x64'], ['imageArch', undefined]]) {
+    for (const [k, v] of [['sourceCommit', 'abc1234'], ['sourceCommit', ''], ['packageSha256', 'cd'.repeat(31)], ['imageId', 'ef'.repeat(32)], ['imageId', 'opsilume-isolated-api:latest'], ['imageArch', 'x64'], ['imageArch', undefined]]) {
       assert.equal(identityProblems({ ...ID, [k]: v }).length, 1, `${k}=${v}`);
     }
     assert.equal(identityProblems(undefined).length, 4);

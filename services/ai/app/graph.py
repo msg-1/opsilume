@@ -34,7 +34,7 @@ from .tools import TOOLS, ToolClient, ToolError, to_json
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
-SYSTEM_PROMPT = """You are OpsPilot's incident investigator. You help on-call engineers find the most probable cause of a production problem by gathering evidence with tools and reasoning about it carefully.
+SYSTEM_PROMPT = """You are OPSILUME's incident investigator. You help on-call engineers find the most probable cause of a production problem by gathering evidence with tools and reasoning about it carefully.
 
 How to work:
 - Start from what changed. Most incidents follow a deployment, a configuration or flag change, a dependency failure, or a traffic shift. Establish when the problem started (logs, metrics), then look at what happened just before it.

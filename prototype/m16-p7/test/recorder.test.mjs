@@ -38,7 +38,7 @@ const COMMIT = 'c0'.repeat(20);
 const writePackage = (name, entries, opts = { commit: COMMIT }) => { const f = path.join(PKG_DIR, name); fs.writeFileSync(f, tarGz(entries, opts)); return f; };
 const PKG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'p7-package-'));
 /** A source package of exactly this source, as `git archive` would make it from commit COMMIT. */
-const PACKAGE = writePackage('opspilot-p7-test.tar.gz', sourceEntries());
+const PACKAGE = writePackage('opsilume-p7-test.tar.gz', sourceEntries());
 const IDENTITY = { sourceCommit: COMMIT, packageSha256: createHash('sha256').update(fs.readFileSync(PACKAGE)).digest('hex'), imageId: `sha256:${'e2'.repeat(32)}`, imageArch: 'amd64' };
 const IDENTITY_FLAGS = ['--source-commit', IDENTITY.sourceCommit, '--package-sha256', IDENTITY.packageSha256, '--image-id', IDENTITY.imageId, '--image-arch', IDENTITY.imageArch, '--package', PACKAGE];
 const FP = 'f1'.repeat(32);
@@ -1524,7 +1524,7 @@ describe('source package: the recorder checks the declared commit and checksum a
 
   test('the package is read without extracting it: its checksum, the commit git embedded, and every file', () => {
     const pkg = readPackage(PACKAGE);
-    assert.deepEqual([pkg.sha256, pkg.commit, pkg.prefix, pkg.files.size], [IDENTITY.packageSha256, COMMIT, 'opspilot-p7-test', SOURCE.files]);
+    assert.deepEqual([pkg.sha256, pkg.commit, pkg.prefix, pkg.files.size], [IDENTITY.packageSha256, COMMIT, 'opsilume-p7-test', SOURCE.files]);
     assert.deepEqual(sourceDigestOfFiles(pkg.files), SOURCE, 'the digest of the packaged source is the digest of the same files on disk');
     assert.deepEqual(packageProblems(PACKAGE, IDENTITY), []);
     // Documents, tests and other directories in a package are not part of the source digest; long paths are read.
@@ -1580,11 +1580,11 @@ describe('source package: the recorder checks the declared commit and checksum a
     const head = spawnSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
     if (head.status !== 0) return t.skip('not a git checkout');
     const out = path.join(PKG_DIR, 'real.tar.gz');
-    const made = spawnSync('git', ['-C', repo, 'archive', '--format=tar.gz', '--prefix=opspilot-p7-real/', '-o', out, 'HEAD', 'prototype/m16-p7/lib', 'prototype/m16-phase05/lib'], { encoding: 'utf8' });
+    const made = spawnSync('git', ['-C', repo, 'archive', '--format=tar.gz', '--prefix=opsilume-p7-real/', '-o', out, 'HEAD', 'prototype/m16-p7/lib', 'prototype/m16-phase05/lib'], { encoding: 'utf8' });
     assert.equal(made.status, 0, made.stderr);
     const pkg = readPackage(out);
     assert.equal(pkg.commit, head.stdout.trim());
-    assert.equal(pkg.prefix, 'opspilot-p7-real');
+    assert.equal(pkg.prefix, 'opsilume-p7-real');
     assert.ok(pkg.files.has('prototype/m16-p7/lib/ledger.mjs') && pkg.files.has('prototype/m16-phase05/lib/journal.mjs'));
     const tracked = spawnSync('git', ['-C', repo, 'show', 'HEAD:prototype/m16-p7/lib/ledger.mjs'], { encoding: 'buffer' }).stdout;
     assert.ok(pkg.files.get('prototype/m16-p7/lib/ledger.mjs').equals(tracked), 'the content is the committed content, byte for byte');

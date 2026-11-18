@@ -42,10 +42,10 @@ def test_span_attributes_are_scrubbed_like_the_api_scrubs_them(case):
 
 
 def test_every_exported_span_and_event_passes_the_scrubber(spans):
-    with tracer.start_as_current_span("lookup", attributes={"http.request.header.authorization": "Bearer abc", "url.full": "http://api:4000/api/v1/logs?q=secret+words", "opspilot.tool.name": "search_logs"}) as span:
+    with tracer.start_as_current_span("lookup", attributes={"http.request.header.authorization": "Bearer abc", "url.full": "http://api:4000/api/v1/logs?q=secret+words", "opsilume.tool.name": "search_logs"}) as span:
         span.add_event("exception", {"exception.message": "rejected ada@example.com"})
     (exported,) = spans()
-    assert dict(exported.attributes) == {"url.full": "http://api:4000/api/v1/logs", "opspilot.tool.name": "search_logs"}
+    assert dict(exported.attributes) == {"url.full": "http://api:4000/api/v1/logs", "opsilume.tool.name": "search_logs"}
     assert dict(exported.events[0].attributes) == {"exception.message": f"rejected {REDACTED}"}
     assert exported.name == "lookup" and exported.context.trace_id == span.get_span_context().trace_id
 
@@ -67,7 +67,7 @@ async def test_a_tool_call_carries_the_trace_to_the_api_and_keeps_its_arguments_
     version, trace_id, span_id, _flags = seen[0].headers["traceparent"].split("-")
     assert (version, int(trace_id, 16), int(span_id, 16)) == ("00", parent.get_span_context().trace_id, tool.context.span_id)
     assert tool.parent.span_id == parent.get_span_context().span_id
-    assert dict(tool.attributes) == {"opspilot.tool.name": "search_logs", "http.response.status_code": 200}
+    assert dict(tool.attributes) == {"opsilume.tool.name": "search_logs", "http.response.status_code": 200}
     assert seen[0].url.params["q"].startswith("card declined") and "secret-tool-token" not in json.dumps([dict(s.attributes) for s in spans()])
 
 
@@ -99,7 +99,7 @@ def test_the_investigation_continues_the_trace_it_was_called_with(spans):
     investigation = next(s for s in recorded if s.name == "investigation")
     tools = [s for s in recorded if s.name.startswith("tool ")]
     assert format(investigation.context.trace_id, "032x") == TRACE_ID
-    assert dict(investigation.attributes) == {"opspilot.investigation.id": "inv-42", "opspilot.engine.provider": "heuristic"}
+    assert dict(investigation.attributes) == {"opsilume.investigation.id": "inv-42", "opsilume.engine.provider": "heuristic"}
     # Nothing listens at the API address, so every tool call failed, inside the same trace.
     assert tools and all(s.context.trace_id == investigation.context.trace_id and s.status.status_code is StatusCode.ERROR for s in tools)
     assert all(s.parent is not None for s in tools)

@@ -20,7 +20,7 @@ from opentelemetry import propagate, trace
 from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-tracer = trace.get_tracer("opspilot.ai")
+tracer = trace.get_tracer("opsilume.ai")
 
 REDACTED = "[redacted]"
 _SENSITIVE_WORDS = {"authorization", "cookie", "cookies", "token", "secret", "password", "passwd", "credential", "credentials", "apikey", "email", "enduser", "user", "username"}
@@ -107,7 +107,7 @@ def setup(app: Any, endpoint: str) -> None:  # pragma: no cover - needs a collec
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
 
-    provider = TracerProvider(resource=Resource.create({"service.name": "opspilot-ai"}))
+    provider = TracerProvider(resource=Resource.create({"service.name": "opsilume-ai"}))
     provider.add_span_processor(BatchSpanProcessor(ScrubbingExporter(OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces"))))
     trace.set_tracer_provider(provider)
     # Probes and scrapes would bury the traces worth reading, and so would a span for every

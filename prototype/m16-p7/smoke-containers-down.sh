@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Removes the stopped CONTAINERS and the NETWORKS of the smoke project "opspilot-m16-p7-smoke", and nothing else.
+# Removes the stopped CONTAINERS and the NETWORKS of the smoke project "opsilume-m16-p7-smoke", and nothing else.
 # Every smoke volume is kept: they are checked before, never named in a removing command, and compared afterwards.
 # This file contains no command that can remove a volume, and none that starts, stops or forces anything.
 #   ./smoke-containers-down.sh                                   dry run: every check, then what would be removed
-#   ./smoke-containers-down.sh --confirm opspilot-m16-p7-smoke   removes exactly the containers and networks the dry run printed
+#   ./smoke-containers-down.sh --confirm opsilume-m16-p7-smoke   removes exactly the containers and networks the dry run printed
 # It refuses unless ALL of this holds:
-#   - the project is exactly opspilot-m16-p7-smoke (fixed here; no argument can name another project);
-#   - the project's volumes are smoke volumes and nothing else: named opspilot-m16-p7-smoke_pgdata or _state, alone or
+#   - the project is exactly opsilume-m16-p7-smoke (fixed here; no argument can name another project);
+#   - the project's volumes are smoke volumes and nothing else: named opsilume-m16-p7-smoke_pgdata or _state, alone or
 #     with a generation suffix (compose.smoke.yml), each with that project's labels and the label
-#     opspilot.p7.data=disposable-harness-smoke; and there is at least one of each kind;
+#     opsilume.p7.data=disposable-harness-smoke; and there is at least one of each kind;
 #   - every container found is labelled with that project, is one of db, gateway, harness (each at most once), is not
 #     running, and mounts no volume other than those smoke volumes;
 #   - only containers of that project use the volumes or are attached to the project's networks;
@@ -19,7 +19,7 @@
 # (identity, not content), and that the containers and networks are gone. It exits 3 if any of that is not so.
 # What it does NOT do: it does not give a later smoke run fresh volumes. The kept volumes still hold the earlier run.
 set -euo pipefail
-PROJ=opspilot-m16-p7-smoke
+PROJ=opsilume-m16-p7-smoke
 WANT_CLASS=disposable-harness-smoke
 VOL_RE="^${PROJ}_(pgdata|state)(_[a-z0-9]{1,24})?\$"
 SERVICES=" db gateway harness "
@@ -43,7 +43,7 @@ for v in $volumes; do
   kind="${BASH_REMATCH[1]}"; kinds="$kinds$kind "
   [ "$(vlabel "$v" com.docker.compose.project)" = "$PROJ" ] || refuse "volume $v does not belong to project $PROJ"
   [ "$(vlabel "$v" com.docker.compose.volume)" = "$kind" ] || refuse "volume $v is not the Compose volume its name says"
-  [ "$(vlabel "$v" opspilot.p7.data)" = "$WANT_CLASS" ] || refuse "volume $v is not labelled opspilot.p7.data=$WANT_CLASS"
+  [ "$(vlabel "$v" opsilume.p7.data)" = "$WANT_CLASS" ] || refuse "volume $v is not labelled opsilume.p7.data=$WANT_CLASS"
 done
 has "$kinds" pgdata && has "$kinds" state || refuse "project $PROJ should have at least one pgdata and one state smoke volume, found: ${volumes:-none}"
 before="$(videntity)"

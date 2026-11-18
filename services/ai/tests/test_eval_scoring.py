@@ -38,8 +38,8 @@ async def gather(name: str) -> tuple[EvidenceStore, list[dict[str, Any]], str]:
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit)
     await run_investigation(ctx)
     await tools.aclose()
@@ -225,7 +225,7 @@ async def test_deployment_context_fake_mirrors_the_real_api():
     """The scenario's rollback target is knowable only from this tool, so the fake must behave
     like deploymentContext() in the API: skip failed releases, and count time from the scenario clock."""
     scenario = BY_NAME["deployment_rollback_target"]
-    async with httpx.AsyncClient(transport=httpx.MockTransport(scenario.handler()), base_url="http://opspilot.test/api/v1/tools") as client:
+    async with httpx.AsyncClient(transport=httpx.MockTransport(scenario.handler()), base_url="http://opsilume.test/api/v1/tools") as client:
         body = (await client.get("/deployment-context", params={"service": "checkout-api"})).json()
         assert body["deployment"]["id"] == "d11" and body["isLatest"] is True and body["minutesSinceDeployment"] == 24
         assert body["previousSuccessful"]["version"] == "v2.7.4"

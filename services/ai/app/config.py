@@ -72,9 +72,9 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str = "http://localhost:4318"
     log_level: str = "info"
 
-    # MCP server (run by an external MCP client): authenticates with an OpsPilot API key
-    opspilot_api_url: str = ""
-    opspilot_api_key: str = ""
+    # MCP server (run by an external MCP client): authenticates with an OPSILUME API key
+    opsilume_api_url: str = ""
+    opsilume_api_key: str = ""
 
 
     @property

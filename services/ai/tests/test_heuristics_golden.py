@@ -5,7 +5,7 @@ rule functions (Milestone 5). The complete report of every evaluation scenario, 
 trace, dependency-chain and rollback cases found on real telemetry, must stay byte-for-byte
 the same. Regenerate only for an intended change in behaviour:
 
-    OPSPILOT_WRITE_GOLDEN=1 uv run pytest tests/test_heuristics_golden.py
+    OPSILUME_WRITE_GOLDEN=1 uv run pytest tests/test_heuristics_golden.py
 """
 
 import json
@@ -96,8 +96,8 @@ async def rule_based_report(scenario: Scenario) -> dict[str, Any]:
     async def emit(_event: dict[str, Any]) -> None:
         return None
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window=scenario.time_window(), current_time=t(0))
     report = await run_investigation(Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit))
     await tools.aclose()
     return report.wire()
@@ -108,7 +108,7 @@ ALL = [*SCENARIOS, *extra_scenarios()]
 
 async def test_golden_file_is_complete():
     reports = {s.name: await rule_based_report(s) for s in ALL}
-    if os.environ.get("OPSPILOT_WRITE_GOLDEN"):
+    if os.environ.get("OPSILUME_WRITE_GOLDEN"):
         GOLDEN.write_text(json.dumps(reports, indent=1, sort_keys=True) + "\n")
     assert set(json.loads(GOLDEN.read_text())) == set(reports)
 

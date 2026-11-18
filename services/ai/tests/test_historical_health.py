@@ -72,8 +72,8 @@ async def investigate(scenario: Scenario):
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(handle))
-    request = InvestigationRequest(investigation_id="inv-h", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window={"from": FROM, "to": TO}, current_time=NOW.isoformat())
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(handle))
+    request = InvestigationRequest(investigation_id="inv-h", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window={"from": FROM, "to": TO}, current_time=NOW.isoformat())
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit)
     report = await run_investigation(ctx)
     await tools.aclose()
@@ -160,8 +160,8 @@ async def test_health_is_asked_for_the_window_even_when_the_caller_does_not_say_
     async def emit(_):
         return None
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(handle))
-    request = InvestigationRequest(investigation_id="inv-w", question="q", organization_name="Org", api_url="http://opspilot.test", tool_token="tok")
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(handle))
+    request = InvestigationRequest(investigation_id="inv-w", question="q", organization_name="Org", api_url="http://opsilume.test", tool_token="tok")
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit)
     ctx.window = (FROM, TO)
     await run_tool(ctx, "get_service", {"service": "web-app"})

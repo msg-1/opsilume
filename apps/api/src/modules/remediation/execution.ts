@@ -24,10 +24,10 @@ export interface ExecutionResult {
 }
 
 /**
- * OpsPilot has no direct access to production. An approved action is carried out either
+ * OPSILUME has no direct access to production. An approved action is carried out either
  *  - by POSTing it (HMAC-signed) to the organisation's remediation webhook, e.g. a CI/CD
  *    pipeline or runbook automation that performs the change, or
- *  - manually by the operator, who then attests in OpsPilot that it was done.
+ *  - manually by the operator, who then attests in OPSILUME that it was done.
  * In both cases the effect is recorded on the service timeline.
  */
 export async function execute(action: RemediationAction, operator: { userId: string; label: string }, approvers: { approverId: string; approvedAt: Date }[], manualNotes: string | undefined, fingerprint: string, destination: Destination): Promise<ExecutionResult> {
@@ -65,7 +65,7 @@ export async function execute(action: RemediationAction, operator: { userId: str
     // may not now. Redirects are not followed and the response body is not read.
     const res = await safeRequest(destination.url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'user-agent': 'opspilot', 'idempotency-key': action.id, 'x-opspilot-attempt': String(action.attempts), ...(secret ? { 'x-opspilot-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
+      headers: { 'content-type': 'application/json', 'user-agent': 'opsilume', 'idempotency-key': action.id, 'x-opsilume-attempt': String(action.attempts), ...(secret ? { 'x-opsilume-signature': `sha256=${hmacSha256Hex(secret, body)}` } : {}) },
       body,
       timeoutMs: env.REMEDIATION_WEBHOOK_TIMEOUT_MS,
     });

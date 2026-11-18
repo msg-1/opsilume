@@ -63,7 +63,7 @@ This starts OPSILUME (API, worker, AI service, web), creates the demo organisati
 
 Then:
 
-- OPSILUME: http://localhost:3000 — sign in as `shop-demo@example.com` / `OpsPilot-demo-1`
+- OPSILUME: http://localhost:3000 — sign in as `shop-demo@example.com` / `Opsilume-demo-1`
 - Traces: http://localhost:16686
 - Prometheus: http://localhost:9090
 

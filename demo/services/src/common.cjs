@@ -5,8 +5,8 @@ const client = require('prom-client');
 const { trace } = require('@opentelemetry/api');
 
 const SERVICE = process.env.SERVICE_NAME;
-const API = process.env.OPSPILOT_API_URL;
-const KEY = process.env.OPSPILOT_API_KEY;
+const API = process.env.OPSILUME_API_URL;
+const KEY = process.env.OPSILUME_API_KEY;
 const ADMIN_TOKEN = process.env.DEMO_ADMIN_TOKEN || 'local-demo';
 
 // ── Logs: JSON on stdout, and the same lines shipped in batches to the log ingestion API ──

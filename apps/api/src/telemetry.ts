@@ -19,7 +19,7 @@ if (enabled) {
   // The API and the worker are the same image with different entry points.
   const isWorker = /worker\.[cm]?[jt]s$/.test(process.argv[1] ?? '');
   const sdk = new NodeSDK({
-    serviceName: process.env.OTEL_SERVICE_NAME ?? (isWorker ? 'opspilot-worker' : 'opspilot-api'),
+    serviceName: process.env.OTEL_SERVICE_NAME ?? (isWorker ? 'opsilume-worker' : 'opsilume-api'),
     // Every span passes the scrubber on its way out: no credentials, nothing identifying a person.
     traceExporter: scrubbingExporter(new OTLPTraceExporter({ url: `${endpoint}/v1/traces` })),
     // No host or process detection: a machine name and an OS user name identify a person when

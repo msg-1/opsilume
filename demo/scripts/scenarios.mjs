@@ -58,7 +58,7 @@ export const SCENARIOS = {
 
 /** Every fault off, every container running. This is the healthy baseline. */
 export async function baseline() {
-  for (const name of ['demo-redis', 'demo-payments']) if (!dockerRunning(`opspilot-${name}-1`)) compose(['start', name], { quiet: true });
+  for (const name of ['demo-redis', 'demo-payments']) if (!dockerRunning(`opsilume-${name}-1`)) compose(['start', name], { quiet: true });
   for (let i = 0; i < 30; i++) {
     try {
       await admin('shop-orders', '/faults', { dbDelayMs: 0, poolHold: 0 });

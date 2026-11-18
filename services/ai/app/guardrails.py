@@ -311,7 +311,7 @@ def enforce(report: InvestigationReport, store: EvidenceStore, *, scope: list[st
         setattr(report, written, _OVERCLAIM.sub("leading hypothesis", text) + " This is a hypothesis; the root cause has not been confirmed.")
         notes.append(f"Rephrased wording in the {written} that presented the cause as confirmed.")
     if not report.uncertainties:
-        report.uncertainties.append("The analysis is based only on the records available in OpsPilot for the examined time window.")
+        report.uncertainties.append("The analysis is based only on the records available in OPSILUME for the examined time window.")
         notes.append("Added a missing statement of uncertainty.")
     report.assumptions = list(dict.fromkeys(report.assumptions))
 

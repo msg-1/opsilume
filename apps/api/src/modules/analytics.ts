@@ -165,7 +165,7 @@ analyticsRouter.get('/incidents.csv', requirePermission('read'), async (req, res
   ];
   await audit(req, 'report.export', 'report', null, { type: 'incidents', rows: incidents.length });
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="opspilot-incidents.csv"');
+  res.setHeader('Content-Disposition', 'attachment; filename="opsilume-incidents.csv"');
   res.send(lines.join('\n'));
 });
 

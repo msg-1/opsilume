@@ -149,7 +149,7 @@ What can be connected and whether it works. Status follows what happened (data a
 | `POST /:id/reconcile` | For the latest attempt whose outcome is `unknown`: `{ outcome: 'applied' \| 'not_applied' \| 'unknown', notes, attempt }`. Applied: `EXECUTED`; not applied: may be retried; unknown: stays blocked. Sends nothing |
 | `POST /:id/cancel` | Cancel before execution |
 
-The webhook request carries `Idempotency-Key: <action id>` (the same for every attempt), `X-OpsPilot-Attempt`, and in the body `idempotencyKey`, `attempt`, `effect`, `contentHash` (the approval fingerprint the approvals were given for) and `approvals`. A timeout (`REMEDIATION_WEBHOOK_TIMEOUT_MS`, default 30 s), a dropped connection or a 5xx is recorded as outcome `unknown`. See [reliability.md](reliability.md).
+The webhook request carries `Idempotency-Key: <action id>` (the same for every attempt), `X-OPSILUME-Attempt`, and in the body `idempotencyKey`, `attempt`, `effect`, `contentHash` (the approval fingerprint the approvals were given for) and `approvals`. A timeout (`REMEDIATION_WEBHOOK_TIMEOUT_MS`, default 30 s), a dropped connection or a 5xx is recorded as outcome `unknown`. See [reliability.md](reliability.md).
 
 An approval counts for `REMEDIATION_APPROVAL_VALIDITY_HOURS` (default 24, a security policy the operator chooses). An execution still in progress after `REMEDIATION_EXECUTION_STALE_MINUTES` (default 10) is recorded as outcome `unknown` for a person to reconcile. A production change that is an AI proposal or is linked to an investigation that does not support it (`sourceReview.verified: false`) can be submitted and approved only with `acknowledgeUnverifiedSource: true`; see reliability.md §4 and §4c.
 

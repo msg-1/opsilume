@@ -1,6 +1,6 @@
 # OPSILUME branding
 
-OPSILUME is the working name of the product that was developed as OpsPilot. This document says what the name means, how the product is described, where the name is used, and where the old name is kept on purpose.
+OPSILUME is the product's name. This document says what the name means, how the product is described and where the name is used.
 
 **Status of the name: a selected working name, not yet cleared.** No trademark search, trademark registration or domain registration has been done. Nothing in this repository should be read as a claim that the name is legally available. See [Clearance still required](#clearance-still-required).
 
@@ -64,28 +64,28 @@ Changed to OPSILUME in this milestone:
 - README title and introduction, and documentation written from this milestone on (`demo/README.md`, this document, the reliability documentation).
 - The brand values live in one place for the interface: `apps/web/src/lib/brand.ts`.
 
-## Identifiers that intentionally keep the old name
+## Identifiers
 
-Renaming these would break existing installations, links, credentials or history, and brings no benefit to a user. They stay as they are until a rename is separately decided and planned.
+Since 18 November 2026 every identifier uses the name as well (decision 27 in [decisions.md](../decisions.md)):
 
-| Identifier | Value | Why it stays |
-|---|---|---|
-| GitHub repository and URL | `msg-1/opspilot` | Renaming a public repository was not authorised; links and clones depend on it |
-| npm packages | `opspilot`, `@opspilot/api`, `@opspilot/web` | Workspace names used in scripts, CI and lockfiles |
-| Python package | `opspilot-ai` | Same |
-| Docker Compose project, images, containers | `opspilot`, `opspilot-api-1`, … | Volumes and running stacks are keyed by the project name |
-| Database, role and volume | `opspilot`, `opspilot_test`, `pgdata` | Existing data |
-| API paths | `/api/v1/...` | Unchanged; they never contained the name |
-| HTTP headers | `X-OpsPilot-Signature`, `X-OpsPilot-Attempt`, `User-Agent: opspilot` | Webhook receivers verify and match on these |
-| Cookie names, JWT issuer, queue names | as they are | Changing them signs every user out or orphans queued jobs |
-| Environment variables | `OPSPILOT_API_KEY`, `OPSPILOT_API_URL`, `OPSPILOT_WRITE_CONTRACT` and others | Deployment configuration |
-| MCP server name and tool prefix | `opspilot` | Client configurations refer to it |
-| Demo password | `OpsPilot-demo-1` | A credential in existing seeds and tests |
-| File and directory names | `apps/web/e2e/opspilot.spec.ts`, memory and CI names | No user sees them |
-| Code comments and log lines | "OpsPilot" in older comments and in `OpsPilot API listening` | Historical; changed when the surrounding code is next touched |
-| Git history, changelog entries and earlier documents | "OpsPilot" | They record what was true when written |
+| Identifier | Value |
+|---|---|
+| GitHub repository and URL | `msg-1/opsilume` |
+| npm packages | `opsilume`, `@opsilume/api`, `@opsilume/web` |
+| Python package | `opsilume-ai` |
+| Docker Compose project, images, containers | `opsilume`, `opsilume-api-1`, … |
+| Database, role and test database | `opsilume`, `opsilume_test` |
+| HTTP headers | `X-OPSILUME-Signature`, `X-OPSILUME-Attempt`, `User-Agent: opsilume` |
+| Environment variables | `OPSILUME_API_KEY`, `OPSILUME_API_URL`, `OPSILUME_WRITE_CONTRACT` and others |
+| MCP server name and tool prefix | `opsilume` |
+| Demo password (seeded demo data only) | `Opsilume-demo-1` |
 
-Older documents (`docs/architecture.md`, `docs/engineering-audit.md` and others) still say OpsPilot in their body. They describe the same product; each now needs no change to remain correct, and is updated to the new name when it is next revised.
+API paths (`/api/v1/...`) never contained a name and are unchanged.
+
+What the rename does not change:
+- **Git history:** it is not rewritten. Commits made before the rename keep the former identifiers.
+- **Local Docker resources:** containers, volumes and images created before the rename keep their former names. A stack started after the rename gets new, empty volumes under the `opsilume` project, so a local database must be re-seeded or restored.
+- **Webhook receivers:** any receiver built against the former signature header must now read `X-OPSILUME-Signature`. No receiver outside this repository is known.
 
 ## Clearance still required
 
@@ -95,7 +95,7 @@ Before OPSILUME is used as anything more than a working name:
 2. **Trademark application**, if the search is clear and the owner decides to proceed.
 3. **Domain names**: availability and registration of the chosen domains. None has been registered or configured.
 4. **Company, product and social-media name checks** for existing use of the same or a confusingly similar name.
-5. **Repository and package rename plan**, if wanted: GitHub redirects, package names, Compose project and database names, header names with a period in which both are accepted.
+5. **Repository and package names**: renamed on 18 November 2026 (see Identifiers above). If the name is not cleared, they must be renamed again.
 6. **Legal review** of the description and tagline as marketing claims.
 
 Until then: the name appears in the product and its documentation as a working name; no release is published under it; no domain is pointed at it.

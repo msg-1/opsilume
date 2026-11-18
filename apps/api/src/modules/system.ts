@@ -103,7 +103,7 @@ registerProcessor('log-retention', async () => {
 export const healthRouter = Router();
 
 healthRouter.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'opspilot-api', time: new Date().toISOString() });
+  res.json({ status: 'ok', service: 'opsilume-api', time: new Date().toISOString() });
 });
 
 healthRouter.get('/ready', async (_req, res) => {

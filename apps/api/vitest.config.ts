@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-// Integration tests run against the real Postgres test database (opspilot_test, created by
+// Integration tests run against the real Postgres test database (opsilume_test, created by
 // infra/postgres/init.sql). Queue jobs run inline, so no Redis or worker is needed, except in
 // tests/queue.test.ts, which runs real BullMQ workers and skips itself locally when Redis is absent.
 export default defineConfig({
@@ -12,7 +12,7 @@ export default defineConfig({
     hookTimeout: 60_000,
     env: {
       NODE_ENV: 'test',
-      DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://opspilot:opspilot@localhost:5432/opspilot_test?schema=public',
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgresql://opsilume:opsilume@localhost:5432/opsilume_test?schema=public',
       JWT_SECRET: 'test-jwt-secret-test-jwt-secret-test-jwt-secret',
       INTERNAL_SERVICE_TOKEN: 'test-internal-token-test-internal-token-0000',
       ENCRYPTION_KEY: 'ab'.repeat(32),

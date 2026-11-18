@@ -409,7 +409,7 @@ The fix for round 4 was not reviewed again.
 
 **Validation.** Unit suite 477 of 477, three consecutive runs. Removal stub suites pass. `git diff --check` is clean.
 
-A new Docker smoke (project `opspilot-m16-p7-scratch8`) could not run. Docker refused to create its third network, because all predefined address pools are taken by the preserved scratch projects. It left two empty networks, `opspilot-m16-p7-scratch8_p7db` and `opspilot-m16-p7-scratch8_p7gw`; nothing was removed. The last smoke that ran (7) predates the changes of sections 14.1 and 14.2. Those changes are in the recorder, and the time request now takes an earlier path. They are covered by the unit tests, including real `serve` processes, but not by a container smoke.
+A new Docker smoke (project `opsilume-m16-p7-scratch8`) could not run. Docker refused to create its third network, because all predefined address pools are taken by the preserved scratch projects. It left two empty networks, `opsilume-m16-p7-scratch8_p7db` and `opsilume-m16-p7-scratch8_p7gw`; nothing was removed. The last smoke that ran (7) predates the changes of sections 14.1 and 14.2. Those changes are in the recorder, and the time request now takes an earlier path. They are covered by the unit tests, including real `serve` processes, but not by a container smoke.
 
 **Remaining limits:**
 - the accepted total-storage-failure loss;
@@ -447,17 +447,17 @@ A new Docker smoke (project `opspilot-m16-p7-scratch8`) could not run. Docker re
 | Low: a run created after the server started, whose key was never read and is unreadable now | Documented; nothing can authenticate it |
 
 **Docker resources (ruling C).** Inspected first; the record is saved in the session scratchpad (`scratch-smoke8/networks-before-removal.json`). Then removed by id:
-- `opspilot-m16-p7-scratch8_p7db` (`f8b5dee2…`, subnet 192.168.224.0/20)
-- `opspilot-m16-p7-scratch8_p7gw` (`4622ee45…`, subnet 192.168.240.0/20)
+- `opsilume-m16-p7-scratch8_p7db` (`f8b5dee2…`, subnet 192.168.224.0/20)
+- `opsilume-m16-p7-scratch8_p7gw` (`4622ee45…`, subnet 192.168.240.0/20)
 
-Both carried the Compose labels of project `opspilot-m16-p7-scratch8` and its bridge names `p7zdb0`/`p7zgw0`. Neither had a container attached. The project had no containers and no volumes. The network lists before and after differ by exactly those two. Containers (24) and volumes (16) are unchanged.
+Both carried the Compose labels of project `opsilume-m16-p7-scratch8` and its bridge names `p7zdb0`/`p7zgw0`. Neither had a container attached. The project had no containers and no volumes. The network lists before and after differ by exactly those two. Containers (24) and volumes (16) are unchanged.
 
 **The final smoke: BLOCKED by the environment.**
-- **Run:** project `opspilot-m16-p7-scratch9`, generation `m1118i`, port 8815, against tree hash `039bb35cdd315770` (unchanged afterwards).
-- **What happened:** Docker created one network (`opspilot-m16-p7-scratch9_p7db`, 192.168.240.0/20) and then refused the second with "all predefined address pools have been fully subnetted". Exit 1, before any container started.
+- **Run:** project `opsilume-m16-p7-scratch9`, generation `m1118i`, port 8815, against tree hash `039bb35cdd315770` (unchanged afterwards).
+- **What happened:** Docker created one network (`opsilume-m16-p7-scratch9_p7db`, 192.168.240.0/20) and then refused the second with "all predefined address pools have been fully subnetted". Exit 1, before any container started.
 - **Why:** the two other blocks that looked free (192.168.64.0/20 and 192.168.224.0/20) were not allocatable; Docker Desktop presumably reserves them.
 - **Not done, per the ruling:** no global configuration was changed and nothing unrelated was removed.
-- **Left behind:** one empty network, `opspilot-m16-p7-scratch9_p7db`. It was not removed, because its removal is not authorised.
+- **Left behind:** one empty network, `opsilume-m16-p7-scratch9_p7db`. It was not removed, because its removal is not authorised.
 - **Consequence:** the last container smoke that ran (smoke 7) predates sections 14.1 to 14.3. The recorder changes since then, including the signed time request taking an earlier path, are covered by unit tests, including real `serve` processes, but by no container smoke.
 - **To unblock:** the owner's approval to remove the networks of some stopped scratch projects, or explicit subnets in the scratch Compose override (a project-level setting, not global).
 

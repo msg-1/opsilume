@@ -98,7 +98,7 @@ A saved key or token never counts as working by itself. If a request is rejected
 
 Settings → GitHub: save a token (it is checked against GitHub before it is stored), connect repositories under Code changes and link each to its service. "Check connection" on the Integrations page asks GitHub again at any time.
 
-Settings → Organisation: set the remediation webhook address and secret. "Send a test request" sends one signed request with the event `ping` and no action. **Your receiver must ignore events it does not know**, and should verify the signature (`X-OpsPilot-Signature`, HMAC-SHA256 of the body) and honour `Idempotency-Key`.
+Settings → Organisation: set the remediation webhook address and secret. "Send a test request" sends one signed request with the event `ping` and no action. **Your receiver must ignore events it does not know**, and should verify the signature (`X-OPSILUME-Signature`, HMAC-SHA256 of the body) and honour `Idempotency-Key`.
 
 ### 7. Investigate
 

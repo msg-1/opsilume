@@ -13,9 +13,9 @@ import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import { PROJECT, URLS, compose, composeAsync, run } from './isolated-stack.mjs';
 
-if (PROJECT === 'opspilot') throw new Error('Refusing to run against the default Compose project.');
+if (PROJECT === 'opsilume') throw new Error('Refusing to run against the default Compose project.');
 
-const DEMO = { email: 'demo@example.com', password: 'OpsPilot-demo-1' };
+const DEMO = { email: 'demo@example.com', password: 'Opsilume-demo-1' };
 const API = `${URLS.api}/api/v1`;
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (line = '') => console.log(line);
@@ -90,9 +90,9 @@ async function concurrently(clients, requestsEach, make) {
 // child process freezes this process; responses that arrive meanwhile wait unread and the
 // wait is counted as latency. The first version of this script did exactly that with
 // `docker stats` (about two seconds a call) and reported it as a two-second read stall.
-const psqlAsync = async (query) => (await composeAsync(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-At', '-c', query])).stdout.trim();
+const psqlAsync = async (query) => (await composeAsync(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'opsilume', '-At', '-c', query])).stdout.trim();
 const redisAsync = async (...args) => (await composeAsync(['exec', '-T', 'redis', 'redis-cli', ...args])).stdout.trim();
-const psql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-U', 'opspilot', '-d', 'opspilot', '-At', '-c', query], { capture: true }).stdout.trim();
+const psql = (query) => compose(['exec', '-T', 'postgres', 'psql', '-U', 'opsilume', '-d', 'opsilume', '-At', '-c', query], { capture: true }).stdout.trim();
 const redis = (...args) => compose(['exec', '-T', 'redis', 'redis-cli', ...args], { capture: true }).stdout.trim();
 
 /** Samples what the database and the containers are doing while a phase runs. */
@@ -101,7 +101,7 @@ function monitor() {
   let running = true;
   const loop = (async () => {
     while (running) {
-      const [total, active] = (await psqlAsync(`SELECT count(*), count(*) FILTER (WHERE state = 'active') FROM pg_stat_activity WHERE datname = 'opspilot'`)).split('|').map(Number);
+      const [total, active] = (await psqlAsync(`SELECT count(*), count(*) FILTER (WHERE state = 'active') FROM pg_stat_activity WHERE datname = 'opsilume'`)).split('|').map(Number);
       seen.connections = Math.max(seen.connections, total || 0);
       seen.active = Math.max(seen.active, active || 0);
       const stats = (await run('docker', ['stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'])).stdout;
@@ -262,7 +262,7 @@ const failed = Math.max(0, (Number(redis('zcard', 'bull:investigation:failed')) 
 report.results.after = {
   redisMemory: redis('info', 'memory').match(/used_memory_human:(\S+)/)?.[1],
   failedInvestigationJobs: failed,
-  databaseSize: psql(`SELECT pg_size_pretty(pg_database_size('opspilot'))`),
+  databaseSize: psql(`SELECT pg_size_pretty(pg_database_size('opsilume'))`),
   ready: (await fetch(`${URLS.api}/ready`).then((r) => r.status, () => 0)) === 200,
 };
 const peak = (name) => Math.max(...Object.values(report.results).map((r) => r.observed?.[name] ?? 0));

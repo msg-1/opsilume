@@ -30,7 +30,7 @@ toolsRouter.use((req, _res, next) => {
   if (req.auth?.kind === 'tool_token') {
     void audit(req, 'ai_tool.call', 'investigation', req.auth.investigationId, { tool: req.path, query: req.query as Record<string, string> });
     // Which investigation this read belongs to. The query stays out of the span.
-    annotate({ 'opspilot.investigation.id': req.auth.investigationId, 'opspilot.tool.path': req.path });
+    annotate({ 'opsilume.investigation.id': req.auth.investigationId, 'opsilume.tool.path': req.path });
   }
   next();
 });

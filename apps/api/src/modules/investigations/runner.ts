@@ -96,7 +96,7 @@ async function execute(investigationId: string, abort: AbortController) {
 
   try {
     // The request to the AI service, and everything done with what it streams back.
-    await withSpan('investigation.run', { attributes: { 'opspilot.investigation.id': investigationId } }, () => aiService.runInvestigation(request, onEvent, abort.signal));
+    await withSpan('investigation.run', { attributes: { 'opsilume.investigation.id': investigationId } }, () => aiService.runInvestigation(request, onEvent, abort.signal));
     if (!state.finished) throw new Error('The AI service ended the investigation without producing a report');
     investigationsTotal.inc({ status: 'completed', provider: state.provider });
   } catch (err) {

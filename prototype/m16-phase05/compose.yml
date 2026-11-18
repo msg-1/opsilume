@@ -1,9 +1,9 @@
 # Phase 0.5 validation stack (Milestone 16). Its own Compose project, internal network, volumes and database.
-# Nothing is published to the host. The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime.
-name: opspilot-m16-p05
+# Nothing is published to the host. The opsilume-isolated-api image is reused only as a Node 22 + Prisma runtime.
+name: opsilume-m16-p05
 
 x-runner: &runner
-  image: opspilot-isolated-api:latest
+  image: opsilume-isolated-api:latest
   user: "0:0"
   entrypoint: ["sleep", "infinity"]
   working_dir: /proto
@@ -26,13 +26,13 @@ services:
     networks: [p05]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 30 }
   proxy:
-    image: opspilot-isolated-api:latest
+    image: opsilume-isolated-api:latest
     user: "0:0"
     entrypoint: ["node", "/proto/proxy.mjs"]
     volumes: ["./:/proto:ro"]
     networks: [p05]
   receiver:
-    image: opspilot-isolated-api:latest
+    image: opsilume-isolated-api:latest
     user: "0:0"
     entrypoint: ["node", "/proto/receiver.mjs"]
     volumes: ["./:/proto:ro"]

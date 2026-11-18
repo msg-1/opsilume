@@ -80,7 +80,7 @@ investigationsRouter.post('/', requirePermission('investigation:run'), async (re
   });
   await audit(req, 'investigation.start', 'investigation', investigation.id, { incident: incident ? incidentKey(incident.number) : null });
   if (incident) await addIncidentEvent(incident.id, 'investigation', `AI investigation started: "${body.question.slice(0, 200)}"`, auth, { investigationId: investigation.id });
-  annotate({ 'opspilot.investigation.id': investigation.id });
+  annotate({ 'opsilume.investigation.id': investigation.id });
   try {
     await enqueueInvestigation(investigation.id);
   } catch (err) {

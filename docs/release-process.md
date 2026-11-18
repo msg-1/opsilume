@@ -35,7 +35,7 @@ gh pr merge --merge
 
 # 5. Tag the merge commit on main; the Release workflow publishes it
 git checkout main && git pull --ff-only origin main
-git tag -a v0.2.0 -m "OpsPilot 0.2.0"
+git tag -a v0.2.0 -m "OPSILUME 0.2.0"
 git push origin v0.2.0
 
 # 6. Bring the release back into develop
@@ -89,7 +89,7 @@ gh pr create --base main --fill            # CI + end-to-end must pass
 gh pr merge --merge
 
 git checkout main && git pull --ff-only origin main
-git tag -a v0.2.1 -m "OpsPilot 0.2.1" && git push origin v0.2.1
+git tag -a v0.2.1 -m "OPSILUME 0.2.1" && git push origin v0.2.1
 
 git checkout develop
 git merge --no-ff hotfix/refresh-token-expiry -m "Merge hotfix/refresh-token-expiry into develop"

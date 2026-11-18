@@ -2,7 +2,7 @@ import { env } from '../config/env';
 
 /**
  * Reads distributed traces from a Jaeger-compatible query API (Jaeger itself, or anything that
- * serves /api/traces in Jaeger's JSON format). OpsPilot does not store traces: it asks the trace
+ * serves /api/traces in Jaeger's JSON format). OPSILUME does not store traces: it asks the trace
  * store at investigation time and summarises what comes back.
  *
  * The trace store is configured by the operator (TRACES_URL) and is not tenant-aware, so callers

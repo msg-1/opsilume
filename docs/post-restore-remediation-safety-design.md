@@ -70,7 +70,7 @@ The decisions are recorded in section 18. Phase 0 changed the design in two plac
 
 **What reaches the external system.** [Verified] (`execution.ts:43-71`)
 - **Payload:** the action id, `idempotencyKey` (= action id), `attempt` (= `attempts` after the claim), the type, parameters, the approval fingerprint, the approvers, and `approvedAt` set to the time of sending.
-- **Headers:** `idempotency-key: <action id>` and `x-opspilot-attempt: <attempt>`, plus an HMAC signature when a secret is set.
+- **Headers:** `idempotency-key: <action id>` and `x-opsilume-attempt: <attempt>`, plus an HMAC signature when a secret is set.
 - **What a receiver can recognise:** the idempotency key is the same for every attempt, including legitimate retries. A receiver that stored `(idempotency key, attempt)` could recognise a repeated attempt.
 - **What a receiver can't rely on:** the signature differs each time because `approvedAt` changes. OPSILUME doesn't control or know whether any receiver keeps such a record.
 - **Manual mode** sends nothing; a person attests that they made the change.
@@ -172,7 +172,7 @@ Each scenario below assumes the protections of section 2, with nothing proposed.
 [Proposed] Installation identity plus an external execution journal, with automatic detection, installation-wide quarantine, and recovery and clearance by a host command (Option E).
 
 **Components** [all Proposed]:
-- **A state volume** `opspilot-state`, mounted into the API container only. Nothing else dispatches: the worker's sweep never sends anything ([Verified] `system.ts:50-66`). Also mounted into the one-off container that runs the recovery command.
+- **A state volume** `opsilume-state`, mounted into the API container only. Nothing else dispatches: the worker's sweep never sends anything ([Verified] `system.ts:50-66`). Also mounted into the one-off container that runs the recovery command.
 - **`installation.json`** on that volume: a random `installationId` and the time it was created. Written once by provisioning; never by the application during normal work.
 - **`journal.log`** on that volume: one line per event, opened append-only (`O_APPEND`), never rewritten in place. Each line is written with **one** `write` call whose returned byte count is checked (P2), then `fsync`ed. Line types:
   - `claim`: sequence number, action id, organisation id, attempt, approval fingerprint, destination digest, time. Written inside the claim transaction, before commit.
@@ -367,7 +367,7 @@ These need the explicit clearance in section 11. `init` refuses when the databas
 
 **Clones** [Unresolved, decision D8]. A clone for testing can be cleared like any other installation, but it should not keep production's webhook address. Approved in principle (D8): clearance asks whether this is the same installation recovering, or a new one. "New installation" generates a new id and removes every organisation's webhook address and secret, audited.
 
-**Operator rule (N8):** never copy `opspilot-state` into a clone. A clone that copies both volumes carries the same id and the same journal head. It is **never quarantined**, so it can dispatch to production's webhook. Only an off-host anchor (D3, deferred) could detect it.
+**Operator rule (N8):** never copy `opsilume-state` into a clone. A clone that copies both volumes carries the same id and the same journal head. It is **never quarantined**, so it can dispatch to production's webhook. Only an off-host anchor (D3, deferred) could detect it.
 
 ## 8. Restore detection strategy
 
@@ -615,7 +615,7 @@ Proposed analysis:
 ## 16. Operational dependencies and costs
 
 [Proposed]
-- **One Docker volume** (`opspilot-state`), mounted into the API and the recovery command.
+- **One Docker volume** (`opsilume-state`), mounted into the API and the recovery command.
 - **Retention and copies (N6):**
   - journal history is kept for at least as long as the oldest restorable database backup;
   - an **off-host, read-only copy** of the journal is maintained, so that after host loss recovery still has a list of what ran;
@@ -655,7 +655,7 @@ Proposed analysis:
 
 **Other risks:**
 - **A snapshot that rolls back the database volume and the state volume together** (a VM snapshot, a host-level backup of all volumes) is **not detected**. Both sides agree. [Proposed] Mitigations:
-  - the runbook forbids restoring `opspilot-state` from the same snapshot as `pgdata`;
+  - the runbook forbids restoring `opsilume-state` from the same snapshot as `pgdata`;
   - an off-host copy of the journal head (D3).
 - **Re-proposal (A3).** An action created and executed after the backup is gone. The same change can be proposed again under a new id. The journal lists the old id at inspection, but nothing prevents a person from proposing and approving the same change. [Unresolved] Matching by content fingerprint was considered: it would refuse legitimate repeats.
 - **Host loss** loses the local journal: quarantine. The off-host read-only copy (N6) gives a list of what ran, up to the time of its last copy. Executions after that copy need a full manual reconciliation against external systems.
@@ -800,6 +800,6 @@ Production implementation can't be authorised until every item below is complete
 - `scripts/backup.mjs`, `backup-restore-drill.mjs`, `reliability-drills.mjs`;
 - `docker-compose.yml`;
 - `docs/backup-and-restore.md`, `docs/recovery-readiness-audit.md`;
-- `apps/web/e2e/opspilot.spec.ts`, `demo/scripts/e2e.mjs`.
+- `apps/web/e2e/opsilume.spec.ts`, `demo/scripts/e2e.mjs`.
 
 **What was not done:** nothing was executed, restored or changed. This is not a claim of pilot or production readiness.

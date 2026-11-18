@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
-const NAME = /^opspilot-\d{8}-\d{6}\.dump$/;
+const NAME = /^opsilume-\d{8}-\d{6}\.dump$/;
 const MANIFEST = 'backups.json';
 const FAILURE = 'last-failure.json';
 const say = (line = '') => process.stdout.write(`${line}\n`);
@@ -36,7 +36,7 @@ function args() {
 
 /** The PostgreSQL container of one Compose project, found by its labels. No Compose file or .env is read. */
 function postgresOf(project) {
-  if (!project || project === true) throw new Error('--project is required: the name of the Compose project to back up (for the default installation, "opspilot").');
+  if (!project || project === true) throw new Error('--project is required: the name of the Compose project to back up (for the default installation, "opsilume").');
   const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=com.docker.compose.project=${project}`, '--filter', 'label=com.docker.compose.service=postgres'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   if (ids.length !== 1) throw new Error(`Expected one running postgres container in the Compose project "${project}", found ${ids.length}. Is the database running?`);
   const env = (name) => execFileSync('docker', ['exec', ids[0], 'printenv', name], { encoding: 'utf8' }).trim();
@@ -108,7 +108,7 @@ async function create(options) {
   mkdirSync(dir, { recursive: true });
   const startedAt = new Date();
   const stamp = startedAt.toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
-  const final = join(dir, `opspilot-${stamp}.dump`);
+  const final = join(dir, `opsilume-${stamp}.dump`);
   const partial = `${final}.partial`;
   try {
     const pg = postgresOf(options.project);

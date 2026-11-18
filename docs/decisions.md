@@ -37,7 +37,7 @@ One fixed `vector(768)` column. OpenAI `text-embedding-3-small` is requested at 
 Vector and full-text results are merged by rank, not by score, because the two scores are not on comparable scales. Keyword-only fallback when embeddings are unavailable.
 
 ### 12. Remediation does not touch infrastructure
-OpsPilot has no credentials for anyone's production. An approved action is either dispatched to a signed webhook the organisation configures, or performed by an operator who attests to it. This is honest about what the software does, and keeps "execute" from being a simulated success.
+OPSILUME has no credentials for anyone's production. An approved action is either dispatched to a signed webhook the organisation configures, or performed by an operator who attests to it. This is honest about what the software does, and keeps "execute" from being a simulated success.
 
 ### 13. Sample GitHub data is opt-in and labelled
 The mock adapter is used only for repositories explicitly created as "sample". Its commits and pull requests are flagged in the API, the UI and the agent's tool output. Without a token the real adapter still works for public repositories.
@@ -46,7 +46,7 @@ The mock adapter is used only for repositories explicitly created as "sample". I
 Simple to run locally, and adequate at this scale with time-window, trigram and fingerprint indexes. A dedicated store is the scaling path (see database-design.md).
 
 ### 15. Integration tests against a real database
-API tests run through HTTP against PostgreSQL (`opspilot_test`) with jobs executed inline, and replace only the Python service with a scripted double. Tenancy, constraints, raw SQL and pgvector are therefore actually exercised. Each test creates its own organisation, so tests do not interfere.
+API tests run through HTTP against PostgreSQL (`opsilume_test`) with jobs executed inline, and replace only the Python service with a scripted double. Tenancy, constraints, raw SQL and pgvector are therefore actually exercised. Each test creates its own organisation, so tests do not interfere.
 
 ### 16. Chart colours
 Charts use a palette validated for colour-vision deficiency: status colours (critical, serious, warning) only for severity and error series, blue for a single measured series, one y-axis per chart, a legend for two or more series, and a screen-reader table behind every chart.
@@ -98,4 +98,21 @@ GitFlow-style: `main` for releases, `develop` for integration, `feature/*` and `
 
 ### 26. Public repository, private working notes (recorded 18 November 2026)
 **Context:** the repository is a public portfolio. **Decision:** public documentation is tool-neutral engineering documentation. Development-assistant instructions and private session notes are kept out of version control (`.gitignore`). The repository's working rules are in [engineering-rules.md](engineering-rules.md). Existing history is not rewritten without explicit approval. **Consequences:** earlier commits still contain the former assistant instruction file. **Current:** yes.
+
+### 27. One name everywhere: OPSILUME / `opsilume` (18 November 2026)
+**Context:** the owner wants no reference to the former working name. **Decision:**
+- Every identifier is renamed to `opsilume`: repository, packages, environment variables, headers, database, Docker names and the MCP server.
+- The product name stays **OPSILUME** in text.
+- Git history is not rewritten.
+
+**Alternatives considered:**
+- "ops-illuminate": rejected; OPSILUME is the documented name.
+- Visible text only: rejected by the owner.
+
+**Consequences:**
+- Existing local installations start with new, empty volumes under the new project name, and the former Docker resources keep their names.
+- Webhook receivers must read the new header.
+- The name is still not trademark-cleared ([branding/opsilume-branding.md](branding/opsilume-branding.md)); if it is not cleared, the identifiers must be renamed again.
+
+Decision 26's note that earlier commits contain the former instruction file remains true. **Current:** yes.
 

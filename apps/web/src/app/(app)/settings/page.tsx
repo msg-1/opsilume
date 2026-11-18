@@ -55,9 +55,9 @@ function Organisation() {
       </Card>
       <Card title="Remediation execution" description="OPSILUME never changes your infrastructure directly.">
         <Field label="Remediation webhook URL" hint="When set, executing an approved action POSTs it here (for example to a CI/CD pipeline). When empty, operators carry out actions themselves and confirm in OPSILUME.">
-          {(id) => <Input id={id} type="url" disabled={!can} placeholder="https://ci.example.com/hooks/opspilot" value={f.remediationWebhookUrl ?? ''} onChange={(e) => setF({ ...f, remediationWebhookUrl: e.target.value })} />}
+          {(id) => <Input id={id} type="url" disabled={!can} placeholder="https://ci.example.com/hooks/opsilume" value={f.remediationWebhookUrl ?? ''} onChange={(e) => setF({ ...f, remediationWebhookUrl: e.target.value })} />}
         </Field>
-        <Field className="mt-4" label="Signing secret" hint={`Requests carry an X-OpsPilot-Signature header (HMAC-SHA256 of the body). ${f.remediationWebhookSecretSet ? 'A secret is stored; enter a new one to replace it.' : 'No secret is stored yet.'}`}>
+        <Field className="mt-4" label="Signing secret" hint={`Requests carry an X-OPSILUME-Signature header (HMAC-SHA256 of the body). ${f.remediationWebhookSecretSet ? 'A secret is stored; enter a new one to replace it.' : 'No secret is stored yet.'}`}>
           {(id) => <Input id={id} type="password" autoComplete="off" minLength={16} disabled={!can} placeholder={f.remediationWebhookSecretSet ? '••••••••••••••••' : 'At least 16 characters'} value={f.secret} onChange={(e) => setF({ ...f, secret: e.target.value })} />}
         </Field>
       </Card>

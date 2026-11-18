@@ -77,7 +77,7 @@ def test_http_status_and_embeddings(client):
     body = client.post("/v1/embeddings", json={"texts": ["pool timeout", "smtp"], "kind": "query"}, headers=headers).json()
     assert body["provider"] == "local" and len(body["vectors"]) == 2 and len(body["vectors"][0]) == 768
     assert client.post("/v1/embeddings", json={"texts": []}, headers=headers).status_code == 422
-    assert "opspilot_ai_embedded_texts_total" in client.get("/metrics").text
+    assert "opsilume_ai_embedded_texts_total" in client.get("/metrics").text
 
 
 def test_investigation_endpoint_streams_ndjson_and_reports_unreachable_api(client):

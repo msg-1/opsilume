@@ -43,7 +43,7 @@ The roadmap (section 11) starts with these two.
 
 | Question | Answer | Evidence |
 |---|---|---|
-| 1. How are backups created? | By hand, or by a scheduler the operator installs. `create` runs `pg_dump` inside the PostgreSQL container, streams it to `<dir>/opspilot-YYYYMMDD-HHMMSS.dump.partial`, checks it, then renames it | `scripts/backup.mjs:120-136` |
+| 1. How are backups created? | By hand, or by a scheduler the operator installs. `create` runs `pg_dump` inside the PostgreSQL container, streams it to `<dir>/opsilume-YYYYMMDD-HHMMSS.dump.partial`, checks it, then renames it | `scripts/backup.mjs:120-136` |
 | 2. Logical or physical? | **Logical only** (`pg_dump --format=custom`). No physical backup, no `pg_basebackup`, no volume snapshot | `scripts/backup.mjs:120` |
 | 3. Where are files stored? | In the `--dir` given, on whatever machine runs the command. Nothing is copied anywhere else | `scripts/backup.mjs:107-112`; `docs/backup-and-restore.md:38` |
 | 4. Encrypted? | **No.** Files are created with mode `0600` | `scripts/backup.mjs:123`; `docs/backup-and-restore.md:38,142` |
@@ -64,7 +64,7 @@ The roadmap (section 11) starts with these two.
 
 **Configuration:**
 - **Image and storage:** `pgvector/pgvector:pg16`, data on the named volume `pgdata`, `restart: unless-stopped` (`docker-compose.yml:43-59`).
-- **Initialisation:** `infra/postgres/init.sql` runs once when the volume is created. It creates the `vector` extension and a second database, `opspilot_test`.
+- **Initialisation:** `infra/postgres/init.sql` runs once when the volume is created. It creates the `vector` extension and a second database, `opsilume_test`.
 - **No PostgreSQL settings are configured in the repository:** no `command`, no `postgresql.conf` and no `-c` flags. WAL level, archiving, checkpoints and `fsync` are the image defaults. I didn't query their values; they are not set in the repository.
 
 | Capability | Status | Evidence |
@@ -297,12 +297,12 @@ Severity follows the brief:
 **H2. Restoring onto a new host has never been tested, and the procedure needs a configuration edit.**
 - **Evidence:**
   - Restore on another machine or PostgreSQL version is "not tested" (`docs/backup-and-restore.md:141`).
-  - `DATABASE_URL` names the database `opspilot` in `docker-compose.yml:17`; restoring into a new database needs an edit or an override (`docs/backup-and-restore.md:101-104`).
+  - `DATABASE_URL` names the database `opsilume` in `docker-compose.yml:17`; restoring into a new database needs an edit or an override (`docs/backup-and-restore.md:101-104`).
   - The dump needs a server with pgvector.
 - **Impact.** The one procedure that matters after host loss is the least proven, and the recovery time for host loss is unknown.
 - **Fix:**
   - a drill that rebuilds from nothing on a clean machine or VM, using only the off-host backup, the `.env` and the documented steps;
-  - a supported way to restore into the database name the stack already uses (stop the application, restore into `opspilot`, check);
+  - a supported way to restore into the database name the stack already uses (stop the application, restore into `opsilume`, check);
   - a measured end-to-end time.
 - **Kind:** operational policy plus a small infrastructure change.
 
@@ -386,7 +386,7 @@ Severity follows the brief:
 - **Fix:** check a proxied API path.
 - **Kind:** infrastructure.
 
-**L4. `opspilot_test` is created inside the production cluster.**
+**L4. `opsilume_test` is created inside the production cluster.**
 - **Evidence:** `infra/postgres/init.sql:3-5`.
 - **Impact:** a test database beside production data, not covered by backups. That is harmless, but confusing during recovery.
 - **Fix:** create it only in development or the isolated stack.

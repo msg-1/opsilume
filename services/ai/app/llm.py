@@ -237,7 +237,7 @@ def classify_anthropic_error(exc: Exception) -> LLMError:
     if isinstance(exc, anthropic.NotFoundError):
         return LLMError("The configured Claude model was not found (404). Check ANTHROPIC_MODEL.", "model")
     if "credit balance" in lowered or "billing" in lowered:
-        return LLMError("The Anthropic account has no available API credit. Add or claim credits in the Anthropic Console; OpsPilot will not purchase any.", "credit")
+        return LLMError("The Anthropic account has no available API credit. Add or claim credits in the Anthropic Console; OPSILUME will not purchase any.", "credit")
     if isinstance(exc, anthropic.RateLimitError):
         return LLMError("Anthropic rate limit reached and retries were exhausted. Try again shortly.", "rate_limit")
     if isinstance(exc, anthropic.APITimeoutError):

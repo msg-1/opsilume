@@ -40,7 +40,7 @@ export async function validateGithub(options: { token: string; repository: strin
   // What the token may do. A classic token lists its scopes; a fine-grained token lists none
   // here, and its permissions can only be read on GitHub's own settings page.
   try {
-    const res = await fetch(`${baseUrl}/user`, { redirect: 'manual', headers: { accept: 'application/vnd.github+json', 'user-agent': 'opspilot', authorization: `Bearer ${options.token}` }, signal: AbortSignal.timeout(20_000) });
+    const res = await fetch(`${baseUrl}/user`, { redirect: 'manual', headers: { accept: 'application/vnd.github+json', 'user-agent': 'opsilume', authorization: `Bearer ${options.token}` }, signal: AbortSignal.timeout(20_000) });
     await res.body?.cancel().catch(() => undefined);
     const scopes = (res.headers.get('x-oauth-scopes') ?? '').split(',').map((s) => s.trim()).filter(Boolean);
     const writes = scopes.filter((s) => WRITE_SCOPES.some((w) => s === w || s.startsWith(w)));

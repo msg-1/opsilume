@@ -26,7 +26,7 @@ compose(['restart', 'prometheus'], { quiet: true }); // picks up the demo scrape
 await waitFor('the demo gateway', () => ok(`${SERVICE_URLS['shop-gateway']}/health`), { timeoutMs: 180_000 });
 log('ready.');
 console.log(`
-  OPSILUME            http://localhost:3000   (sign in: shop-demo@example.com / OpsPilot-demo-1)
+  OPSILUME            http://localhost:3000   (sign in: shop-demo@example.com / Opsilume-demo-1)
   Demo shop gateway   http://localhost:8088
   Traces (Jaeger)     http://localhost:16686
   Prometheus          http://localhost:9090

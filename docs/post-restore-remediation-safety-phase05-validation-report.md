@@ -53,9 +53,9 @@ Every failure test (killed early, killed before commit, database session termina
 | Host | macOS 26.2, Apple silicon (arm64), 10 CPUs |
 | Docker | Docker Desktop, engine 29.2.1. Linux VM kernel `6.12.76-linuxkit`, 8 GB for the VM |
 | Journal storage | A named Docker volume: `/dev/vda1` ext4 `rw,relatime,discard` (the VM's virtual disk) |
-| Runtime | `opspilot-isolated-api:latest`, reused unchanged: Debian 12, Node 22.23.5, Prisma client 6.19.3 |
+| Runtime | `opsilume-isolated-api:latest`, reused unchanged: Debian 12, Node 22.23.5, Prisma client 6.19.3 |
 | Database | `postgres:16-alpine` (PostgreSQL 16.14), `max_connections=200`, `shared_buffers=512MB` |
-| Isolation | Compose project `opspilot-m16-p05`: **internal** network, no published host ports, its own `pgdata` and `state` volumes. The prototype's own schema. The application's code, schema and Compose file are untouched. Your default project's containers were never touched |
+| Isolation | Compose project `opsilume-m16-p05`: **internal** network, no published host ports, its own `pgdata` and `state` volumes. The prototype's own schema. The application's code, schema and Compose file are untouched. Your default project's containers were never touched |
 | Fault injection | `proxy.mjs` on the internal network, between the prototype and PostgreSQL. It reads the frontend protocol; Prisma sent `COMMIT` as a simple query (`Q`) in every scenario. Observation uses a direct connection that bypasses the proxy |
 | Receiver | `receiver.mjs`: a local stand-in that records requests only |
 

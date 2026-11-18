@@ -22,7 +22,7 @@ P7 is **NOT TESTED and NOT PASSED**. Unit tests, stub tests and smoke runs are h
 - **Added around it, not in it:** the journal object the harness hands to that library is `lib/failclosed.mjs`, the same journal with a memory for a failed write (see "A failed journal write fails closed").
 - **Not modified:** the Phase 0.5 files and results, and the Phase 0 branch.
 - **Not part of the build:** nothing under `apps/` or `services/` imports this directory.
-- **Its own Compose project:** `compose.yml` is `opspilot-m16-p7`.
+- **Its own Compose project:** `compose.yml` is `opsilume-m16-p7`.
   - PostgreSQL is reached **directly**: there is no fault proxy. The Phase 0.5 proxy is still available in `../m16-phase05/` for fault injection.
   - Networks are described under "Network isolation" below.
 - **PostgreSQL** runs with `fsync=on`, `full_page_writes=on` and `synchronous_commit=on`. `init` and `run` refuse to start unless `SHOW` confirms all three. `wal_sync_method` is recorded, not set.
@@ -52,7 +52,7 @@ Decisions of 17 November 2026; the procedure is `HOST-PREPARATION-CHECKLIST.md`.
 
 - **Host baseline (B5):** Ubuntu 24.04 LTS; kernel 5.5 or newer, with the actual version recorded (the flush probe needs the kernel's flush-request counter); a dedicated local SSD; local ext4 under Docker's data root, so PostgreSQL 16's data and the journal are on ext4-backed storage. Never the container's overlay layer for the journal, never a network filesystem. The physical device behind the mount is recorded. If the host can't meet this, the operator stops and asks for review.
 - **Inspection tools (B4):** `smartmontools`, `pciutils`, `hdparm` and `nvme-cli` may be installed, with the machine owner's written permission. `host-evidence.sh` uses them to read only. Nothing here changes firmware, a write-cache setting, a partition or any storage configuration.
-- **Transfer and image (B3):** the test machine gets a `git archive` of the exact reviewed commit (tracked files only, so no key, environment file, recorder directory or evidence), the uncommitted operator documents beside it, and a `SHA256SUMS` that is verified on arrival. The branch is not pushed for this. The image `opspilot-isolated-api:latest` is **built on that machine** (`docker build -t opspilot-isolated-api:latest -f apps/api/Dockerfile .` from the package root, the same build the repository's Compose file defines); an image built on the Mac is not used. The source commit, package checksum, image architecture and image id are recorded.
+- **Transfer and image (B3):** the test machine gets a `git archive` of the exact reviewed commit (tracked files only, so no key, environment file, recorder directory or evidence), the uncommitted operator documents beside it, and a `SHA256SUMS` that is verified on arrival. The branch is not pushed for this. The image `opsilume-isolated-api:latest` is **built on that machine** (`docker build -t opsilume-isolated-api:latest -f apps/api/Dockerfile .` from the package root, the same build the repository's Compose file defines); an image built on the Mac is not used. The source commit, package checksum, image architecture and image id are recorded.
 
 ## Recorder protocol (test-only)
 
@@ -206,8 +206,8 @@ How "fresh and dedicated" is enforced:
 - **Every cycle start, and `adopt`, must name the cluster the series started on.** A marker in the journal volume ties it to that cluster, so the two volumes can't be mixed.
 - **`create-run --continues` refuses a different run type,** so a qualifying run never adopts smoke or supplementary state.
 - **Evidence:** `evidence/<run>/init/initial-empty-state-*.json` on the test machine, and `volumes.jsonl` on the recorder. Smoke evidence stays in its own run directories.
-- **Order on the real host:** smoke rehearsal first, under its own project and labelled disposable (`docker compose -p opspilot-m16-p7-smoke -f compose.yml -f compose.smoke.yml ...` for every Compose command of the rehearsal, with `P7_SMOKE_GENERATION` set); then stop it and remove its containers and networks (`./smoke-containers-down.sh`, which frees the bridge names and keeps its volumes); then the qualifying run under the project `opspilot-m16-p7`, whose volumes are different ones and new. No volume has to be removed for the qualifying run to start on fresh volumes.
-- **Never run `docker compose down -v`, `docker volume rm`, `docker volume prune` or `docker system prune` on the test machine.** In the directory of `compose.yml`, a bare `down -v` removes the volumes of `opspilot-m16-p7`: the qualifying run's database and journal.
+- **Order on the real host:** smoke rehearsal first, under its own project and labelled disposable (`docker compose -p opsilume-m16-p7-smoke -f compose.yml -f compose.smoke.yml ...` for every Compose command of the rehearsal, with `P7_SMOKE_GENERATION` set); then stop it and remove its containers and networks (`./smoke-containers-down.sh`, which frees the bridge names and keeps its volumes); then the qualifying run under the project `opsilume-m16-p7`, whose volumes are different ones and new. No volume has to be removed for the qualifying run to start on fresh volumes.
+- **Never run `docker compose down -v`, `docker volume rm`, `docker volume prune` or `docker system prune` on the test machine.** In the directory of `compose.yml`, a bare `down -v` removes the volumes of `opsilume-m16-p7`: the qualifying run's database and journal.
 - **Never answer yes if Compose offers to recreate a volume, and never pass `-y`/`--yes` to `docker compose up`.** Compose makes that offer when a volume's definition differs from the file, and recreating deletes the data. The volume definitions in `compose.yml` are fixed for that reason; `compose.smoke.yml` is for the smoke project only.
 - **The recorder never reads a damaged registry as "no history".** Every run that claimed volumes must still be in `volumes.jsonl` with the cluster its own ledger recorded. If the file was deleted, truncated, replaced or edited, every claim, start, adopt, volume check and `create-run` is refused (`volume_registry_inconsistent`) until the original file is restored; the recorder never rebuilds it.
 - **Limits:** the registry knows only runs recorded in the same recorder directory, and removing a run's own record together with its registry line isn't detected (see "The recorder directory" for the procedure that covers both); beyond that, "fresh" means an empty database on a new cluster and an empty journal volume. The journal volume has no identity of its own before `init`. An `init` that fails after the claim uses up both the run id and those volumes: start again with a new run id on new volumes.
@@ -399,10 +399,10 @@ Two scripts, with different reach. Neither is run by anything else.
 It frees the smoke project's container names, network names and bridge names, and **keeps every smoke volume.**
 
 - `./smoke-containers-down.sh` is a dry run: every check, then the exact containers and networks.
-- `./smoke-containers-down.sh --confirm opspilot-m16-p7-smoke` removes those containers by id (`docker rm <id>`) and those networks by name (`docker network rm <name>`), in that order.
+- `./smoke-containers-down.sh --confirm opsilume-m16-p7-smoke` removes those containers by id (`docker rm <id>`) and those networks by name (`docker network rm <name>`), in that order.
 - **It refuses** unless:
-  - the project is exactly `opspilot-m16-p7-smoke` (fixed in the script);
-  - every volume of the project is a smoke volume (`..._pgdata` or `..._state`, with or without a generation suffix) with that project's labels and `opspilot.p7.data=disposable-harness-smoke`, and there is at least one of each kind;
+  - the project is exactly `opsilume-m16-p7-smoke` (fixed in the script);
+  - every volume of the project is a smoke volume (`..._pgdata` or `..._state`, with or without a generation suffix) with that project's labels and `opsilume.p7.data=disposable-harness-smoke`, and there is at least one of each kind;
   - every container is labelled with that project, is `db`, `gateway` or `harness` (each at most once), is **not running**, and mounts no volume other than those smoke volumes;
   - only that project's containers use the volumes or are attached to its networks;
   - every network is labelled with that project and is one of its three, and no unlabelled network carries the project's name.
@@ -410,16 +410,16 @@ It frees the smoke project's container names, network names and bridge names, an
 - **A partial removal can be repeated.** Whatever is left is checked again and removed; with nothing left it does nothing.
 - **Afterwards** it compares every volume's name, creation time, mountpoint and labels with what it read before, and checks the containers and networks are gone; anything else ends with `STOP` and exit 3. That comparison shows the volumes' identity, not their contents.
 - It stops nothing: a running container is a refusal.
-- **Fresh volumes come from a new generation, never from a removal.** `compose.smoke.yml` names the smoke volumes per generation (`opspilot-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`), and `P7_SMOKE_GENERATION` must be set for every smoke Compose command; Compose refuses without it. `smoke-docker-desktop.sh` requires a generation whose volumes don't exist yet, and checks after `up` that its containers are on exactly those volumes. Volumes an earlier smoke left behind (with another generation, or with none) are never attached, started or removed; they simply stay. The qualifying project's volumes have no generation and no disposable label, and a different project name.
+- **Fresh volumes come from a new generation, never from a removal.** `compose.smoke.yml` names the smoke volumes per generation (`opsilume-m16-p7-smoke_pgdata_<generation>`, `..._state_<generation>`), and `P7_SMOKE_GENERATION` must be set for every smoke Compose command; Compose refuses without it. `smoke-docker-desktop.sh` requires a generation whose volumes don't exist yet, and checks after `up` that its containers are on exactly those volumes. Volumes an earlier smoke left behind (with another generation, or with none) are never attached, started or removed; they simply stay. The qualifying project's volumes have no generation and no disposable label, and a different project name.
 - **Tested with a stub `docker` only** (`./test-containers-down-with-stubs.sh`). An earlier version was also dry-run against the real daemon through a shim that forwards listing and inspect calls only. The real removal has never been run, and the generation-named volumes have never been created by Compose.
 
 ### Volumes included: `smoke-teardown.sh` (disabled by default)
 
-Nothing in the harness removes a volume except `smoke-teardown.sh`, and it removes only the two smoke volumes without a generation suffix; if the project also has generation-named volumes it refuses, so nothing removes those. `--confirm opspilot-m16-p7-smoke` alone is refused: deleting the smoke volumes needs the product owner's separate, explicit authorisation, stated as `--volume-removal-authorised-by-product-owner`.
+Nothing in the harness removes a volume except `smoke-teardown.sh`, and it removes only the two smoke volumes without a generation suffix; if the project also has generation-named volumes it refuses, so nothing removes those. `--confirm opsilume-m16-p7-smoke` alone is refused: deleting the smoke volumes needs the product owner's separate, explicit authorisation, stated as `--volume-removal-authorised-by-product-owner`.
 
 - `./smoke-teardown.sh` is a dry run: it runs every check and prints the project and the exact volumes.
-- `./smoke-teardown.sh --confirm opspilot-m16-p7-smoke --volume-removal-authorised-by-product-owner` removes the containers and networks of that project (`down`, never `-v`) and then the two volumes by exact name.
-- **It refuses** unless: the project is exactly `opspilot-m16-p7-smoke` (fixed in the script); its volumes are exactly `opspilot-m16-p7-smoke_pgdata` and `opspilot-m16-p7-smoke_state`; each carries that project's Compose labels and `opspilot.p7.data=disposable-harness-smoke`; the marker in the journal volume, if there is one, says `HARNESS-SMOKE`; and only that project's containers use the volumes.
+- `./smoke-teardown.sh --confirm opsilume-m16-p7-smoke --volume-removal-authorised-by-product-owner` removes the containers and networks of that project (`down`, never `-v`) and then the two volumes by exact name.
+- **It refuses** unless: the project is exactly `opsilume-m16-p7-smoke` (fixed in the script); its volumes are exactly `opsilume-m16-p7-smoke_pgdata` and `opsilume-m16-p7-smoke_state`; each carries that project's Compose labels and `opsilume.p7.data=disposable-harness-smoke`; the marker in the journal volume, if there is one, says `HARNESS-SMOKE`; and only that project's containers use the volumes.
 - **Qualifying volumes can't pass it.** The label comes only from `compose.smoke.yml`, which is never used with the qualifying project, and that project has another name.
 - **It never touches** the recorder directory, the registry or the evidence directory: those are host directories, not Docker volumes.
 - **The removal has only been tested with a stub `docker`** (`./test-teardown-with-stubs.sh`). Against real Docker only the dry run has been run; the real removal never has.
@@ -520,7 +520,7 @@ On Docker Desktop, preflight is always BLOCKED: the run isn't `POWER-CUT`, there
 ```bash
 # Before any of this, on the test machine: the firewall, and the smoke rehearsal under its own project. The storage
 # evidence comes from there (create-run needs it, and the flush probe needs a journal volume):
-#   sudo P7_PROJECT=opspilot-m16-p7-smoke P7_SMOKE_GENERATION=<generation> ./host-evidence.sh <smoke run> baseline --flush-probe
+#   sudo P7_PROJECT=opsilume-m16-p7-smoke P7_SMOKE_GENERATION=<generation> ./host-evidence.sh <smoke run> baseline --flush-probe
 # Recorder host, once (the same directory as the smoke rehearsal; see "The recorder directory": back it up and verify the backup first):
 node recorder.mjs serve --dir <recorder-dir> --host <LAN address> --port 8787
 node recorder.mjs create-run --dir <recorder-dir> --run p7-1 --failure-model POWER-CUT \

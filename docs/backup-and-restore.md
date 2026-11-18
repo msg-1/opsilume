@@ -18,17 +18,17 @@ What has to be backed up, how to do it, how to restore, and what was actually te
 Use the backup tool. It takes the backup, checks it, and only then gives it a name that looks like a backup:
 
 ```bash
-npm run backup -- create --project opspilot --dir /srv/backups/opsilume
+npm run backup -- create --project opsilume --dir /srv/backups/opsilume
 ```
 
-`--project` is the Docker Compose project of the installation (`opspilot` unless you changed it). It is required: the tool never guesses which installation is meant. `--dir` is where backups are kept; the tool writes nowhere else.
+`--project` is the Docker Compose project of the installation (`opsilume` unless you changed it). It is required: the tool never guesses which installation is meant. `--dir` is where backups are kept; the tool writes nowhere else.
 
 What `create` does, in order:
 
-1. Runs `pg_dump --format=custom` inside the PostgreSQL container and streams it to `opspilot-YYYYMMDD-HHMMSS.dump.partial`. The application keeps running; `pg_dump` reads one consistent snapshot.
+1. Runs `pg_dump --format=custom` inside the PostgreSQL container and streams it to `opsilume-YYYYMMDD-HHMMSS.dump.partial`. The application keeps running; `pg_dump` reads one consistent snapshot.
 2. Reads the file's table of contents back with `pg_restore --list`. A file that is cut short or is not a backup fails here.
 3. With `--verify-restore`: restores it into a scratch database on the same server, checks that every table has the row count recorded just before the dump and that every foreign key is valid, and drops the scratch database.
-4. Computes its SHA-256, renames it to `opspilot-YYYYMMDD-HHMMSS.dump`, and records it in `backups.json` in the same directory (file, size, checksum, table and index counts, PostgreSQL version, database size).
+4. Computes its SHA-256, renames it to `opsilume-YYYYMMDD-HHMMSS.dump`, and records it in `backups.json` in the same directory (file, size, checksum, table and index counts, PostgreSQL version, database size).
 5. With `--keep N`: removes the oldest backups **that this tool recorded**, so that N remain. Files it did not record are never touched, whatever they are called. Without `--keep` nothing is ever deleted.
 
 If any step fails, the partial file is removed, nothing is renamed, earlier backups are left alone, the reason is written to `last-failure.json`, and the command exits with code 1.
@@ -43,7 +43,7 @@ Nothing schedules backups for you, and nothing here was installed on any machine
 
 ```cron
 # crontab on the host: nightly at 02:30 with a restore test, keeping 14; and a check at 08:00 that one exists
-30 2 * * *  cd /opt/opsilume && npm run -s backup -- create --project opspilot --dir /srv/backups/opsilume --keep 14 --verify-restore >> /var/log/opsilume-backup.log 2>&1
+30 2 * * *  cd /opt/opsilume && npm run -s backup -- create --project opsilume --dir /srv/backups/opsilume --keep 14 --verify-restore >> /var/log/opsilume-backup.log 2>&1
 0 8 * * *   cd /opt/opsilume && npm run -s backup -- status --dir /srv/backups/opsilume --max-age-hours 26 || echo "OPSILUME backups need attention" | mail -s "OPSILUME backup" ops@example.com
 ```
 
@@ -57,8 +57,8 @@ A systemd timer or launchd job works the same way: run `create`, and separately 
 
 ```bash
 npm run backup -- status --dir /srv/backups/opsilume --max-age-hours 26     # is there a recent, complete backup, and did the last attempt succeed?
-npm run backup -- verify --project opspilot --file /srv/backups/opsilume/opspilot-20261115-023000.dump             # readable, and unchanged since it was written?
-npm run backup -- verify --project opspilot --file ... --restore                                                # and does it restore?
+npm run backup -- verify --project opsilume --file /srv/backups/opsilume/opsilume-20261115-023000.dump             # readable, and unchanged since it was written?
+npm run backup -- verify --project opsilume --file ... --restore                                                # and does it restore?
 ```
 
 `status` fails (exit code 1) when there is no backup, when the newest is older than the limit, when the last attempt failed, when an unfinished file is lying around, or when a recorded backup is missing or has changed size. `verify` fails when the file's checksum differs from the one recorded when it was taken, when PostgreSQL cannot read it, or, with `--restore`, when it does not restore.
@@ -91,10 +91,10 @@ A restore never has to overwrite a database that is in use. Restore into a **new
 
 ```bash
 # 1. A new, empty database beside the current one
-docker compose exec -T postgres psql -U opspilot -d postgres -c 'CREATE DATABASE opspilot_restored'
+docker compose exec -T postgres psql -U opsilume -d postgres -c 'CREATE DATABASE opsilume_restored'
 
 # 2. Restore the backup into it
-docker compose exec -T postgres pg_restore -U opspilot -d opspilot_restored --no-owner --exit-on-error < opspilot-20261114-120000.dump
+docker compose exec -T postgres pg_restore -U opsilume -d opsilume_restored --no-owner --exit-on-error < opsilume-20261114-120000.dump
 
 # 3. Check it (see below) before using it
 
@@ -113,7 +113,7 @@ On a new machine: install as in [setup-guide.md](setup-guide.md) with `SEED_DEMO
 At minimum, before trusting it:
 
 ```bash
-docker compose exec -T postgres psql -U opspilot -d opspilot_restored -c \
+docker compose exec -T postgres psql -U opsilume -d opsilume_restored -c \
   'SELECT (SELECT count(*) FROM "Organization") AS organisations, (SELECT count(*) FROM "Incident") AS incidents, (SELECT count(*) FROM "Investigation") AS investigations, (SELECT max("createdAt") FROM "AuditLog") AS last_audit_entry'
 ```
 

@@ -54,7 +54,7 @@ Port 5000 is used by macOS AirPlay, which is why nothing here uses it. If 3000, 
 
 ## 3. Demo accounts
 
-All use the password `OpsPilot-demo-1`. These exist only in seeded demo data.
+All use the password `Opsilume-demo-1`. These exist only in seeded demo data.
 
 | Email | Role | Use it to |
 |---|---|---|
@@ -91,7 +91,7 @@ curl -X POST localhost:4000/api/v1/monitoring/metrics -H "x-api-key: $KEY" -H 'c
   -d '{"samples":[{"service":"checkout-service","metric":"error_rate","value":1.2}]}'
 ```
 
-For a living demo: `OPSPILOT_API_KEY=opk_... npm run simulate` (scopes `ingest:logs`, `ingest:metrics`). Add `-- --heal` to make checkout recover and watch the alerts resolve.
+For a living demo: `OPSILUME_API_KEY=opk_... npm run simulate` (scopes `ingest:logs`, `ingest:metrics`). Add `-- --heal` to make checkout recover and watch the alerts resolve.
 
 ## 6. GitHub
 
@@ -99,15 +99,15 @@ Works three ways: sample repositories (generated data, no network, labelled as s
 
 ## 7. MCP server
 
-Lets Claude Desktop, Claude Code or another MCP client query OpsPilot read-only. Create an API key with the `tools:read` scope, then register:
+Lets Claude Desktop, Claude Code or another MCP client query OPSILUME read-only. Create an API key with the `tools:read` scope, then register:
 
 ```json
 {
   "mcpServers": {
-    "opspilot": {
+    "opsilume": {
       "command": "uv",
-      "args": ["run", "--directory", "/absolute/path/to/opspilot/services/ai", "python", "-m", "app.mcp_server"],
-      "env": { "OPSPILOT_API_URL": "http://localhost:4000", "OPSPILOT_API_KEY": "opk_..." }
+      "args": ["run", "--directory", "/absolute/path/to/opsilume/services/ai", "python", "-m", "app.mcp_server"],
+      "env": { "OPSILUME_API_URL": "http://localhost:4000", "OPSILUME_API_KEY": "opk_..." }
     }
   }
 }
@@ -115,7 +115,7 @@ Lets Claude Desktop, Claude Code or another MCP client query OpsPilot read-only.
 
 ## 8. Observability
 
-`npm run obs:up` starts Prometheus (http://localhost:9090) and Grafana (http://localhost:3001, admin/admin, dashboard "OpsPilot platform").
+`npm run obs:up` starts Prometheus (http://localhost:9090) and Grafana (http://localhost:3001, admin/admin, dashboard "OPSILUME platform").
 
 Traces of OPSILUME itself (one trace per investigation, across the API, the queue, the worker, the AI service and every tool call):
 
@@ -136,12 +136,12 @@ npm run demo:e2e                             # runs them all and checks the inve
 npm run demo:down
 ```
 
-Sign in as `shop-demo@example.com` / `OpsPilot-demo-1`. No model is called and nothing is billed. Full instructions, architecture and limitations: [demo/README.md](../demo/README.md).
+Sign in as `shop-demo@example.com` / `Opsilume-demo-1`. No model is called and nothing is billed. Full instructions, architecture and limitations: [demo/README.md](../demo/README.md).
 
 ## 10. Tests
 
 ```bash
-npm test                 # API: 206 integration tests on database opspilot_test (26 of them use Redis and skip without it) · web: 53 tests
+npm test                 # API: 206 integration tests on database opsilume_test (26 of them use Redis and skip without it) · web: 53 tests
 npm run test:ai          # 192 tests, all against mocked model APIs or hand-written evidence
 npm run contracts:check  # shared contracts and generated frontend API types are up to date
 npm run evals -- --heuristic          # 14 scenarios on the rule-based engine
@@ -161,11 +161,11 @@ npm run drills           # 11 drills: worker killed and stopped mid-run, AI serv
 npm run isolated:down    # removes it, including its database volume
 ```
 
-It is a separate Compose project (`opspilot-isolated`) with its own containers, network and volume, started from a generated `.env.isolated` with fresh secrets, `AI_PROVIDER=deterministic` and no provider key. It does not read `.env`, and nothing it does can reach the default project or its data. Run the browser tests before the drills, on a fresh stack (`isolated:down`, then `isolated:up`): they assume the seeded state. This is what the `End-to-end` workflow runs on every pull request. Results and limits: [reliability-readiness-report.md](reliability-readiness-report.md).
+It is a separate Compose project (`opsilume-isolated`) with its own containers, network and volume, started from a generated `.env.isolated` with fresh secrets, `AI_PROVIDER=deterministic` and no provider key. It does not read `.env`, and nothing it does can reach the default project or its data. Run the browser tests before the drills, on a fresh stack (`isolated:down`, then `isolated:up`): they assume the seeded state. This is what the `End-to-end` workflow runs on every pull request. Results and limits: [reliability-readiness-report.md](reliability-readiness-report.md).
 
 The API tests that simulate outages (`apps/api/tests/reliability.test.ts`, `outage.test.ts`) need nothing extra: they reach Redis and PostgreSQL through a proxy inside the test and cut that, never the server.
 
-`opspilot_test` is created by `infra/postgres/init.sql` the first time the Postgres volume is created. If your volume predates that: `docker exec opspilot-postgres-1 psql -U opspilot -d opspilot -c 'CREATE DATABASE opspilot_test'`.
+`opsilume_test` is created by `infra/postgres/init.sql` the first time the Postgres volume is created. If your volume predates that: `docker exec opsilume-postgres-1 psql -U opsilume -d opsilume -c 'CREATE DATABASE opsilume_test'`.
 
 ## Troubleshooting
 

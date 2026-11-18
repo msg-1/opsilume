@@ -9,7 +9,7 @@ import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace';
  * One investigation is one trace: the HTTP request that starts it, the queued job, the
  * worker, the AI service and every read-only tool call it makes back into this API.
  */
-const tracer = trace.getTracer('opspilot');
+const tracer = trace.getTracer('opsilume');
 
 /** The W3C trace context of the current span, in a form that can travel inside a job. */
 export type TraceCarrier = Record<string, string>;

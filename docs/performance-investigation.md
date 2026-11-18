@@ -22,7 +22,7 @@ The Milestone 8 workload, "reads while writing" (4 clients, 120 reads over seven
 | Asynchronous | 76 / 78 ms | 695 / 621 ms | 763 / 668 ms | 1 / 0 | 1 / 0 |
 | None | 73 / 82 ms | 634 / 645 ms | 739 / 691 ms | 0 / 0 | 0 / 0 |
 
-The original result reproduces exactly, and only with the synchronous monitor. The API's own request-duration histogram (`opspilot_http_request_duration_seconds`), which nothing on the client can distort, records almost no request over one second in any of the six runs.
+The original result reproduces exactly, and only with the synchronous monitor. The API's own request-duration histogram (`opsilume_http_request_duration_seconds`), which nothing on the client can distort, records almost no request over one second in any of the six runs.
 
 ### Why
 

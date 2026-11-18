@@ -1,4 +1,4 @@
-# P7 durability harness (Milestone 16). Its own Compose project; never the default `opspilot` project.
+# P7 durability harness (Milestone 16). Its own Compose project; never the default `opsilume` project.
 # Network isolation (verified by `p7.mjs netcheck`, which `run` performs before every cycle):
 #   p7db  internal  db + harness            PostgreSQL is reachable only from the harness
 #   p7gw  internal  harness + gateway       the harness's ONLY way out is the gateway
@@ -9,9 +9,9 @@
 # The harness has no outbound route (no internet, no webhook destination, no other host); nothing is published.
 # Restart policy: after a power cut the Docker daemon brings the stack back by itself, so PostgreSQL crash recovery
 # starts at boot and the harness's boot probe records when the database became reachable (decision 5).
-# The opspilot-isolated-api image is reused only as a Node 22 + Prisma runtime. On a development machine it comes from
+# The opsilume-isolated-api image is reused only as a Node 22 + Prisma runtime. On a development machine it comes from
 # `npm run isolated:up`; on the test machine it is built natively from the source package (README, decision B3).
-name: opspilot-m16-p7
+name: opsilume-m16-p7
 
 x-recorder: &recorder
   P7_RECORDER_TARGET: ${P7_RECORDER_TARGET:?set P7_RECORDER_TARGET to the recorder host:port, e.g. 192.168.1.20:8787}
@@ -27,7 +27,7 @@ services:
     networks: [p7db]
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U proto -d proto"], interval: 2s, timeout: 3s, retries: 60 }
   gateway:
-    image: opspilot-isolated-api:latest
+    image: opsilume-isolated-api:latest
     restart: unless-stopped
     user: "1000:1000"
     read_only: true
@@ -38,7 +38,7 @@ services:
     networks: [p7gw, egress]
     healthcheck: { disable: true }
   harness:
-    image: opspilot-isolated-api:latest
+    image: opsilume-isolated-api:latest
     restart: unless-stopped
     user: "0:0"
     entrypoint: ["sh", "-c", "node p7.mjs boot-probe; exec sleep infinity"]

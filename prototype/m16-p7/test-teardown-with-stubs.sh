@@ -5,12 +5,12 @@
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 t="$(mktemp -d)"; mkdir "$t/bin"
-P=opspilot-m16-p7-smoke
+P=opsilume-m16-p7-smoke
 cat >"$t/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >>"$STUB/calls"
 case "$1 $2" in
-  "volume ls") [ "$5" = "label=com.docker.compose.project=opspilot-m16-p7-smoke" ] && tr ' ' '\n' <"$STUB/volumes" | grep . || true ;;
+  "volume ls") [ "$5" = "label=com.docker.compose.project=opsilume-m16-p7-smoke" ] && tr ' ' '\n' <"$STUB/volumes" | grep . || true ;;
   "volume inspect") key="$(echo "$4" | sed 's/.*"\(.*\)".*/\1/')"; awk -v v="$5" -v k="$key" '$1==v && $2==k {print $3}' "$STUB/labels" ;;
   "ps -aq") [ ! -e "$STUB/ps-fails" ] || exit 1; cat "$STUB/containers" ;;
   "inspect -f") cat "$STUB/container-project" ;;
@@ -26,7 +26,7 @@ fail() { echo "TEARDOWN STUB TEST FAILED: $*"; cat "$t/calls" 2>/dev/null; exit 
 good() {   # the state a finished smoke run leaves behind
   rm -f "$t/ps-fails" "$t/run-fails"; : >"$t/calls"
   echo "${P}_pgdata ${P}_state" >"$t/volumes"
-  { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opspilot.p7.data disposable-harness-smoke"; done; } >"$t/labels"
+  { for v in pgdata state; do echo "${P}_$v com.docker.compose.project $P"; echo "${P}_$v com.docker.compose.volume $v"; echo "${P}_$v opsilume.p7.data disposable-harness-smoke"; done; } >"$t/labels"
   echo c1 >"$t/containers"; echo "$P" >"$t/container-project"
   printf '{\n  "pgSystemId": "7111111111111111111",\n  "failureModel": "HARNESS-SMOKE"\n}\n' >"$t/marker"
 }
@@ -44,11 +44,11 @@ refused() { local why="$1"; run 1 "refused: .*Nothing was removed" --confirm "$P
 good; run 0 "DRY RUN: nothing was removed"; [ "$(destructive)" = 0 ] || fail "the dry run removed something"
 grep -q "Volumes: ${P}_pgdata ${P}_state" <<<"$("$here/smoke-teardown.sh")" && echo "ok: dry run names the project and the exact volumes, and removes nothing"
 
-for bad in opspilot opspilot-m16-p7 opspilot-isolated "${P}-2" "" ; do
+for bad in opsilume opsilume-m16-p7 opsilume-isolated "${P}-2" "" ; do
   good; run 2 "must be exactly $P" --confirm "$bad" "$AUTH"; [ ! -s "$t/calls" ] || fail "--confirm '$bad' reached docker"
 done
-good; run 2 "usage" -p opspilot; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
-echo "ok: any other project name (opspilot, opspilot-m16-p7, opspilot-isolated, a suffix, empty) is refused before docker is called at all"
+good; run 2 "usage" -p opsilume; [ ! -s "$t/calls" ] || fail "an unknown argument reached docker"
+echo "ok: any other project name (opsilume, opsilume-m16-p7, opsilume-isolated, a suffix, empty) is refused before docker is called at all"
 
 # Disabled by default: the project name alone no longer removes anything, and docker is not even called.
 for extra in "" --yes --volume-removal-authorised "$AUTH extra"; do
@@ -59,16 +59,16 @@ echo "ok: --confirm without the separate volume-removal authorisation is refused
 good; : >"$t/volumes"; run 0 "nothing to remove" --confirm "$P" "$AUTH"; [ "$(destructive)" = 0 ] || fail "removed with no volumes"
 good; echo "${P}_pgdata ${P}_state ${P}_extra" >"$t/volumes"; refused "an extra volume in the project"
 good; echo "${P}_pgdata" >"$t/volumes"; refused "a volume is missing"
-good; echo "opspilot_pgdata ${P}_state" >"$t/volumes"; refused "a volume of the default opspilot project appears in the listing"
-good; sed -i.bak "/${P}_state opspilot.p7.data/d" "$t/labels"; refused "the disposable-smoke label is missing on one volume"
+good; echo "opsilume_pgdata ${P}_state" >"$t/volumes"; refused "a volume of the default opsilume project appears in the listing"
+good; sed -i.bak "/${P}_state opsilume.p7.data/d" "$t/labels"; refused "the disposable-smoke label is missing on one volume"
 good; sed -i.bak "s/disposable-harness-smoke/evidence-keep/" "$t/labels"; refused "the label has another value"
-good; sed -i.bak "s/${P}_pgdata com.docker.compose.project $P/${P}_pgdata com.docker.compose.project opspilot/" "$t/labels"; refused "a volume's Compose project label names another project"
+good; sed -i.bak "s/${P}_pgdata com.docker.compose.project $P/${P}_pgdata com.docker.compose.project opsilume/" "$t/labels"; refused "a volume's Compose project label names another project"
 good; sed -i.bak "s/${P}_state com.docker.compose.volume state/${P}_state com.docker.compose.volume pgdata/" "$t/labels"; refused "a volume's Compose volume label does not match its name"
 good; sed -i.bak "s/HARNESS-SMOKE/POWER-CUT/" "$t/marker"; refused "the journal volume marker says POWER-CUT"
 good; sed -i.bak "s/HARNESS-SMOKE/VM-CRASH/" "$t/marker"; refused "the journal volume marker says VM-CRASH"
 good; echo NO-MARKER >"$t/marker"; refused "the journal volume has entries but no marker"
 good; : >"$t/marker"; refused "the marker could not be read"
-good; echo opspilot >"$t/container-project"; refused "a container of another project uses a volume"
+good; echo opsilume >"$t/container-project"; refused "a container of another project uses a volume"
 
 good; touch "$t/ps-fails"; refused "docker cannot list the containers that use a volume (before: the check was skipped in silence)"
 good; touch "$t/run-fails"; refused "the marker container cannot run (for example: the image is not present, and it is never pulled)"

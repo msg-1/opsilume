@@ -16,7 +16,7 @@ Three kinds of test were used:
 | Failure drills | `scripts/reliability-drills.mjs` (`npm run drills`) | The whole application as built by Docker Compose, with the real AI service on the rule-based engine | Containers are killed, stopped, paused and started |
 | Browser tests | `apps/web/e2e/` | The rendered application in Chromium, against the same stack | Containers are stopped and started |
 
-Nothing was run against the application's working database. The drills and browser tests use a second Compose project, `opspilot-isolated`, with its own containers, network, volume, ports and generated secrets (`scripts/isolated-stack.mjs`). The API tests use the `opspilot_test` database as before and never stop a server. No model was called anywhere: the isolated stack is started with `AI_PROVIDER=deterministic` and empty provider keys, and it does not read `.env`.
+Nothing was run against the application's working database. The drills and browser tests use a second Compose project, `opsilume-isolated`, with its own containers, network, volume, ports and generated secrets (`scripts/isolated-stack.mjs`). The API tests use the `opsilume_test` database as before and never stop a server. No model was called anywhere: the isolated stack is started with `AI_PROVIDER=deterministic` and empty provider keys, and it does not read `.env`.
 
 ## 1. Components tested
 
@@ -212,7 +212,7 @@ Ordered by how much they could hurt.
 ## Reproducing this
 
 ```bash
-npm test -w @opspilot/api          # the API tests; needs PostgreSQL and Redis (npm run infra:up)
+npm test -w @opsilume/api          # the API tests; needs PostgreSQL and Redis (npm run infra:up)
 npm run test:ai                    # the AI service tests
 
 npm run isolated:down              # start from nothing

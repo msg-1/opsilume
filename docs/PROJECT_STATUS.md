@@ -20,7 +20,7 @@ Code that exists is never COMPLETE by itself.
 
 ## 1. The project
 
-**OPSILUME**, developed as OpsPilot; repository, packages and configuration keep the `opspilot` identifiers. Tagline: *Illuminate every incident.*
+**OPSILUME**; repository, packages and configuration use the `opsilume` identifiers (renamed on 18 November 2026; earlier commits keep the former name). Tagline: *Illuminate every incident.*
 
 It is an AI-assisted engineering intelligence and incident investigation platform. It correlates logs, metrics, traces, deployments, GitHub changes, service dependencies, documentation and past incidents. An investigation produces evidence-backed hypotheses, says what evidence is missing or contradictory, states its uncertainty, and computes an outcome (healthy, degraded, incident, undetermined) from the evidence. Remediation is proposed, approved by people and never executed by OPSILUME itself.
 
@@ -65,7 +65,8 @@ Later improvement milestones, each merged into `develop` through a pull request.
 
 | | |
 |---|---|
-| Working branch | `prototype/m16-p7-durability-harness` (published to GitHub on 18 November 2026; not merged) |
+| Working branch | `feature/rename-to-opsilume` (18 November 2026). It is based on `prototype/m16-p7-durability-harness` and adds the Oracle feasibility audit and the rename to `opsilume`. Neither branch is merged |
+| P7 branch | `prototype/m16-p7-durability-harness` (published 18 November 2026) |
 | P7 commit | `2de30aa1d262ad1a3c52305f29158d17000fef5d` |
 | `develop` | `075302c53120eac8e311e7d560ba49e6c5b2ad75` |
 | `main` | `aed447658b834826bec9100603439072cf776e18` (initial commit only; release 0.1.0 is on `release/0.1.0`, not merged) |

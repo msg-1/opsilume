@@ -4,7 +4,7 @@
 // It is a separate Compose project (its own containers, network and database volume) on its
 // own ports, started from its own environment file. It never reads .env, so no API key in
 // .env can reach it: the engine is the rule-based one and every provider key is empty.
-// Nothing here can touch the default project ("opspilot") or its data.
+// Nothing here can touch the default project ("opsilume") or its data.
 //
 //   node scripts/isolated-stack.mjs up        build, start, wait until healthy
 //   node scripts/isolated-stack.mjs down      stop and remove it, including its volume
@@ -17,7 +17,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const PROJECT = 'opspilot-isolated';
+export const PROJECT = 'opsilume-isolated';
 export const ENV_FILE = join(ROOT, '.env.isolated'); // ignored by git (.env.*)
 export const PORTS = { web: 13000, api: 14000, ai: 18000, postgres: 15432, redis: 16379 };
 export const URLS = { web: `http://localhost:${PORTS.web}`, api: `http://localhost:${PORTS.api}`, ai: `http://localhost:${PORTS.ai}` };
@@ -32,7 +32,7 @@ export function ensureEnv() {
     `JWT_SECRET=${secret()}`,
     `INTERNAL_SERVICE_TOKEN=${secret()}`,
     `ENCRYPTION_KEY=${secret()}`,
-    'POSTGRES_PASSWORD=opspilot',
+    'POSTGRES_PASSWORD=opsilume',
     'SEED_DEMO_DATA=true',
     // No model, no cost: the rule-based engine, and no key for any provider.
     'AI_PROVIDER=deterministic',

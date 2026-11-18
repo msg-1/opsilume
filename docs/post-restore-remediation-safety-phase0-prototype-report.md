@@ -67,9 +67,9 @@ The prototype has its own minimal schema, not the application's: `org`, `action`
 | Host | macOS 26.2, Apple silicon (arm64), 10 CPUs |
 | Docker | Docker Desktop, engine 29.2.1. VM kernel `6.12.76-linuxkit`, 8 GB for the VM, overlayfs storage driver |
 | Journal storage measured | A named Docker volume: **ext4 on the VM's virtual disk `/dev/vda1`** (`rw,relatime,discard`). Also the container overlay, and `tmpfs` |
-| Runtime | Image `opspilot-isolated-api:latest` (Debian 12, Node 22.23.5, Prisma client 6.19.3), reused unchanged. Containers run as root inside the prototype only |
+| Runtime | Image `opsilume-isolated-api:latest` (Debian 12, Node 22.23.5, Prisma client 6.19.3), reused unchanged. Containers run as root inside the prototype only |
 | Database | `postgres:16-alpine`, default settings, its own volume |
-| Isolation | Compose project `opspilot-m16-proto`. **Internal** network, no published ports, its own volumes. Experiment A used `--network none` |
+| Isolation | Compose project `opsilume-m16-proto`. **Internal** network, no published ports, its own volumes. Experiment A used `--network none` |
 | How to reproduce | `prototype/m16-phase0/README.md` (commands); results in `results/` |
 
 Sample sizes are given in each table. Latency is measured in-process with `process.hrtime`.

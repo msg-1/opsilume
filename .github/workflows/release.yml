@@ -30,4 +30,4 @@ jobs:
         run: |
           flags=""
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --title "OpsPilot $GITHUB_REF_NAME" --generate-notes $flags
+          gh release create "$GITHUB_REF_NAME" --title "OPSILUME $GITHUB_REF_NAME" --generate-notes $flags

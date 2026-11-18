@@ -65,7 +65,7 @@ export function eventConsumer(investigationId: string, abort: AbortController) {
         const stored = await withSpan('investigation.persist', {}, () => persistFinal(investigationId, report, event.usage, event.engine));
         // Not stored: the investigation stopped being a running one while the report was on its way.
         if (!stored) throw new Superseded();
-        annotate({ 'opspilot.engine.mode': report.analysisMode, 'opspilot.investigation.outcome': report.outcome ?? 'none', 'opspilot.investigation.evidence_count': evidenceRefs.size });
+        annotate({ 'opsilume.engine.mode': report.analysisMode, 'opsilume.investigation.outcome': report.outcome ?? 'none', 'opsilume.investigation.evidence_count': evidenceRefs.size });
         state.finished = true;
         break;
       }

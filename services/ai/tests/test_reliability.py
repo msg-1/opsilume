@@ -40,8 +40,8 @@ async def investigate(scenario: Scenario) -> tuple[InvestigationReport, Evidence
     async def emit(e):
         events.append(e)
 
-    tools = ToolClient("http://opspilot.test", "tok", transport=httpx.MockTransport(scenario.handler()))
-    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opspilot.test", tool_token="tok", time_window={"from": t(120), "to": t(0)}, current_time=t(0))
+    tools = ToolClient("http://opsilume.test", "tok", transport=httpx.MockTransport(scenario.handler()))
+    request = InvestigationRequest(investigation_id="inv", question=scenario.question, organization_name="Org", api_url="http://opsilume.test", tool_token="tok", time_window={"from": t(120), "to": t(0)}, current_time=t(0))
     ctx = Context(request=request, settings=Settings(_env_file=None), tools=tools, provider=None, emit=emit)
     report = await run_investigation(ctx)
     await tools.aclose()
